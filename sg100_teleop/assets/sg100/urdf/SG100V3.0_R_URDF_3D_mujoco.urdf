@@ -1,0 +1,685 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="SG100V3.0_R_URDF_3D">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.000414998999227815 -0.0181040369923601 0.0626697040146343"
+        rpy="0 0 0" />
+      <mass
+        value="0.305725448065077" />
+      <inertia
+        ixx="0.000158989061418836"
+        ixy="4.83957781671324E-06"
+        ixz="-6.036396893673E-06"
+        iyy="0.000244064793884569"
+        iyz="9.63190531237913E-06"
+        izz="0.00015976914173144" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="thumb_link1">
+    <inertial>
+      <origin
+        xyz="0.0120771567691542 0.00239257435604567 0.0136728170349049"
+        rpy="0 0 0" />
+      <mass
+        value="0.0113387523148287" />
+      <inertia
+        ixx="1.38862615461349E-06"
+        ixy="-2.71441427419766E-07"
+        ixz="-3.24833159401412E-07"
+        iyy="1.25101658724764E-06"
+        iyz="-1.63938335089224E-07"
+        izz="1.21414905090188E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/thumb_link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/thumb_link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="thumb_j1"
+    type="revolute">
+    <origin
+      xyz="0.0315000340876379 -0.03185808415747 0.03840000000004"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="thumb_link1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="2.182"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="thumb_link2">
+    <inertial>
+      <origin
+        xyz="0.0216506472257303 0.0124998854988972 0.014077934278322"
+        rpy="0 0 0" />
+      <mass
+        value="0.0389602928500587" />
+      <inertia
+        ixx="3.4122140966438E-06"
+        ixy="-1.28623546050382E-06"
+        ixz="-2.2414128381453E-11"
+        iyy="4.89742955560314E-06"
+        iyz="3.88302934408901E-11"
+        izz="4.96550383021464E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/thumb_link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/thumb_link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="thumb_j2"
+    type="revolute">
+    <origin
+      xyz="0.024 0.0155 0.0176"
+      rpy="1.5708 0 0" />
+    <parent
+      link="thumb_link1" />
+    <child
+      link="thumb_link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.61"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="thumb_link3">
+    <inertial>
+      <origin
+        xyz="0.0213380181820181 0.0152597778818099 0.0140520446761166"
+        rpy="0 0 0" />
+      <mass
+        value="0.0391700355427288" />
+      <inertia
+        ixx="3.5414216454006E-06"
+        ixy="-1.15344683729334E-06"
+        ixz="-1.43832349993507E-07"
+        iyy="3.8422075253618E-06"
+        iyz="-5.46135022641842E-08"
+        izz="4.60629028518077E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/thumb_link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/thumb_link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="thumb_j3"
+    type="revolute">
+    <origin
+      xyz="0.0433012701892112 0.0249999999999943 0.000999999999999992"
+      rpy="0 0 0" />
+    <parent
+      link="thumb_link2" />
+    <child
+      link="thumb_link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.048"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="index_link1">
+    <inertial>
+      <origin
+        xyz="-0.00192286221915933 0.0160765720339984 0.0160014379359226"
+        rpy="0 0 0" />
+      <mass
+        value="0.0164783133065153" />
+      <inertia
+        ixx="2.35967191348968E-06"
+        ixy="2.52056066969685E-07"
+        ixz="3.85455394773503E-07"
+        iyy="1.92772778704174E-06"
+        iyz="-6.21965134880054E-07"
+        izz="2.38513082903791E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/index_link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/index_link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="index_j1"
+    type="revolute">
+    <origin
+      xyz="0.0315 -0.020758 0.086"
+      rpy="1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="index_link1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="index_link2">
+    <inertial>
+      <origin
+        xyz="1.07914988715929E-07 0.0249999506725764 0.0140779443986546"
+        rpy="0 0 0" />
+      <mass
+        value="0.0389603085020688" />
+      <inertia
+        ixx="5.64004176550247E-06"
+        ixy="6.36188568841575E-13"
+        ixz="-4.52896024925001E-11"
+        iyy="2.66959788800775E-06"
+        iyz="2.78258538701048E-13"
+        izz="4.96551193105007E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/index_link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/index_link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="index_j2"
+    type="revolute">
+    <origin
+      xyz="-0.0155 0.024 0.0281"
+      rpy="0 1.5707963267949 0" />
+    <parent
+      link="index_link1" />
+    <child
+      link="index_link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.18"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="index_link3">
+    <inertial>
+      <origin
+        xyz="-0.00254631665879401 0.0261091312977331 0.0140520312199692"
+        rpy="0 0 0" />
+      <mass
+        value="0.039169569670025" />
+      <inertia
+        ixx="4.76582704993042E-06"
+        ixy="4.46451285037219E-07"
+        ixz="-2.46133875754294E-08"
+        iyy="2.61766787253799E-06"
+        iyz="-1.51850712404017E-07"
+        izz="4.60618440130241E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/index_link3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/index_link3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="index_j3"
+    type="revolute">
+    <origin
+      xyz="0 0.0499999999999879 0.00100000000000001"
+      rpy="0 0 0" />
+    <parent
+      link="index_link2" />
+    <child
+      link="index_link3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.05"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="middle_link1">
+    <inertial>
+      <origin
+        xyz="1.08016284257328E-07 0.0249999507772835 0.0140779451716232"
+        rpy="0 0 0" />
+      <mass
+        value="0.0389603089069081" />
+      <inertia
+        ixx="5.6400419900532E-06"
+        ixy="5.715810172083E-13"
+        ixz="-4.54210053987226E-11"
+        iyy="2.6695980694843E-06"
+        iyz="1.34396033706801E-13"
+        izz="4.96551183479354E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/middle_link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/middle_link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="middle_j1"
+    type="revolute">
+    <origin
+      xyz="-0.018 -0.048858 0.1135"
+      rpy="1.5708 0 1.5708" />
+    <parent
+      link="base_link" />
+    <child
+      link="middle_link1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-2.18"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="middle_link2">
+    <inertial>
+      <origin
+        xyz="-0.0025463161373562 0.0261091299053668 0.0140520318441871"
+        rpy="0 0 0" />
+      <mass
+        value="0.0391695723626892" />
+      <inertia
+        ixx="4.76582741173177E-06"
+        ixy="4.46451321193341E-07"
+        ixz="-2.46135080206815E-08"
+        iyy="2.61766824883249E-06"
+        iyz="-1.51850592956514E-07"
+        izz="4.60618446893163E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/middle_link2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/middle_link2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="middle_j2"
+    type="revolute">
+    <origin
+      xyz="0 0.0499999999999879 0.000999999999999997"
+      rpy="0 0 0" />
+    <parent
+      link="middle_link1" />
+    <child
+      link="middle_link2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.05"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="little_link1">
+    <inertial>
+      <origin
+        xyz="-0.00664760756016337 0.0164128377639005 0.0160729276430044"
+        rpy="0 0 0" />
+      <mass
+        value="0.0161726264481223" />
+      <inertia
+        ixx="2.26646362279032E-06"
+        ixy="2.99853956385536E-07"
+        ixz="4.03188674419406E-07"
+        iyy="1.93121676353436E-06"
+        iyz="-5.88441289117256E-07"
+        izz="2.35726576008919E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/little_link1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/little_link1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="little_j1"
+    type="revolute">
+    <origin
+      xyz="-0.0314999659123509 -0.0207580841574733 0.0800000000000397"
+      rpy="1.5707963267949 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="little_link1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="little_llink2">
+    <inertial>
+      <origin
+        xyz="1.0801628431284E-07 0.0249999507772834 0.0140779451716232"
+        rpy="0 0 0" />
+      <mass
+        value="0.0389603089069083" />
+      <inertia
+        ixx="5.64004199005323E-06"
+        ixy="5.71581023652563E-13"
+        ixz="-4.54210053987317E-11"
+        iyy="2.66959806948432E-06"
+        iyz="1.3439603890535E-13"
+        izz="4.96551183479357E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/little_llink2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/little_llink2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="little_j2"
+    type="revolute">
+    <origin
+      xyz="-0.0205 0.024 0.0281"
+      rpy="0 1.5707963267949 0" />
+    <parent
+      link="little_link1" />
+    <child
+      link="little_llink2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="2.18"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="little_linik3">
+    <inertial>
+      <origin
+        xyz="-0.00254631589504758 0.026109129459078 0.0140520316215023"
+        rpy="0 0 0" />
+      <mass
+        value="0.0391695736569134" />
+      <inertia
+        ixx="4.76582749290851E-06"
+        ixy="4.46451343500283E-07"
+        ixz="-2.46134678050998E-08"
+        iyy="2.61766834105641E-06"
+        iyz="-1.51850616101759E-07"
+        izz="4.60618453244484E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/little_linik3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/little_linik3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="little_j3"
+    type="revolute">
+    <origin
+      xyz="0 0.0499999999999879 0.00099999999999998"
+      rpy="0 0 0" />
+    <parent
+      link="little_llink2" />
+    <child
+      link="little_linik3" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.05"
+      upper="1.57"
+      effort="0"
+      velocity="0" />
+  </joint>
+</robot>

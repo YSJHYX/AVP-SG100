@@ -1,0 +1,77 @@
+<mujoco model="SG100V3.0_R_URDF_3D">
+  <compiler angle="radian"/>
+
+  <asset>
+    <mesh name="base_link" content_type="model/stl" file="../meshes_mujoco/base_link.STL"/>
+    <mesh name="thumb_link1" content_type="model/stl" file="../meshes_mujoco/thumb_link1.STL"/>
+    <mesh name="thumb_link2" content_type="model/stl" file="../meshes_mujoco/thumb_link2.STL"/>
+    <mesh name="thumb_link3" content_type="model/stl" file="../meshes_mujoco/thumb_link3.STL"/>
+    <mesh name="index_link1" content_type="model/stl" file="../meshes_mujoco/index_link1.STL"/>
+    <mesh name="index_link2" content_type="model/stl" file="../meshes_mujoco/index_link2.STL"/>
+    <mesh name="index_link3" content_type="model/stl" file="../meshes_mujoco/index_link3.STL"/>
+    <mesh name="middle_link1" content_type="model/stl" file="../meshes_mujoco/middle_link1.STL"/>
+    <mesh name="middle_link2" content_type="model/stl" file="../meshes_mujoco/middle_link2.STL"/>
+    <mesh name="little_link1" content_type="model/stl" file="../meshes_mujoco/little_link1.STL"/>
+    <mesh name="little_llink2" content_type="model/stl" file="../meshes_mujoco/little_llink2.STL"/>
+    <mesh name="little_linik3" content_type="model/stl" file="../meshes_mujoco/little_linik3.STL"/>
+  </asset>
+
+  <worldbody>
+    <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="base_link"/>
+    <body name="thumb_link1" pos="0.0315 -0.0318581 0.0384">
+      <inertial pos="0.0120772 0.00239257 0.0136728" quat="0.896107 -0.329025 0.284087 -0.0896036" mass="0.0113388" diaginertia="1.6811e-06 1.39718e-06 7.75511e-07"/>
+      <joint name="thumb_j1" pos="0 0 0" axis="0 0 -1" range="0 2.182"/>
+      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="thumb_link1"/>
+      <body name="thumb_link2" pos="0.024 0.0155 0.0176" quat="0.707105 0.707108 0 0">
+        <inertial pos="0.0216506 0.0124999 0.0140779" quat="0.353533 0.353574 0.612361 0.612384" mass="0.0389603" diaginertia="5.64004e-06 4.9655e-06 2.66961e-06"/>
+        <joint name="thumb_j2" pos="0 0 0" axis="0 0 1" range="-2.61 0"/>
+        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="thumb_link2"/>
+        <body name="thumb_link3" pos="0.0433013 0.025 0.001">
+          <inertial pos="0.021338 0.0152598 0.014052" quat="0.230056 0.345925 0.588117 0.693923" mass="0.03917" diaginertia="4.86657e-06 4.6047e-06 2.51865e-06"/>
+          <joint name="thumb_j3" pos="0 0 0" axis="0 0 1" range="-1.048 1.57"/>
+          <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="thumb_link3"/>
+        </body>
+      </body>
+    </body>
+    <body name="index_link1" pos="0.0315 -0.020758 0.086" quat="0.707105 0.707108 0 0">
+      <inertial pos="-0.00192286 0.0160766 0.0160014" quat="0.270343 0.788631 -0.399873 0.380891" mass="0.0164783" diaginertia="2.89253e-06 2.46445e-06 1.31555e-06"/>
+      <joint name="index_j1" pos="0 0 0" axis="0 0 -1" range="0 1.57"/>
+      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="index_link1"/>
+      <body name="index_link2" pos="-0.0155 0.024 0.0281" quat="0.707107 0 0.707107 0">
+        <inertial pos="1.07915e-07 0.025 0.0140779" quat="0.707107 0.707107 2.37384e-05 -2.37384e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06"/>
+        <joint name="index_j2" pos="0 0 0" axis="0 0 1" range="0 2.18"/>
+        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="index_link2"/>
+        <body name="index_link3" pos="0 0.05 0.001">
+          <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551103" mass="0.0391696" diaginertia="4.86645e-06 4.6046e-06 2.51862e-06"/>
+          <joint name="index_j3" pos="0 0 0" axis="0 0 1" range="-1.05 1.57"/>
+          <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="index_link3"/>
+        </body>
+      </body>
+    </body>
+    <body name="middle_link1" pos="-0.018 -0.048858 0.1135" quat="0.499998 0.5 0.500002 0.5">
+      <inertial pos="1.08016e-07 0.025 0.0140779" quat="0.707107 0.707107 2.38073e-05 -2.38073e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06"/>
+      <joint name="middle_j1" pos="0 0 0" axis="0 0 -1" range="-2.18 0"/>
+      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="middle_link1"/>
+      <body name="middle_link2" pos="0 0.05 0.001">
+        <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551105" mass="0.0391696" diaginertia="4.86646e-06 4.6046e-06 2.51862e-06"/>
+        <joint name="middle_j2" pos="0 0 0" axis="0 0 1" range="-1.05 1.57"/>
+        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="middle_link2"/>
+      </body>
+    </body>
+    <body name="little_link1" pos="-0.0315 -0.0207581 0.08" quat="0.707107 0.707107 0 0">
+      <inertial pos="-0.00664761 0.0164128 0.0160729" quat="0.247593 0.789347 -0.391604 0.402834" mass="0.0161726" diaginertia="2.83334e-06 2.43857e-06 1.28303e-06"/>
+      <joint name="little_j1" pos="0 0 0" axis="0 0 -1" range="-3.14 0"/>
+      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="little_link1"/>
+      <body name="little_llink2" pos="-0.0205 0.024 0.0281" quat="0.707107 0 0.707107 0">
+        <inertial pos="1.08016e-07 0.025 0.0140779" quat="0.707107 0.707107 2.38073e-05 -2.38073e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06"/>
+        <joint name="little_j2" pos="0 0 0" axis="0 0 1" range="0 2.18"/>
+        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="little_llink2"/>
+        <body name="little_linik3" pos="0 0.05 0.001">
+          <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.005511" mass="0.0391696" diaginertia="4.86646e-06 4.6046e-06 2.51862e-06"/>
+          <joint name="little_j3" pos="0 0 0" axis="0 0 1" range="-1.05 1.57"/>
+          <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="little_linik3"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

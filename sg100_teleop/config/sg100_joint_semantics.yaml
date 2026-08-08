@@ -1,0 +1,84 @@
+joint_order:
+  - thumb_j1
+  - thumb_j2
+  - thumb_j3
+  - index_j1
+  - index_j2
+  - index_j3
+  - middle_j1
+  - middle_j2
+  - little_j1
+  - little_j2
+  - little_j3
+
+joints:
+
+  thumb_j1:
+    range: [0.0, 2.182]
+    semantic: thumb_opposition
+    zero: 0.0
+    positive_direction: rotate_toward_palm
+
+  thumb_j2:
+    range: [-2.61, 0.0]
+    semantic: thumb_abduction
+    zero: 0.0
+    negative_direction: rotate_outward_and_downward
+
+  thumb_j3:
+    range: [-1.048, 1.57]
+    semantic: thumb_distal_flexion_extension
+    zero: 0.0
+    positive_direction: flexion_toward_palm
+    negative_direction: extension_outward
+
+  index_j1:
+    range: [0.0, 1.57]
+    semantic: index_adduction
+    zero: 0.0
+    positive_direction: toward_thumb
+
+  index_j2:
+    range: [0.0, 2.18]
+    semantic: index_flexion
+    zero: 0.0
+    positive_direction: flexion_toward_palm
+
+  index_j3:
+    range: [-1.05, 1.57]
+    semantic: index_distal_flexion_extension
+    zero: 0.0
+    positive_direction: flexion_toward_palm
+    negative_direction: extension_toward_dorsal_side
+
+  middle_j1:
+    range: [-2.18, 0.0]
+    semantic: middle_flexion
+    zero: 0.0
+    negative_direction: flexion_toward_palm
+
+  middle_j2:
+    range: [-1.05, 1.57]
+    semantic: middle_distal_flexion_extension
+    zero: 0.0
+    positive_direction: flexion_toward_palm
+    negative_direction: extension_toward_dorsal_side
+
+  little_j1:
+    range: [-3.14, 0.0]
+    semantic: little_outward_rotation
+    zero: 0.0
+    negative_direction: rotate_outward_and_downward
+
+  little_j2:
+    range: [0.0, 2.18]
+    semantic: little_flexion
+    zero: 0.0
+    positive_direction: flexion_toward_palm
+
+  little_j3:
+    range: [-1.05, 1.57]
+    semantic: little_distal_flexion_extension
+    zero: 0.0
+    positive_direction: flexion_toward_palm
+    negative_direction: extension_toward_dorsal_side
