@@ -45,13 +45,30 @@ SG100 joint index
 **而是:**
 
 ```
-AVP skeleton
-    ↓
-human hand semantic features
-    ↓
+AVP HandData
+25 / 27 × SE(3) joint transforms
+             ↓
+extract translation
+             ↓
+3D joint landmarks
+             ↓
+wrist-local normalization
+             ↓
+palm coordinate frame
+             ↓
+geometric feature extraction
+             ↓
+AVPRawHandFeatures
+             ↓
+user calibration
+             ↓
 CanonicalHandState
-    ↓
-SG100 morphology
+             ↓
+SG100Retargeter
+             ↓
+SG100 morphology-specific mapping
+             ↓
+q_target[11]
 ```
 
 这样未来 Manus glove 或其它 tracking backend 可以直接复用后半段:
