@@ -37,6 +37,10 @@ from sg100_teleop.tracking.avp_adapter import AVPHandAdapter
 
 from sg100_teleop.tracking.avp_source import get_hand_from_tracking
 
+from sg100_teleop.tracking.avp_to_tcp_config import (
+    load_avp_to_tcp_config,
+)
+
 from sg100_teleop.tracking.frame_gate import (
     TrackingFrameGate,
     TrackingFrameStatus,
@@ -58,6 +62,11 @@ DEFAULT_CALIBRATION = (
     "avp_right_calibration.yaml"
 )
 
+DEFAULT_AVP_TO_TCP_CONFIG = (
+    "sg100_teleop/config/"
+    "avp_to_tcp_identity.yaml"
+)
+
 TCP_BODY = "sg100_base_link"
 
 # ============================================================
@@ -75,12 +84,6 @@ RM65_TELEOP_READY_Q = np.array(
     ],
     dtype=np.float64
 )
-
-# ============================================================
-# Initial AVP -> robot axis mapping
-# ============================================================
-
-AVP_TO_TCP_LOCAL_ROTATION = np.eye(3, dtype=np.float64)
 
 def main():
     # ========================================================
@@ -134,11 +137,12 @@ def main():
     )
 
     parser.add_argument(
-        "--translation-scale",
-        type=float,
-        default=0.5,
-        help="Scale from relative AVP wrist translation "
-        "to robot TCP translation",
+        "--avp-to-tcp-config",
+        default=DEFAULT_AVP_TO_TCP_CONFIG,
+        help=(
+            "YAML containing translation_scale and the proper "
+            "AVP wrist-local to robot TCP-local rotation basis"
+        ),
     )
 
     parser.add_argument(
@@ -199,11 +203,6 @@ def main():
             "--stream-hz must be > 0"
         )
     
-    if args.translation_scale <= 0.0:
-        raise ValueError(
-            "--translation-scale must be > 0"
-        )
-
     if args.filter_tau <= 0.0:
         raise ValueError(
             "--filter-tau must be > 0"
@@ -227,6 +226,10 @@ def main():
 
     calibration_path = Path(args.calibration)
 
+    avp_to_tcp_config_path = Path(
+        args.avp_to_tcp_config
+    )
+
     if not model_path.exists():
         raise FileNotFoundError(
             "Combined MuJoCo model not found: " 
@@ -239,6 +242,16 @@ def main():
             f"{calibration_path}\n"
             "Run calibrate_avp_hand first."
         )
+
+    if not avp_to_tcp_config_path.exists():
+        raise FileNotFoundError(
+            "AVP-to-TCP config file not found: "
+            f"{avp_to_tcp_config_path}"
+        )
+
+    avp_to_tcp_config = load_avp_to_tcp_config(
+        avp_to_tcp_config_path
+    )
 
     # ========================================================
     # Startup information
@@ -276,8 +289,23 @@ def main():
     )
 
     print(
+        "AVP/TCP config    :",
+        avp_to_tcp_config_path,
+    )
+
+    print(
+        "basis source      :",
+        avp_to_tcp_config.source,
+    )
+
+    print(
         "translation scale :",
-        args.translation_scale,
+        avp_to_tcp_config.translation_scale,
+    )
+
+    print(
+        "AVP -> TCP local basis:\n",
+        avp_to_tcp_config.avp_to_tcp_local_rotation,
     )
 
         # ========================================================
@@ -654,10 +682,11 @@ def main():
     wrist_mapper = (
         AVPWristRelativeMapper(
             translation_scale=(
-                args.translation_scale
+                avp_to_tcp_config.translation_scale
             ),
             R_tcp_from_avp_local=(
-                AVP_TO_TCP_LOCAL_ROTATION
+                avp_to_tcp_config
+                .avp_to_tcp_local_rotation
             ),
         )
     )
@@ -710,7 +739,7 @@ def main():
 
     print(
         "translation scale  :",
-        args.translation_scale,
+        avp_to_tcp_config.translation_scale,
     )
 
     print(
@@ -1376,10 +1405,12 @@ def main():
                         # be used after tracking reacquisition.
                         wrist_mapper = AVPWristRelativeMapper(
                             translation_scale=(
-                                args.translation_scale
+                                avp_to_tcp_config
+                                .translation_scale
                             ),
                             R_tcp_from_avp_local=(
-                                AVP_TO_TCP_LOCAL_ROTATION
+                                avp_to_tcp_config
+                                .avp_to_tcp_local_rotation
                             ),
                         )
                         wrist_calibrated = False

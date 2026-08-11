@@ -1,0 +1,14 @@
+# IDENTITY IS AN UNCALIBRATED DEVELOPMENT DEFAULT.
+# Do not treat this file as a measured Apple Vision Pro axis calibration.
+schema_version: 1
+source: identity uncalibrated development default
+translation_scale: 0.5
+
+# Vector convention:
+#   p_robot_tcp_local = A @ p_avp_wrist_local
+# Rotation convention:
+#   R_robot_tcp_local = A @ R_avp_wrist_local @ A.T
+avp_to_tcp_local_rotation:
+  - [1.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0]
+  - [0.0, 0.0, 1.0]
