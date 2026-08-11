@@ -37,7 +37,10 @@ message Hand {
 message HandUpdate {
   Hand left_hand = 1;
   Hand right_hand = 2;
-  Matrix4x4 Head = 3; 
+  Matrix4x4 Head = 3;
+  bool left_hand_tracked = 4;
+  bool right_hand_tracked = 5;
+  uint64 source_frame_sequence = 6;
 }
 
 // The hand tracking service definition.

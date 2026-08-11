@@ -297,7 +297,16 @@ class TrackingData:
             self._head = None
             self._left = None
             self._right = None
+            self._frame_sequence = None
+            self._received_monotonic_ns = None
+            self._left_hand_valid = False
+            self._right_hand_valid = False
             return
+
+        self._frame_sequence = data.get("frame_sequence")
+        self._received_monotonic_ns = data.get("received_monotonic_ns")
+        self._left_hand_valid = bool(data.get("left_hand_valid", False))
+        self._right_hand_valid = bool(data.get("right_hand_valid", False))
         
         # Extract head (1, 4, 4) -> (4, 4)
         head = data.get("head")
@@ -345,6 +354,26 @@ class TrackingData:
     def right(self) -> Optional[HandData]:
         """Right hand tracking data as (N, 4, 4) HandData array."""
         return self._right
+
+    @property
+    def frame_sequence(self) -> Optional[int]:
+        """Stable identity of the underlying source/transport tracking frame."""
+        return self._frame_sequence
+
+    @property
+    def received_monotonic_ns(self) -> Optional[int]:
+        """Local monotonic timestamp recorded when the packet was processed."""
+        return self._received_monotonic_ns
+
+    @property
+    def left_hand_valid(self) -> bool:
+        """Whether visionOS reported the left HandAnchor as tracked."""
+        return self._left_hand_valid
+
+    @property
+    def right_hand_valid(self) -> bool:
+        """Whether visionOS reported the right HandAnchor as tracked."""
+        return self._right_hand_valid
     
     @property
     def raw(self) -> Optional[Dict[str, Any]]:
@@ -922,6 +951,7 @@ class VisionProStreamer:
 
         self.recording = [] 
         self.latest = None 
+        self._transport_receive_sequence = 0
         self.axis_transform = YUP2ZUP
         self.webrtc_info = None  # Store WebRTC server info for HTTP endpoint
         self.info_server = None  # HTTP server for sharing WebRTC address
@@ -1062,6 +1092,8 @@ class VisionProStreamer:
             # Prefer WebRTC data once channel is active.
             return
 
+        received_monotonic_ns = time.monotonic_ns()
+
         try:
             # Base transforms in AVP coordinate frame
             left_wrist = self.axis_transform @ process_matrix(hand_update.left_hand.wristMatrix)
@@ -1104,6 +1136,8 @@ class VisionProStreamer:
                 "head": head,
                 "left_pinch_distance": get_pinch_distance(hand_update.left_hand.skeleton.jointMatrices),
                 "right_pinch_distance": get_pinch_distance(hand_update.right_hand.skeleton.jointMatrices),
+                "left_hand_valid": bool(getattr(hand_update, "left_hand_tracked", False)),
+                "right_hand_valid": bool(getattr(hand_update, "right_hand_tracked", False)),
             }
 
             transformations["right_wrist_roll"] = get_wrist_roll(transformations["right_wrist"])
@@ -1257,6 +1291,14 @@ class VisionProStreamer:
             return
 
         with self._latest_lock:
+            self._transport_receive_sequence += 1
+            source_sequence = int(getattr(hand_update, "source_frame_sequence", 0))
+            transformations["source_frame_sequence"] = source_sequence or None
+            transformations["transport_receive_sequence"] = self._transport_receive_sequence
+            transformations["frame_sequence"] = (
+                source_sequence if source_sequence > 0 else self._transport_receive_sequence
+            )
+            transformations["received_monotonic_ns"] = received_monotonic_ns
             if self.record:
                 self.recording.append(transformations)
             self.latest = transformations
@@ -5078,4 +5120,4 @@ if __name__ == "__main__":
     while True: 
 
         latest = streamer.get_latest()
-        print(latest) 
+        print(latest)

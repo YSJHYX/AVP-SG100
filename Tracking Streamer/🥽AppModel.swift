@@ -22,6 +22,9 @@ struct HandTrackingData {
     var leftSkeleton: Skeleton = Skeleton()
     var rightSkeleton: Skeleton = Skeleton()
     var Head: simd_float4x4 = simd_float4x4(1)
+    var leftHandTracked: Bool = false
+    var rightHandTracked: Bool = false
+    var sourceFrameSequence: UInt64 = 0
 }
 
 struct BenchmarkEvent {
@@ -640,7 +643,11 @@ extension 🥽AppModel {
     /// This allows querying predicted hand poses at future timestamps for lower perceived latency.
     /// The prediction offset is configurable via DataManager.shared.handPredictionOffset (0 to 0.5 seconds).
     private func processHandUpdatesPredictive() async {
-        guard handTracking.state == .running else { return }
+        guard handTracking.state == .running else {
+            DataManager.shared.latestHandTrackingData.leftHandTracked = false
+            DataManager.shared.latestHandTrackingData.rightHandTracked = false
+            return
+        }
         
         // Use pre-computed static joint types array for better performance
         let jointTypes = Self.jointTypes
@@ -650,6 +657,8 @@ extension 🥽AppModel {
         let predictionOffset = TimeInterval(DataManager.shared.handPredictionOffset)
         let targetTimestamp = CACurrentMediaTime() + predictionOffset
         let anchors = handTracking.handAnchors(at: targetTimestamp)
+        DataManager.shared.latestHandTrackingData.leftHandTracked = anchors.leftHand?.isTracked ?? false
+        DataManager.shared.latestHandTrackingData.rightHandTracked = anchors.rightHand?.isTracked ?? false
         
         // Process left hand
         if let leftAnchor = anchors.leftHand {
@@ -678,6 +687,9 @@ extension 🥽AppModel {
                 }
             }
         }
+
+        // Publish frame identity only after both hands in this snapshot are complete.
+        DataManager.shared.latestHandTrackingData.sourceFrameSequence &+= 1
     }
     
     /// Run predictive hand tracking at high frequency (replaces processHandUpdates)
@@ -696,6 +708,8 @@ extension 🥽AppModel {
             
             switch handAnchor.chirality {
             case .left:
+                DataManager.shared.latestHandTrackingData.sourceFrameSequence &+= 1
+                DataManager.shared.latestHandTrackingData.leftHandTracked = handAnchor.isTracked
                 if handAnchor.isTracked {
                     DataManager.shared.latestHandTrackingData.leftWrist = handAnchor.originFromAnchorTransform
                 }
@@ -708,6 +722,8 @@ extension 🥽AppModel {
                 }
 
             case .right:
+                DataManager.shared.latestHandTrackingData.sourceFrameSequence &+= 1
+                DataManager.shared.latestHandTrackingData.rightHandTracked = handAnchor.isTracked
                 if handAnchor.isTracked {
                     DataManager.shared.latestHandTrackingData.rightWrist = handAnchor.originFromAnchorTransform
                 }
@@ -755,11 +771,17 @@ func fill_handUpdate() -> Handtracking_HandUpdate {
     let leftWrist = DataManager.shared.latestHandTrackingData.leftWrist
     let rightWrist = DataManager.shared.latestHandTrackingData.rightWrist
     let Head = DataManager.shared.latestHandTrackingData.Head
+    let leftHandTracked = DataManager.shared.latestHandTrackingData.leftHandTracked
+    let rightHandTracked = DataManager.shared.latestHandTrackingData.rightHandTracked
+    let sourceFrameSequence = DataManager.shared.latestHandTrackingData.sourceFrameSequence
     
     
     handUpdate.leftHand.wristMatrix = createMatrix4x4(from: leftWrist)
     handUpdate.rightHand.wristMatrix = createMatrix4x4(from: rightWrist)
     handUpdate.head = createMatrix4x4(from: Head)
+    handUpdate.leftHandTracked = leftHandTracked
+    handUpdate.rightHandTracked = rightHandTracked
+    handUpdate.sourceFrameSequence = sourceFrameSequence
     
     // Fill left hand joints
     for (index, jointMatrix) in leftJoints.enumerated() {

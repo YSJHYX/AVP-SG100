@@ -16,13 +16,31 @@ from sg100_teleop.hand.canonical_hand import CanonicalHandState
 
 from sg100_teleop.control.joint_command_filter import JointCommandFilter
 
+from sg100_teleop.control.teleop_arming import (
+    TeleopArmingController,
+)
+
 from sg100_teleop.kinematics.rm65_ik import RM65IKSolver
 
 from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
 
+from sg100_teleop.sim.combined_robot_layout import (
+    ARM_DOF,
+    HAND_DOF,
+    SG100_JOINT_ORDER,
+    initialize_robot_state,
+    resolve_robot_layout,
+    write_robot_controls,
+)
+
 from sg100_teleop.tracking.avp_adapter import AVPHandAdapter
 
 from sg100_teleop.tracking.avp_source import get_hand_from_tracking
+
+from sg100_teleop.tracking.frame_gate import (
+    TrackingFrameGate,
+    TrackingFrameStatus,
+)
 
 from sg100_teleop.tracking.avp_wrist_mapper import AVPWristRelativeMapper, make_transform
 
@@ -40,38 +58,7 @@ DEFAULT_CALIBRATION = (
     "avp_right_calibration.yaml"
 )
 
-# ============================================================
-# Combined model layout
-# ============================================================
-ARM_DOF = 6
-HAND_DOF = 11
-TOTAL_DOF = 17
-
 TCP_BODY = "sg100_base_link"
-
-RM65_JOINT_ORDER = [
-    "joint_1",
-    "joint_2",
-    "joint_3",
-    "joint_4",
-    "joint_5",
-    "joint_6",
-]
-
-
-SG100_JOINT_ORDER = [
-    "thumb_j1",
-    "thumb_j2",
-    "thumb_j3",
-    "index_j1",
-    "index_j2",
-    "index_j3",
-    "middle_j1",
-    "middle_j2",
-    "little_j1",
-    "little_j2",
-    "little_j3",
-]
 
 # ============================================================
 # RM65 teleoperation start configuration
@@ -306,135 +293,10 @@ def main():
     )
 
 
-    # ========================================================
-    # Basic model-dimension validation
-    # ========================================================
-
-    if model.nq != TOTAL_DOF:
-        raise RuntimeError(
-            "Unexpected combined-model nq: "
-            f"expected {TOTAL_DOF}, "
-            f"got {model.nq}"
-        )
-
-    if model.nv != TOTAL_DOF:
-        raise RuntimeError(
-            "Unexpected combined-model nv: "
-            f"expected {TOTAL_DOF}, "
-            f"got {model.nv}"
-        )
-
-    if model.nu != TOTAL_DOF:
-        raise RuntimeError(
-            "Unexpected combined-model nu: "
-            f"expected {TOTAL_DOF}, "
-            f"got {model.nu}"
-        )
-
-
-    # ========================================================
-    # Expected joint layout
-    # ========================================================
-
-    EXPECTED_JOINT_ORDER = (
-        RM65_JOINT_ORDER
-        + SG100_JOINT_ORDER
-    )
-
-    if len(EXPECTED_JOINT_ORDER) != TOTAL_DOF:
-        raise RuntimeError(
-            "Internal joint-order definition "
-            "does not contain 17 joints."
-        )
-
-
-    # ========================================================
-    # Validate qpos / DoF ordering
-    # ========================================================
-
-    for expected_index, joint_name in enumerate(
-        EXPECTED_JOINT_ORDER
-    ):
-        joint_id = mujoco.mj_name2id(
-            model,
-            mujoco.mjtObj.mjOBJ_JOINT,
-            joint_name,
-        )
-
-        if joint_id < 0:
-            raise RuntimeError(
-                "Required joint not found in MuJoCo model: "
-                f"{joint_name}"
-            )
-
-        qpos_index = int(
-            model.jnt_qposadr[
-                joint_id
-            ]
-        )
-
-        dof_index = int(
-            model.jnt_dofadr[
-                joint_id
-            ]
-        )
-
-        if qpos_index != expected_index:
-            raise RuntimeError(
-                "MuJoCo qpos joint-order mismatch.\n"
-                f"Joint: {joint_name}\n"
-                f"Expected qpos index: "
-                f"{expected_index}\n"
-                f"Actual qpos index: "
-                f"{qpos_index}"
-            )
-
-        if dof_index != expected_index:
-            raise RuntimeError(
-                "MuJoCo DoF joint-order mismatch.\n"
-                f"Joint: {joint_name}\n"
-                f"Expected DoF index: "
-                f"{expected_index}\n"
-                f"Actual DoF index: "
-                f"{dof_index}"
-            )
-
-
-    # ========================================================
-    # Validate actuator / ctrl ordering
-    # ========================================================
-
-    for expected_index, joint_name in enumerate(
-        EXPECTED_JOINT_ORDER
-    ):
-        joint_id = mujoco.mj_name2id(
-            model,
-            mujoco.mjtObj.mjOBJ_JOINT,
-            joint_name,
-        )
-
-        actuator_joint_id = int(
-            model.actuator_trnid[
-                expected_index,
-                0,
-            ]
-        )
-
-        if actuator_joint_id != joint_id:
-            actual_joint_name = (
-                mujoco.mj_id2name(
-                    model,
-                    mujoco.mjtObj.mjOBJ_JOINT,
-                    actuator_joint_id,
-                )
-            )
-
-            raise RuntimeError(
-                "MuJoCo actuator-order mismatch.\n"
-                f"ctrl[{expected_index}] "
-                f"should drive {joint_name}, "
-                f"but drives {actual_joint_name}"
-            )
+    # Resolve the named robot layout instead of assuming that the
+    # complete scene contains exactly 17 qpos / DoFs. Extra passive
+    # scene state (for example a bottle freejoint) is allowed.
+    robot_layout = resolve_robot_layout(model)
 
 
     # ========================================================
@@ -498,21 +360,12 @@ def main():
     # Initialize simulation state
     # ========================================================
 
-    data.qpos[:] = 0.0
-    data.qvel[:] = 0.0
-    data.ctrl[:] = 0.0
-
-    data.qpos[
-        :ARM_DOF
-    ] = RM65_TELEOP_READY_Q
-
-    data.ctrl[
-        :ARM_DOF
-    ] = RM65_TELEOP_READY_Q
-
-    mujoco.mj_forward(
+    initialize_robot_state(
         model,
         data,
+        robot_layout,
+        RM65_TELEOP_READY_Q,
+        np.zeros(HAND_DOF, dtype=np.float64),
     )
 
 
@@ -552,12 +405,12 @@ def main():
 
     print(
         "arm qpos          :",
-        "[0:6]",
+        robot_layout.arm_qpos_indices.tolist(),
     )
 
     print(
         "hand qpos         :",
-        "[6:17]",
+        robot_layout.hand_qpos_indices.tolist(),
     )
         # ========================================================
     # SG100 hand retargeting pipeline
@@ -579,7 +432,7 @@ def main():
     # ========================================================
 
     if (
-        retargeter.joint_order
+        tuple(retargeter.joint_order)
         != SG100_JOINT_ORDER
     ):
         raise RuntimeError(
@@ -670,11 +523,11 @@ def main():
     # ========================================================
 
     data.qpos[
-        ARM_DOF:
+        robot_layout.hand_qpos_indices
     ] = q_hand_goal
 
     data.ctrl[
-        ARM_DOF:
+        robot_layout.hand_actuator_ids
     ] = q_hand_goal
 
     mujoco.mj_forward(
@@ -815,6 +668,13 @@ def main():
 
     wrist_calibrated = False
 
+    teleop_arming = TeleopArmingController()
+
+    T_avp_wrist_0 = None
+    T_tcp_runtime_0 = None
+    q_hand0_runtime = None
+    has_completed_calibration = False
+
     # ========================================================
     # IK diagnostics
     # ========================================================
@@ -856,6 +716,11 @@ def main():
     print(
         "wrist calibrated   :",
         wrist_calibrated,
+    )
+
+    print(
+        "teleop state       :",
+        teleop_arming.state.value,
     )
 
     print(
@@ -932,10 +797,6 @@ def main():
         -float("inf")
     )
 
-    last_valid_tracking = (
-        -float("inf")
-    )
-
     last_stream = (
         -float("inf")
     )
@@ -950,6 +811,11 @@ def main():
     # ========================================================
 
     tracking_lost_printed = False
+
+    tracking_gate = TrackingFrameGate(
+        max_frame_age_seconds=args.tracking_timeout,
+        tracking_timeout_seconds=args.tracking_timeout,
+    )
 
 
     # ========================================================
@@ -995,6 +861,35 @@ def main():
         "Waiting for valid right-hand tracking..."
     )
 
+    def print_teleop_state(message: str) -> None:
+        print()
+        print(
+            "TELEOP STATE:",
+            teleop_arming.state.value,
+        )
+        print(message)
+
+    def request_neutral_calibration() -> bool:
+        requested = (
+            teleop_arming.request_neutral_calibration()
+        )
+        if requested:
+            print_teleop_state(
+                "Neutral calibration requested; waiting for "
+                "the next NEW + VALID right-hand frame."
+            )
+        else:
+            print()
+            print(
+                "Neutral calibration request ignored in state:",
+                teleop_arming.state.value,
+            )
+        return requested
+
+    def on_viewer_key(keycode: int) -> None:
+        if keycode in (ord("C"), ord("c")):
+            request_neutral_calibration()
+
         # ========================================================
     # Main runtime loop
     # ========================================================
@@ -1004,6 +899,7 @@ def main():
             mujoco.viewer.launch_passive(
                 model,
                 data,
+                key_callback=on_viewer_key,
             )
             as viewer
         ):
@@ -1016,6 +912,10 @@ def main():
 
                 now = (
                     time.perf_counter()
+                )
+
+                now_monotonic_ns = (
+                    time.monotonic_ns()
                 )
 
                 wall_dt = (
@@ -1063,12 +963,28 @@ def main():
                         streamer.get_latest()
                     )
 
+                    frame_status = tracking_gate.inspect(
+                        tracking,
+                        now_monotonic_ns,
+                    )
+
                     hand = (
                         get_hand_from_tracking(
                             tracking,
                             side="right",
                         )
+                        if frame_status
+                        == TrackingFrameStatus.CANDIDATE
+                        else None
                     )
+
+                    if (
+                        frame_status
+                        == TrackingFrameStatus.CANDIDATE
+                        and hand is None
+                    ):
+                        tracking_gate.reject_malformed()
+                        rejected_tracking_count += 1
 
 
                     # ---------------------------------------------
@@ -1166,75 +1082,121 @@ def main():
                                 )
 
 
+                            frame_sequence = int(
+                                tracking.frame_sequence
+                            )
+
+                            received_monotonic_ns = int(
+                                tracking.received_monotonic_ns
+                            )
+
+                            if teleop_arming.observe_valid_frame(
+                                frame_sequence
+                            ):
+                                print_teleop_state(
+                                    "Valid right-hand tracking available. "
+                                    "Hold a neutral pose and press C to arm."
+                                )
+
+                            # A parseable NEW + VALID frame refreshes tracking
+                            # independently of whether teleop is armed.
+                            tracking_gate.accept(
+                                now_monotonic_ns
+                            )
+                            valid_tracking_count += 1
+
+                            calibration_frame = (
+                                teleop_arming.should_calibrate(
+                                    frame_sequence,
+                                    received_monotonic_ns,
+                                )
+                            )
+
                             # =====================================
-                            # First valid wrist frame:
-                            #
-                            # establish relative teleoperation
-                            # reference.
-                            #
-                            # IMPORTANT:
-                            # no arm IK movement is generated from
-                            # this first frame.
+                            # Explicit neutral calibration frame
                             # =====================================
 
-                            if not wrist_calibrated:
+                            if calibration_frame:
+                                if not has_completed_calibration:
+                                    # Startup calibration anchors the arm at
+                                    # its verified teleop-ready TCP pose.
+                                    T_tcp_anchor = T_tcp0.copy()
+                                else:
+                                    # Recalibration holds the current robot
+                                    # pose instead of returning to startup.
+                                    T_tcp_anchor = make_transform(
+                                        data.xpos[tcp_body_id].copy(),
+                                        data.xmat[tcp_body_id]
+                                        .reshape(3, 3)
+                                        .copy(),
+                                    )
 
                                 wrist_mapper.calibrate(
                                     T_avp_wrist,
-                                    T_tcp0,
+                                    T_tcp_anchor,
+                                )
+
+                                T_avp_wrist_0 = (
+                                    T_avp_wrist.copy()
+                                )
+                                T_tcp_runtime_0 = (
+                                    T_tcp_anchor.copy()
+                                )
+                                q_hand0_runtime = (
+                                    q_hand_candidate.copy()
+                                )
+
+                                q_hand_goal = (
+                                    q_hand0_runtime.copy()
+                                )
+                                q_hand_cmd = (
+                                    q_hand0_runtime.copy()
+                                )
+                                hand_command_filter.reset(
+                                    q_hand0_runtime
                                 )
 
                                 wrist_calibrated = True
+                                has_completed_calibration = True
+                                teleop_arming.complete_calibration()
 
-                                print()
-                                print(
-                                    "AVP wrist reference "
-                                    "calibrated."
+                                print_teleop_state(
+                                    "Neutral wrist and runtime hand anchors "
+                                    "captured from the same frame."
                                 )
-
                                 print(
-                                    "AVP wrist initial pos :",
+                                    "frame sequence       :",
+                                    frame_sequence,
+                                )
+                                print(
+                                    "AVP wrist anchor pos :",
                                     np.round(
-                                        T_avp_wrist[
-                                            :3,
-                                            3,
-                                        ],
+                                        T_avp_wrist_0[:3, 3],
                                         6,
                                     ),
                                 )
-
                                 print(
-                                    "Robot TCP anchor pos  :",
+                                    "Robot TCP anchor pos :",
                                     np.round(
-                                        p_tcp0,
+                                        T_tcp_runtime_0[:3, 3],
                                         6,
                                     ),
                                 )
-
                                 print(
-                                    "RM65 remains at "
-                                    "teleop-ready pose."
+                                    "q_hand0_runtime      :",
+                                    np.round(
+                                        q_hand0_runtime,
+                                        4,
+                                    ),
                                 )
 
-
                             # =====================================
-                            # Subsequent frames:
-                            #
-                            # AVP wrist
-                            #   ↓
-                            # relative mapper
-                            #   ↓
-                            # TCP target
-                            #   ↓
-                            # RM65 IK
+                            # Armed wrist + hand teleoperation
                             # =====================================
 
-                            else:
-
-                                T_tcp_target = (
-                                    wrist_mapper.map(
-                                        T_avp_wrist
-                                    )
+                            elif teleop_arming.active:
+                                T_tcp_target = wrist_mapper.map(
+                                    T_avp_wrist
                                 )
 
                                 p_target = (
@@ -1341,28 +1303,11 @@ def main():
                                         )
 
 
-                            # =====================================
-                            # Accept SG100 target
-                            #
-                            # This happens only after this AVP frame
-                            # has passed both hand and wrist input
-                            # validation.
-                            # =====================================
-
-                            q_hand_goal = (
-                                q_hand_candidate.copy()
-                            )
-
-
-                            # =====================================
-                            # Mark the sensory frame as valid
-                            # =====================================
-
-                            last_valid_tracking = (
-                                now
-                            )
-
-                            valid_tracking_count += 1
+                                # The hand goal comes from the same sensory
+                                # frame used by the wrist/arm branch above.
+                                q_hand_goal = (
+                                    q_hand_candidate.copy()
+                                )
 
 
                             # -------------------------------------
@@ -1392,6 +1337,7 @@ def main():
                             np.linalg.LinAlgError,
                         ) as exc:
 
+                            tracking_gate.reject_malformed()
                             rejected_tracking_count += 1
 
                             if args.verbose:
@@ -1419,32 +1365,46 @@ def main():
                 #     HOLD the last valid robot targets.
                 # =================================================
 
-                if valid_tracking_count > 0:
+                if (
+                    tracking_gate.tracking_timed_out(
+                        now_monotonic_ns
+                    )
+                    and not tracking_lost_printed
+                ):
+                    if teleop_arming.disarm_for_tracking_timeout():
+                        # Drop the mapper object so the old wrist anchor cannot
+                        # be used after tracking reacquisition.
+                        wrist_mapper = AVPWristRelativeMapper(
+                            translation_scale=(
+                                args.translation_scale
+                            ),
+                            R_tcp_from_avp_local=(
+                                AVP_TO_TCP_LOCAL_ROTATION
+                            ),
+                        )
+                        wrist_calibrated = False
+                        T_avp_wrist_0 = None
+                        T_tcp_runtime_0 = None
+                        q_hand0_runtime = None
+                        print_teleop_state(
+                            "Tracking timeout invalidated the wrist anchor. "
+                            "Reacquisition requires another C confirmation."
+                        )
 
-                    tracking_age = (
-                        now
-                        - last_valid_tracking
+                    print()
+                    print(
+                        "WARNING: right-hand tracking "
+                        "lost."
                     )
 
-                    if (
-                        tracking_age
-                        > args.tracking_timeout
-                        and not tracking_lost_printed
-                    ):
-                        print()
-                        print(
-                            "WARNING: right-hand tracking "
-                            "lost."
-                        )
+                    print(
+                        "Holding last RM65 and "
+                        "SG100 targets."
+                    )
 
-                        print(
-                            "Holding last RM65 and "
-                            "SG100 targets."
-                        )
-
-                        tracking_lost_printed = (
-                            True
-                        )
+                    tracking_lost_printed = (
+                        True
+                    )
 
 
                 # =================================================
@@ -1471,11 +1431,6 @@ def main():
                     # in this first integrated runner.
                     # ---------------------------------------------
 
-                    data.ctrl[
-                        :ARM_DOF
-                    ] = q_arm_goal
-
-
                     # ---------------------------------------------
                     # SG100 command
                     #
@@ -1493,9 +1448,12 @@ def main():
                         )
                     )
 
-                    data.ctrl[
-                        ARM_DOF:
-                    ] = q_hand_cmd
+                    write_robot_controls(
+                        data,
+                        robot_layout,
+                        q_arm_goal,
+                        q_hand_cmd,
+                    )
 
 
                     # ---------------------------------------------
@@ -1566,8 +1524,23 @@ def main():
                     )
 
                     print(
+                        "duplicate frames:",
+                        tracking_gate.duplicate_frames,
+                    )
+
+                    print(
+                        "invalid frames  :",
+                        tracking_gate.invalid_frames,
+                    )
+
+                    print(
                         "wrist calibrated:",
                         wrist_calibrated,
+                    )
+
+                    print(
+                        "teleop state     :",
+                        teleop_arming.state.value,
                     )
 
                     print(
@@ -1587,7 +1560,7 @@ def main():
                         "arm qpos        :",
                         np.round(
                             data.qpos[
-                                :ARM_DOF
+                                robot_layout.arm_qpos_indices
                             ],
                             3,
                         ),
@@ -1613,7 +1586,7 @@ def main():
                         "hand qpos       :",
                         np.round(
                             data.qpos[
-                                ARM_DOF:
+                                robot_layout.hand_qpos_indices
                             ],
                             3,
                         ),
@@ -1710,6 +1683,31 @@ def main():
     )
 
     print(
+        "duplicate frames  :",
+        tracking_gate.duplicate_frames,
+    )
+
+    print(
+        "invalid frames    :",
+        tracking_gate.invalid_frames,
+    )
+
+    print(
+        "malformed frames  :",
+        tracking_gate.malformed_frames,
+    )
+
+    print(
+        "stale frames      :",
+        tracking_gate.stale_frames,
+    )
+
+    print(
+        "missing metadata  :",
+        tracking_gate.missing_metadata_frames,
+    )
+
+    print(
         "IK failures       :",
         ik_failure_count,
     )
@@ -1717,6 +1715,20 @@ def main():
     print(
         "wrist calibrated  :",
         wrist_calibrated,
+    )
+
+    print(
+        "teleop state      :",
+        teleop_arming.state.value,
+    )
+
+    print(
+        "q_hand0_runtime   :",
+        (
+            "unset"
+            if q_hand0_runtime is None
+            else np.round(q_hand0_runtime, 4)
+        ),
     )
 
     print(

@@ -143,6 +143,21 @@ struct Handtracking_HandUpdate {
   /// Clears the value of `head`. Subsequent reads from it will return its default value.
   mutating func clearHead() {_uniqueStorage()._head = nil}
 
+  var leftHandTracked: Bool {
+    get {return _storage._leftHandTracked}
+    set {_uniqueStorage()._leftHandTracked = newValue}
+  }
+
+  var rightHandTracked: Bool {
+    get {return _storage._rightHandTracked}
+    set {_uniqueStorage()._rightHandTracked = newValue}
+  }
+
+  var sourceFrameSequence: UInt64 {
+    get {return _storage._sourceFrameSequence}
+    set {_uniqueStorage()._sourceFrameSequence = newValue}
+  }
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -411,12 +426,18 @@ extension Handtracking_HandUpdate: SwiftProtobuf.Message, SwiftProtobuf._Message
     1: .standard(proto: "left_hand"),
     2: .standard(proto: "right_hand"),
     3: .same(proto: "Head"),
+    4: .standard(proto: "left_hand_tracked"),
+    5: .standard(proto: "right_hand_tracked"),
+    6: .standard(proto: "source_frame_sequence"),
   ]
 
   fileprivate class _StorageClass {
     var _leftHand: Handtracking_Hand? = nil
     var _rightHand: Handtracking_Hand? = nil
     var _head: Handtracking_Matrix4x4? = nil
+    var _leftHandTracked: Bool = false
+    var _rightHandTracked: Bool = false
+    var _sourceFrameSequence: UInt64 = 0
 
     static let defaultInstance = _StorageClass()
 
@@ -426,6 +447,9 @@ extension Handtracking_HandUpdate: SwiftProtobuf.Message, SwiftProtobuf._Message
       _leftHand = source._leftHand
       _rightHand = source._rightHand
       _head = source._head
+      _leftHandTracked = source._leftHandTracked
+      _rightHandTracked = source._rightHandTracked
+      _sourceFrameSequence = source._sourceFrameSequence
     }
   }
 
@@ -447,6 +471,9 @@ extension Handtracking_HandUpdate: SwiftProtobuf.Message, SwiftProtobuf._Message
         case 1: try { try decoder.decodeSingularMessageField(value: &_storage._leftHand) }()
         case 2: try { try decoder.decodeSingularMessageField(value: &_storage._rightHand) }()
         case 3: try { try decoder.decodeSingularMessageField(value: &_storage._head) }()
+        case 4: try { try decoder.decodeSingularBoolField(value: &_storage._leftHandTracked) }()
+        case 5: try { try decoder.decodeSingularBoolField(value: &_storage._rightHandTracked) }()
+        case 6: try { try decoder.decodeSingularUInt64Field(value: &_storage._sourceFrameSequence) }()
         default: break
         }
       }
@@ -468,6 +495,15 @@ extension Handtracking_HandUpdate: SwiftProtobuf.Message, SwiftProtobuf._Message
       try { if let v = _storage._head {
         try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
       } }()
+      if _storage._leftHandTracked {
+        try visitor.visitSingularBoolField(value: _storage._leftHandTracked, fieldNumber: 4)
+      }
+      if _storage._rightHandTracked {
+        try visitor.visitSingularBoolField(value: _storage._rightHandTracked, fieldNumber: 5)
+      }
+      if _storage._sourceFrameSequence != 0 {
+        try visitor.visitSingularUInt64Field(value: _storage._sourceFrameSequence, fieldNumber: 6)
+      }
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -480,6 +516,9 @@ extension Handtracking_HandUpdate: SwiftProtobuf.Message, SwiftProtobuf._Message
         if _storage._leftHand != rhs_storage._leftHand {return false}
         if _storage._rightHand != rhs_storage._rightHand {return false}
         if _storage._head != rhs_storage._head {return false}
+        if _storage._leftHandTracked != rhs_storage._leftHandTracked {return false}
+        if _storage._rightHandTracked != rhs_storage._rightHandTracked {return false}
+        if _storage._sourceFrameSequence != rhs_storage._sourceFrameSequence {return false}
         return true
       }
       if !storagesAreEqual {return false}
