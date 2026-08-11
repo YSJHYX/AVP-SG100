@@ -1,0 +1,195 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="RM65-SG100-grasp-robot">
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 0" />
+  <compiler angle="radian" />
+  <asset>
+    <mesh name="base_link" content_type="model/stl" file="../../RM65-B/meshes/base_link.STL" />
+    <mesh name="link_1" content_type="model/stl" file="../../RM65-B/meshes/link_1.STL" />
+    <mesh name="link_2" content_type="model/stl" file="../../RM65-B/meshes/link_2.STL" />
+    <mesh name="link_3" content_type="model/stl" file="../../RM65-B/meshes/link_3.STL" />
+    <mesh name="link_4" content_type="model/stl" file="../../RM65-B/meshes/link_4.STL" />
+    <mesh name="link_5" content_type="model/stl" file="../../RM65-B/meshes/link_5.STL" />
+    <mesh name="link_6" content_type="model/stl" file="../../RM65-B/meshes/link_6.STL" />
+    <mesh name="sg100_base_link" content_type="model/stl" file="../../sg100/meshes_mujoco/base_link.STL" />
+    <mesh name="sg100_thumb_link1" content_type="model/stl" file="../../sg100/meshes_mujoco/thumb_link1.STL" />
+    <mesh name="sg100_thumb_link2" content_type="model/stl" file="../../sg100/meshes_mujoco/thumb_link2.STL" />
+    <mesh name="sg100_thumb_link3" content_type="model/stl" file="../../sg100/meshes_mujoco/thumb_link3.STL" />
+    <mesh name="sg100_index_link1" content_type="model/stl" file="../../sg100/meshes_mujoco/index_link1.STL" />
+    <mesh name="sg100_index_link2" content_type="model/stl" file="../../sg100/meshes_mujoco/index_link2.STL" />
+    <mesh name="sg100_index_link3" content_type="model/stl" file="../../sg100/meshes_mujoco/index_link3.STL" />
+    <mesh name="sg100_middle_link1" content_type="model/stl" file="../../sg100/meshes_mujoco/middle_link1.STL" />
+    <mesh name="sg100_middle_link2" content_type="model/stl" file="../../sg100/meshes_mujoco/middle_link2.STL" />
+    <mesh name="sg100_little_link1" content_type="model/stl" file="../../sg100/meshes_mujoco/little_link1.STL" />
+    <mesh name="sg100_little_llink2" content_type="model/stl" file="../../sg100/meshes_mujoco/little_llink2.STL" />
+    <mesh name="sg100_little_linik3" content_type="model/stl" file="../../sg100/meshes_mujoco/little_linik3.STL" />
+  </asset>
+  <worldbody>
+    <geom type="mesh" rgba="1 1 1 1" mesh="base_link" name="rm65_visual_0" group="1" contype="0" conaffinity="0" />
+    <body name="link_1" pos="0 0 0.2405">
+      <inertial pos="0.000941 0.007803 -0.10744" quat="0.997511 -0.0583785 0.00606547 -0.0390687" mass="1.51" diaginertia="0.00266445 0.00233888 0.00165429" />
+      <joint name="joint_1" pos="0 0 0" axis="0 0 1" range="-3.106 3.106" actuatorfrcrange="-60 60" damping="0.1" armature="0.01" />
+      <geom type="mesh" rgba="1 1 1 1" mesh="link_1" name="rm65_visual_1" group="1" contype="0" conaffinity="0" />
+      <body name="link_2" quat="0.499998 0.5 -0.5 0.500002">
+        <inertial pos="0.183722 0.000103 -0.001665" quat="0.457963 0.540039 0.527633 0.469288" mass="1.653" diaginertia="0.0147139 0.0144956 0.00145099" />
+        <joint name="joint_2" pos="0 0 0" axis="0 0 1" range="-2.2689 2.2689" actuatorfrcrange="-60 60" damping="0.1" armature="0.01" />
+        <geom type="mesh" rgba="1 1 1 1" mesh="link_2" name="rm65_visual_2" group="1" contype="0" conaffinity="0" />
+        <body name="link_3" pos="0.256 0 0" quat="0.707105 0 0 0.707108">
+          <inertial pos="2.9e-05 -0.090105 0.004039" quat="0.440332 0.546035 -0.554361 0.447925" mass="0.726" diaginertia="0.00137906 0.00135087 0.000312565" />
+          <joint name="joint_3" pos="0 0 0" axis="0 0 1" range="-2.356 2.356" actuatorfrcrange="-30 30" damping="0.1" armature="0.01" />
+          <geom type="mesh" rgba="1 1 1 1" mesh="link_3" name="rm65_visual_3" group="1" contype="0" conaffinity="0" />
+          <body name="link_4" pos="0 -0.21 0" quat="0.707105 0.707108 0 0">
+            <inertial pos="7e-06 -0.009486 -0.008041" quat="0.997996 0.0631732 0.00130193 -0.00341789" mass="0.671" diaginertia="0.000690229 0.000554914 0.000423747" />
+            <joint name="joint_4" pos="0 0 0" axis="0 0 1" range="-3.106 3.106" actuatorfrcrange="-10 10" damping="0.1" armature="0.01" />
+            <geom type="mesh" rgba="1 1 1 1" mesh="link_4" name="rm65_visual_4" group="1" contype="0" conaffinity="0" />
+            <body name="link_5" quat="0.707105 -0.707108 0 0">
+              <inertial pos="3.2e-05 -0.083769 0.002326" quat="0.438163 0.534713 -0.558183 0.458833" mass="0.647" diaginertia="0.000843948 0.000834034 0.000259551" />
+              <joint name="joint_5" pos="0 0 0" axis="0 0 1" range="-2.234 2.234" actuatorfrcrange="-10 10" damping="0.1" armature="0.01" />
+              <geom type="mesh" rgba="1 1 1 1" mesh="link_5" name="rm65_visual_5" group="1" contype="0" conaffinity="0" />
+              <body name="link_6" pos="0 -0.144 0" quat="0.707105 0.707108 0 0">
+                <inertial pos="-0.000569 0.00029 -0.010569" quat="0.000385102 0.70742 5.61484e-05 0.706793" mass="0.104" diaginertia="5.52e-05 3.604e-05 3.043e-05" />
+                <joint name="joint_6" pos="0 0 0" axis="0 0 1" range="-6.28 6.28" actuatorfrcrange="-10 10" damping="0.1" armature="0.01" />
+                <geom type="mesh" rgba="1 1 1 1" mesh="link_6" name="rm65_visual_6" group="1" contype="0" conaffinity="0" />
+                <body name="sg100_base_link" pos="0 0 0" quat="1 0 0 0">
+                  <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_base_link" name="sg100_base_link_visual" group="1" contype="0" conaffinity="0" mass="0" />
+                  <site
+                    name="sg100_grasp_reference"
+                    type="sphere"
+                    pos="0.06775880 -0.04233753 0.16516003"
+                    size="0.006"
+                    rgba="1 0 1 1"
+                  />
+                  <body name="thumb_link1" pos="0.0315 -0.0318581 0.0384">
+                    <inertial pos="0.0120772 0.00239257 0.0136728" quat="0.896107 -0.329025 0.284087 -0.0896036" mass="0.0113388" diaginertia="1.6811e-06 1.39718e-06 7.75511e-07" />
+                    <joint name="thumb_j1" pos="0 0 0" axis="0 0 -1" range="0 2.182" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_thumb_link1" name="thumb_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="thumb_link2" pos="0.024 0.0155 0.0176" quat="0.707105 0.707108 0 0">
+                      <inertial pos="0.0216506 0.0124999 0.0140779" quat="0.353533 0.353574 0.612361 0.612384" mass="0.0389603" diaginertia="5.64004e-06 4.9655e-06 2.66961e-06" />
+                      <joint name="thumb_j2" pos="0 0 0" axis="0 0 1" range="-2.61 0" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_thumb_link2" name="thumb_link2_visual" group="1" contype="0" conaffinity="0" />
+                      <body name="thumb_link3" pos="0.0433013 0.025 0.001">
+                        <inertial pos="0.021338 0.0152598 0.014052" quat="0.230056 0.345925 0.588117 0.693923" mass="0.03917" diaginertia="4.86657e-06 4.6047e-06 2.51865e-06" />
+                        <joint name="thumb_j3" pos="0 0 0" axis="0 0 1" range="-1.048 1.57" damping="0.002" armature="0.001" />
+                        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_thumb_link3" name="thumb_link3_visual" group="1" contype="0" conaffinity="0" />
+                        <geom
+                          name="thumb_link3_collision"
+                          type="capsule"
+                          fromto="
+                            0.00180389 -0.00043058 0.02101590
+                            0.03740222  0.02736901 0.01309300
+                          "
+                          size="0.010"
+                          contype="1"
+                          conaffinity="2"
+                          group="3"
+                          rgba="0 1 1 0.35"
+                        />
+                      </body>
+                    </body>
+                  </body>
+                  <body name="index_link1" pos="0.0315 -0.020758 0.086" quat="0.707105 0.707108 0 0">
+                    <inertial pos="-0.00192286 0.0160766 0.0160014" quat="0.270343 0.788631 -0.399873 0.380891" mass="0.0164783" diaginertia="2.89253e-06 2.46445e-06 1.31555e-06" />
+                    <joint name="index_j1" pos="0 0 0" axis="0 0 -1" range="0 1.57" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_index_link1" name="index_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="index_link2" pos="-0.0155 0.024 0.0281" quat="0.707107 0 0.707107 0">
+                      <inertial pos="1.07915e-07 0.025 0.0140779" quat="0.707107 0.707107 2.37384e-05 -2.37384e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06" />
+                      <joint name="index_j2" pos="0 0 0" axis="0 0 1" range="0 2.18" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_index_link2" name="index_link2_visual" group="1" contype="0" conaffinity="0" />
+                      <body name="index_link3" pos="0 0.05 0.001">
+                        <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551103" mass="0.0391696" diaginertia="4.86645e-06 4.6046e-06 2.51862e-06" />
+                        <joint name="index_j3" pos="0 0 0" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001" />
+                        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_index_link3" name="index_link3_visual" group="1" contype="0" conaffinity="0" />
+                        <geom
+                          name="index_link3_collision"
+                          type="capsule"
+                          fromto="
+                            0.00127144  0.00134666 0.02101985
+                          -0.00499901  0.04607576 0.01309114
+                          "
+                          size="0.010"
+                          contype="1"
+                          conaffinity="2"
+                          group="3"
+                          rgba="0 1 1 0.35"
+                        />
+                      </body>
+                    </body>
+                  </body>
+                  <body name="middle_link1" pos="-0.018 -0.048858 0.1135" quat="0.499998 0.5 0.500002 0.5">
+                    <inertial pos="1.08016e-07 0.025 0.0140779" quat="0.707107 0.707107 2.38073e-05 -2.38073e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06" />
+                    <joint name="middle_j1" pos="0 0 0" axis="0 0 -1" range="-2.18 0" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_middle_link1" name="middle_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="middle_link2" pos="0 0.05 0.001">
+                      <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551105" mass="0.0391696" diaginertia="4.86646e-06 4.6046e-06 2.51862e-06" />
+                      <joint name="middle_j2" pos="0 0 0" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_middle_link2" name="middle_link2_visual" group="1" contype="0" conaffinity="0" />
+                      <geom
+                        name="middle_link2_collision"
+                        type="capsule"
+                        fromto="
+                          0.00127289  0.00134706 0.02102113
+                        -0.00500004  0.04607541 0.01309079
+                        "
+                        size="0.010"
+                        contype="1"
+                        conaffinity="2"
+                        group="3"
+                        rgba="0 1 1 0.35"
+                      />
+                    </body>
+                  </body>
+                  <body name="little_link1" pos="-0.0315 -0.0207581 0.08" quat="0.707107 0.707107 0 0">
+                    <inertial pos="-0.00664761 0.0164128 0.0160729" quat="0.247593 0.789347 -0.391604 0.402834" mass="0.0161726" diaginertia="2.83334e-06 2.43857e-06 1.28303e-06" />
+                    <joint name="little_j1" pos="0 0 0" axis="0 0 -1" range="-3.14 0" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_little_link1" name="little_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="little_llink2" pos="-0.0205 0.024 0.0281" quat="0.707107 0 0.707107 0">
+                      <inertial pos="1.08016e-07 0.025 0.0140779" quat="0.707107 0.707107 2.38073e-05 -2.38073e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06" />
+                      <joint name="little_j2" pos="0 0 0" axis="0 0 1" range="0 2.18" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_little_llink2" name="little_llink2_visual" group="1" contype="0" conaffinity="0" />
+                      <body name="little_linik3" pos="0 0.05 0.001">
+                        <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.005511" mass="0.0391696" diaginertia="4.86646e-06 4.6046e-06 2.51862e-06" />
+                        <joint name="little_j3" pos="0 0 0" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001" />
+                        <geom type="mesh" rgba="0.752941 0.752941 0.752941 1" mesh="sg100_little_linik3" name="little_linik3_visual" group="1" contype="0" conaffinity="0" />
+                        <geom
+                          name="little_linik3_collision"
+                          type="capsule"
+                          fromto="
+                            0.00127238  0.00134698 0.02102116
+                          -0.00499969  0.04607548 0.01309076
+                          "
+                          size="0.010"
+                          contype="1"
+                          conaffinity="2"
+                          group="3"
+                          rgba="0 1 1 0.35"
+                        />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="joint_1_pos" joint="joint_1" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_2_pos" joint="joint_2" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_3_pos" joint="joint_3" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_4_pos" joint="joint_4" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_5_pos" joint="joint_5" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_6_pos" joint="joint_6" kp="50" dampratio="1" inheritrange="1" />
+    <position name="thumb_j1_pos" joint="thumb_j1" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="thumb_j2_pos" joint="thumb_j2" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="thumb_j3_pos" joint="thumb_j3" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="index_j1_pos" joint="index_j1" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="index_j2_pos" joint="index_j2" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="index_j3_pos" joint="index_j3" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="middle_j1_pos" joint="middle_j1" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="middle_j2_pos" joint="middle_j2" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="little_j1_pos" joint="little_j1" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="little_j2_pos" joint="little_j2" kp="2.0" dampratio="1.0" inheritrange="1" />
+    <position name="little_j3_pos" joint="little_j3" kp="2.0" dampratio="1.0" inheritrange="1" />
+  </actuator>
+</mujoco>
