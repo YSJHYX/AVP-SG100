@@ -2,11 +2,19 @@
 
 本子项目位于 `sg100_teleop/`,在 VisionProTeleop 仓库内。
 
-当前目标是:
+当前目标是完整验证以下 tabletop teleoperation 链路:
 
-**验证 Apple Vision Pro → RM65 + SG100 MuJoCo 仿真臂手遥操作链路。**
+```text
+Apple Vision Pro
+    ↓ real-time wrist + hand tracking
+RM65 TCP translation/orientation + SG100 natural finger motion
+    ↓
+MuJoCo robot-only / tabletop scene
+    ↓
+manual approach, grasp and object manipulation
+```
 
-涵盖:AVP 手部 tracking、SG100 语义重定向、AVP wrist relative-pose mapping、RM65 Cartesian IK 以及 17DoF 联合控制。
+目标交互包括 open、fist、pinch、opposition、arm-hand simultaneous teleoperation 和人工接近桌面物体。当前项目验证的是仿真遥操作基础链路,不是 MoveIt planner、VLA data collection pipeline、Manus 正式数据采集、π0.5 training 或 autonomous scripted grasp controller。
 
 本 README 面向新加入项目、但未参与之前 SG100 URDF / MuJoCo / retargeting / RM65 IK 调试的工程人员。所有命令、路径、参数、默认值、joint 顺序、验证状态均以当前实际源码为准。
 
@@ -23,22 +31,26 @@
 - ✅ 已实现并验证:RM65 teleop TCP 定义、FK、analytical Jacobian、DLS IK
 - ✅ 已实现并验证:AVP wrist relative-pose mapper(synthetic)
 - ✅ 已实现并验证:Fake AVP arm teleop、Fake AVP 17DoF arm-hand teleop、continuous TCP teleop regression
-- ✅ 已实现:`run_avp_arm_hand_sim.py`(真实 AVP → RM65 + SG100 combined 主入口,CLI / 静态架构已验证)
+- ✅ 已实现:tracking freshness/right-hand validity、显式 neutral arming、configurable AVP→TCP local basis
+- ✅ 已验证:production-format `TrackingData → q17 → robot-only/tabletop MuJoCo` 完整 synthetic integration
+- ✅ 已验证:SG100 11/11 direct physical kinematics 与 11/11 canonical-to-physical semantics,无 sign mismatch
+- ✅ 已实现:`run_avp_arm_hand_sim.py`(真实 AVP → RM65 + SG100 combined 主入口,CLI / architecture / synthetic integration 已验证)
 - ⚠️ 尚未完成:**真实 Apple Vision Pro 端到端验证**(live tracking、wrist axis mapping、arm/hand/combined live teleop)
-- ⚠️ 尚未完成:SG100 最终简化 collision geometry、object grasp physics
+- ⚠️ 尚未完成:真实 AVP tabletop contact、pickup 与 grasp quality 验收
 - ❌ 不在当前项目范围:RM65 + SG100 真机遥操作、正式 VLA 数据采集系统
 
 **当前阶段不是:**
 
 - RM65 + SG100 真机遥操作项目
 - 正式 VLA 数据采集 / LeRobot dataset recorder / π0.5 training pipeline
+- MoveIt planner 或 autonomous scripted grasp controller
 - 生产级 grasp / collision physics
 
 ---
 
 ## 1. 项目范围与定位
 
-本项目用于验证 **Apple Vision Pro 到 RM65 + SG100 MuJoCo 仿真的臂手遥操作链路**,包括 AVP 手部 tracking、SG100 retargeting、AVP wrist relative-pose mapping、RM65 Cartesian IK 以及 17DoF 联合控制。
+本项目用于验证 **Apple Vision Pro 到 RM65 + SG100 MuJoCo tabletop scene 的臂手遥操作链路**,包括 AVP tracking freshness、显式 arming、wrist relative-pose mapping、RM65 Cartesian IK、SG100 semantic/morphology-aware retargeting、17DoF 联合控制和 extra free-object scene compatibility。
 
 > 本项目 **不作为正式 VLA 数据采集系统**。后续 SG100 正式示教数据采集将使用 Manus 数据手套,并在独立的数据采集 Pipeline 中完成。
 
@@ -107,7 +119,7 @@ sg100_teleop/                    ← 本子项目
         run_avp_arm_hand_sim.py  真实 AVP → RM65+SG100 combined 主入口
 ```
 
-`avp_stream/` 视为 upstream-sensitive,默认不修改(见 [§24](#24-development-rules--architecture-constraints))。
+`avp_stream/` 视为 upstream-sensitive,默认不修改(见 [§26](#26-development-rules--architecture-constraints))。
 
 ---
 
@@ -158,43 +170,54 @@ RM65 MuJoCo
 ### 3.3 Combined arm-hand(最终主链)
 
 ```text
-VisionProStreamer.get_latest()
-            │
-            ▼
-      same right HandData         ← arm 与 hand 使用同一帧
-         /              \
-        /                \
- hand[0] wrist        whole hand
-      │                    │
-      ▼                    ▼
-AVPWristRelativeMapper  AVPHandAdapter
-      │                    │
-      ▼                    ▼
-TCP target           CanonicalHandState
-      │                    │
-      ▼                    ▼
-RM65IKSolver         SG100Retargeter
-      │                    │
-      ▼                    ▼
-q_arm_goal[6]       q_hand_goal[11]
-                           │
-                           ▼
-                    JointCommandFilter
-                           │
-                           ▼
-                    q_hand_cmd[11]
-      \                    /
-       \                  /
-        └──── ctrl[17] ──┘
-                │
-                ▼
-          MuJoCo 500 Hz
-                │
-                ▼
-      VisionProStreamer.update_sim()
+visionOS HandTrackingProvider
+        ↓
+VisionProStreamer
+        ↓
+TrackingData
+        ↓
+TrackingFrameGate
+        ↓
+TeleopArmingController
+        ↓ same accepted right-hand frame
+        ├──────── wrist ─────────────────┐
+        │                                │
+        │  AVPWristRelativeMapper        │
+        │           ↓                    │
+        │      TCP target                │
+        │           ↓                    │
+        │      RM65IKSolver              │
+        │           ↓                    │
+        │       q_arm[6]                 │
+        │                                │
+        └──────── hand ──────────────────┤
+                                         │
+             AVPHandAdapter              │
+                    ↓                    │
+             HandCalibration             │
+                    ↓                    │
+             CanonicalHandState          │
+                    ↓                    │
+             SG100Retargeter             │
+                    ↓                    │
+              q_hand[11]                 │
+                    ↓                    │
+             JointCommandFilter          │
+                                         │
+q_arm[6] + q_hand_cmd[11] ───────────────┘
+                    ↓
+         CombinedRobotLayout
+                    ↓
+          MuJoCo robot controls
+                    ↓
+RM65 + SG100 + optional tabletop/free objects
+                    ↓
+VisionProStreamer.update_sim()
 ```
 
 > **arm 与 hand 必须使用同一次 `streamer.get_latest()` 获取的同一帧 right-hand tracking 数据。** 代码中 `hand[0]`(AVP wrist SE(3))用于 arm 分支,`whole hand` 用于 hand 分支。禁止描述成 arm / hand 分别读取两个独立 tracking frame。
+
+进入分支之前,frame 必须是 **NEW + right-hand tracked + fresh + parseable + finite**;并且 session 必须经过 `TeleopArmingController` 的显式 neutral confirmation。duplicate、untracked、stale 或 malformed frame 不更新 robot goals。
 
 **重要 shape / unit:**
 
@@ -232,16 +255,19 @@ sg100_teleop/
 │   │   └── urdf/                    # 原始 / mujoco URDF
 │   └── rm65_sg100/
 │       └── mjcf/
-│           └── rm65_sg100_sim.xml   # RM65 + SG100 17DoF combined sim model
+│           ├── rm65_sg100_sim.xml   # RM65 + SG100 robot-only model
+│           └── rm65_sg100_grasp_scene.xml # tabletop/free-object validation scene
 ├── calibration/
 │   ├── calibrate_avp_hand.py        # AVP live hand calibration
 │   ├── io.py                        # YAML save / load
 │   └── session.py                   # multi-frame 采集 + median build
 ├── config/
 │   ├── sg100_joint_semantics.yaml   # SG100 joint 顺序 / 范围 / 语义(权威)
-│   └── avp_right_calibration.yaml   # hand 标定产物(由 calibration 生成)
+│   ├── avp_to_tcp_identity.yaml     # 未标定的 development basis default
+│   └── avp_right_calibration.yaml   # hand 标定产物(运行 calibration 后生成)
 ├── control/
-│   └── joint_command_filter.py      # 低通 + velocity limit
+│   ├── joint_command_filter.py      # 低通 + velocity limit
+│   └── teleop_arming.py             # 显式 neutral confirmation state machine
 ├── hand/
 │   ├── canonical_hand.py            # CanonicalHandState
 │   └── hand_calibration.py          # raw → canonical normalization
@@ -260,7 +286,15 @@ sg100_teleop/
 │   └── view_sg100_controlled.py     # SG100 controlled viewer
 ├── tests/
 │   ├── test_sg100_retargeter.py
+│   ├── test_sg100_physical_joint_semantics.py
 │   ├── test_avp_feature_extractor.py
+│   ├── test_avp_tracking_freshness.py
+│   ├── test_teleop_arming.py
+│   ├── test_avp_to_tcp_config.py
+│   ├── test_avp_to_tcp_basis_six_axis.py
+│   ├── test_avp_to_tcp_basis_ik.py
+│   ├── test_raw_avp_to_combined_mujoco.py
+│   ├── test_combined_scene_compatibility.py
 │   ├── test_hand_calibration.py
 │   ├── test_calibration_session.py
 │   ├── test_avp_wrist_mapper.py
@@ -274,7 +308,9 @@ sg100_teleop/
     ├── avp_adapter.py               # HandData → raw → canonical
     ├── avp_hand_adapter.py          # AVP_JOINT_INDEX + feature extractor
     ├── avp_source.py                # TrackingData → Nx4x4 skeleton
-    └── avp_wrist_mapper.py          # AVP wrist relative-pose mapper
+    ├── avp_wrist_mapper.py          # AVP wrist relative-pose mapper
+    ├── avp_to_tcp_config.py         # basis YAML load/validation
+    └── frame_gate.py                # freshness/right-hand validity gate
 ```
 
 ---
@@ -300,6 +336,13 @@ sg100_teleop/
 | 10| `little_j3` | `[-1.05, 1.57]`   | `0 0 1`  | `little_distal` (bidirectional) | bidirectional |
 
 > 以下方向均已经过 SG100 joint semantic sweep 视觉确认,与真机运动方向一致。**不要因为「人体解剖命名不标准」自行重命名或反转 joint direction。**
+
+Phase 6 又增加了 automated actual-geometry regression:`11/11 direct joint physical kinematics PASS`,`11/11 CanonicalHandState → SG100Retargeter → MuJoCo physical semantics PASS`,没有 mapping sign mismatch。其准确边界是:
+
+- **Software/MuJoCo retargeting identity、order、range、sign、monotonic physical response: VALIDATED**。
+- **真实 AVP human-motion fidelity: PENDING HARDWARE VALIDATION**。
+
+这里执行的是 **semantic / morphology-aware motion retargeting**,不是 human anatomical joint angle 的 1:1 copying。人手与 SG100 的结构、自由度和活动范围不同;真实用户的 open/fist/pinch/opposition fidelity 必须在 AVP hardware 与用户 hand calibration 后评估。
 
 #### Thumb
 - `thumb_j1`:`0 → positive`,大拇指绕掌心方向内旋。
@@ -433,6 +476,17 @@ ctrl[6:17]  = SG100
 
 RM65 各 joint range(来自 XML):`joint_1 ±3.106`、`joint_2 ±2.2689`、`joint_3 ±2.356`、`joint_4 ±3.106`、`joint_5 ±2.234`、`joint_6 ±6.28`。SG100 各 joint range 与 `sg100_joint_semantics.yaml` 一致。
 
+### 6.1 Robot-only 与 tabletop scene
+
+| Model | 定位 |
+|---|---|
+| `rm65_sg100_sim.xml` | robot-only 17DoF regression / default live runner model |
+| `rm65_sg100_grasp_scene.xml` | table、dynamic bottle、collision proxy、workspace/grasp-reference sites 的 tabletop teleoperation validation environment |
+
+`CombinedRobotLayout` 按名称解析且只初始化/控制 6 RM65 + 11 SG100 = **17 robot joints/actuators**。tabletop scene 可以包含额外 freejoint qpos/qvel;`initialize_robot_state()` 不会用 robot q17 覆盖 bottle 等 scene state。Phase 1/5 已验证 robot-only 与 tabletop model 都能接受同一 active q17 update,bottle freejoint 保持 finite 且 quaternion valid。
+
+table、bottle、collision proxy、workspace mask 与 grasp-reference site **不是 automatic grasp controller**。当前已验证 scene load/init/control compatibility;尚未以真实 AVP 完成最终 contact、gravity、pickup 或 grasp-quality 验收。早期固定 bottle/q pose 实验不得描述成 production algorithm。
+
 ---
 
 ## 7. SG100 与 RM65 安装关系 / Teleoperation TCP
@@ -484,16 +538,23 @@ TELEOP_TCP_FRAME = sg100_base_link
 当前 Cartesian teleoperation 默认起始姿态(`run_avp_arm_hand_sim.py` 中 `RM65_TELEOP_READY_Q`):
 
 ```python
-RM65_TELEOP_READY_Q = [0.30, -0.40, 0.35, -0.25, 0.30, 0.20]
+RM65_TELEOP_READY_Q = [
+    0.32488,
+   -0.76769,
+    0.97621,
+    0.22463,
+   -1.80649,
+   -0.12430,
+]
 ```
 
-> **这不是 RM65 mechanical zero pose。** 其用途是:作为 AVP Cartesian teleoperation 的稳定起始姿态和 IK seed,避免从接近奇异位形的「全零关节状态」直接开始 Cartesian teleoperation。
+> **这不是 RM65 mechanical zero pose,也不是最终抓取最优 q0。** 它是当前 repository authoritative robot-side teleop calibration / ready anchor candidate,用于 combined runner 的稳定起点、IK seed 与首次 session wrist-neutral 的 TCP anchor。初始位姿和抓取水平优化属于另一工作流。
 
 ```text
 RM65_ZERO_Q  ≠  RM65_TELEOP_READY_Q
 ```
 
-不要混淆两者。所有 fake / continuous / live runner 均以 `RM65_TELEOP_READY_Q` 作为 `q_initial` 与 wrist calibration anchor 的来源。
+不要混淆两者。旧 diagnostic pose `[0.30, -0.40, 0.35, -0.25, 0.30, 0.20]` **不是** 当前 authoritative teleop-ready anchor。
 
 ---
 
@@ -547,9 +608,9 @@ IK failure → keep last valid q_arm_goal(HOLD)
 
 ---
 
-## 11. 已知 +Z singularity 行为(诊断结论,非 solver bug)
+## 11. Legacy +Z singularity diagnostic(非当前 ready anchor)
 
-从 `RM65_TELEOP_READY_Q` 出发,固定 orientation、对 world +Z 方向做 target scan:
+`test_rm65_ik_z_scan.py` 保留旧 diagnostic seed `[0.30, -0.40, 0.35, -0.25, 0.30, 0.20]`,固定 orientation 对 world +Z 做局部 scan。其历史观察是:
 
 ```text
 +5 mm        PASS
@@ -561,7 +622,7 @@ IK failure → keep last valid q_arm_goal(HOLD)
 
 表现:`q3 → 0`、`sigma_min → 0`、condition number 急剧上升。
 
-> 结论:这是当前姿态分支在固定 orientation 条件下接近运动学奇异位形导致的 **局部 workspace 限制**,**不作为 `RM65IKSolver` 实现错误处理**。该行为由 `test_rm65_ik_z_scan.py` 记录(诊断型,见 [§19](#19-诊断型测试))。
+> 结论:这是该 **legacy diagnostic pose branch** 在固定 orientation 条件下的局部 workspace/singularity 记录,不代表当前 authoritative `RM65_TELEOP_READY_Q`,也不作为 `RM65IKSolver` 实现错误。该脚本属于 [§20](#20-extended--experimental-validation)。
 
 正式 regression 应优先使用 **guaranteed-reachable FK-generated targets**(见 `test_rm65_ik_reachable_targets.py`)。
 
@@ -602,36 +663,63 @@ T_tcp_target = T_tcp0 @ ΔT_tcp        (world frame)
 translation_scale = 0.5        # 见下方说明
 ```
 
-> `translation_scale = 0.5` 是 **当前 validation 默认值**(real runner `--translation-scale` 默认 0.5;fake runner 硬编码 0.5)。含义:`10 cm` 人手运动 → `5 cm` 机器人运动。**这不代表** 真实 AVP 标定后的唯一正确 scale。注意 `AVPWristRelativeMapper.__init__` 的类默认是 `1.0`,仅作通用回退;实际 teleop 一律经 runner 显式传 `0.5`。
+> `translation_scale = 0.5` 是 checked-in `avp_to_tcp_identity.yaml` 的 validation 默认值;real runner 通过 `--avp-to-tcp-config` 加载,basis 与 scale 不再是分散的 CLI 数值。含义:`10 cm` 人手运动 → `5 cm` 机器人运动。**这不代表** 真实 AVP 标定后的唯一正确 scale。`AVPWristRelativeMapper.__init__` 的类默认 `1.0` 仅是通用回退。
 
 辅助函数:`make_transform`、`invert_transform`、`rotation_angle`。
 
 ### 12.1 AVP wrist axis mapping
 
-当前:
+必须区分两个坐标转换:
+
+1. `YUP2ZUP`:VisionProStreamer 对 AVP/ARKit **world representation** 的转换。
+2. `avp_to_tcp_local_rotation = A`:初始 AVP wrist-local relative motion 到 robot TCP-local control motion 的 basis change。
+
+二者作用域不同,不能用 `YUP2ZUP` 代替 wrist-local control calibration。mapper 数学为:
 
 ```text
-AVP_TO_TCP_LOCAL_ROTATION = Identity   (代码中 R_tcp_from_avp_local = np.eye(3))
+p_robot_local = A @ p_avp_local
+R_robot_local = A @ R_avp_local @ A.T
+
+delta_p_tcp = translation_scale * A @ delta_p_avp
+T_tcp_target = T_tcp_runtime_0 @ delta_T_tcp
 ```
 
-**只经过 synthetic validation。**
+`config/avp_to_tcp_identity.yaml` 明确标记为:
 
-> 当前真实 Apple Vision Pro wrist local coordinate axis **尚未通过真机视觉验证**,因此 Identity mapping 仅作为当前默认配置。真实 AVP 到手后,需要通过 wrist +X/+Y/+Z translation 以及 wrist rotation 实验确定最终 `AVP_TO_TCP_LOCAL_ROTATION`。
+```text
+IDENTITY — UNCALIBRATED DEVELOPMENT DEFAULT
+```
+
+它不是已验证真实 AVP mapping。Phase 4 已验证 nonidentity proper-rotation config、六轴 basis mapping 与 basis→IK;真实 AVP 到手后仍必须通过 forward/back、left/right、up/down 和 local Rx/Ry/Rz 确定并写入 hardware-validated YAML。
 
 **禁止** 写成「AVP 与 RM65 坐标轴已经完成真机标定」。目前没有。
 
 ---
 
-## 13. Wrist calibration 与 hand calibration 必须区分
+## 13. 三种 calibration 必须区分
 
-| | Hand calibration | Wrist calibration |
-|---|---|---|
-| 文件 | `config/avp_right_calibration.yaml` | (无文件,runtime 建立) |
-| 用途 | `AVP hand geometry → CanonicalHandState` | `relative Cartesian teleoperation` |
-| 形式 | 持久化 YAML(10 poses × median) | runtime:首帧有效 AVP wrist ↔ 初始 robot `T_tcp0` |
-| 何时 | 预先由 `calibrate_avp_hand.py` 采集 | `run_avp_arm_hand_sim.py` 主循环首次收到有效 wrist 时 |
+| Calibration | 数据/文件 | 作用 | 生命周期 |
+|---|---|---|---|
+| User `HandCalibration` | `avp_right_calibration.yaml` | real human raw hand features → canonical ranges | 用户预先采集,可跨 session 使用 |
+| Session wrist-neutral | `T_avp_wrist_0 ↔ T_tcp_runtime_0` | 建立 relative Cartesian teleoperation anchor | 每次 arming/recalibration runtime 建立 |
+| AVP→TCP coordinate basis | `avp_to_tcp_local_rotation=A` + `translation_scale` YAML | 决定真实 forward/left/up 与 roll/pitch/yaw 控制方向 | hardware 六轴标定后持久化 |
 
-> **不要把两者混成一个 calibration。** Hand calibration 是持久的、跨会话的;wrist calibration 是每次运行重新建立、且首帧不产生 arm IK 移动。
+不要把三者统称为一个模糊的 calibration。`HandCalibration` 不决定 wrist axis;session neutral 不学习 user hand range;coordinate basis 不保存 session absolute pose。
+
+### 13.1 `q_hand0_runtime`
+
+显式 neutral confirmation 后的下一帧同时经过:
+
+```text
+AVP skeleton
+→ AVPHandAdapter
+→ HandCalibration
+→ CanonicalHandState
+→ SG100Retargeter
+→ q_hand0_runtime
+```
+
+因此 `q_hand0_runtime` 是 calibration frame 的真实 11DoF retarget output,**不是** `zeros(11)`、`POSE_220` 或 fixed grasp pose。代码只把 mathematical zero 用作未 arming startup placeholder;Phase 5 test 中的 zero reference 也只属于 test-only kinematic reference。
 
 ---
 
@@ -671,22 +759,37 @@ q_arm_goal    IK 输出(~60 Hz),直接送 ctrl[0:6]
 
 ---
 
-## 15. Tracking loss / IK failure 行为
+## 15. Tracking freshness、validity 与 arming
 
-当前 simulation validation 策略:
+visionOS `HandTrackingProvider` 提供 `HandAnchor.isTracked` 和 `sourceFrameSequence`;Python `TrackingData` 暴露 `frame_sequence`、`received_monotonic_ns` 与 `right_hand_valid`。`TrackingFrameGate` 只把以下 frame 交给 combined pipeline:
 
 ```text
-tracking lost → hold last q_arm_goal → hold last q_hand_goal
+NEW + right-hand tracked + fresh + parseable + finite
 ```
 
-**禁止** `tracking lost → snap back to q=0`。
+- duplicate cached frame:不更新 arm/hand goals,也不刷新 timeout。
+- new but untracked frame:不更新 goals,也不刷新 timeout。
+- stale/missing-metadata/malformed frame:拒绝。
+- accepted parseable frame:只处理一次并刷新 valid-tracking time。
 
-必须区分两个概念:
+`TeleopArmingController` state model:
 
-- **Tracking failure**:没有 usable AVP frame。
-- **IK failure**:AVP frame 正常,但 robot Cartesian target 无法可靠求解。
+```text
+WAITING_FOR_TRACKING
+    ↓ first NEW+VALID frame
+WAITING_FOR_NEUTRAL_CONFIRM
+    ↓ operator presses C in current MuJoCo viewer
+CALIBRATION_REQUESTED
+    ↓ next NEW+VALID frame received after request
+TELEOP_ACTIVE
 
-> IK failure **不等价于** AVP tracking loss。两者都采用 HOLD 策略(hold last valid target),但触发源不同。`run_avp_arm_hand_sim.py` 分别维护 `valid_tracking_count` / `last_valid_tracking`(tracking)与 `ik_failure_count`(IK)。
+tracking timeout → TRACKING_TIMEOUT_DISARMED
+new valid tracking → WAITING_FOR_NEUTRAL_CONFIRM
+```
+
+tracking reacquisition **不会自动恢复旧 teleop anchor**;必须重新按 C 并用下一张有效新帧建立 wrist/hand runtime anchors。C key 是当前 bring-up trigger,未来可以换成 AVP UI command,但 arming/calibration core 本身 source-agnostic。
+
+Tracking failure 与 IK failure 必须区分:前者没有 usable frame,后者有有效 frame 但 TCP target 未可靠求解。两者都 HOLD last valid robot targets,绝不 snap 回 q=0;tracking timeout 还会丢弃旧 mapper calibration 并进入上述 re-arming flow。
 
 ---
 
@@ -743,7 +846,7 @@ CLI(以源码为准):
 
 ### Loading during teleoperation
 
-`run_avp_sg100_sim.py` 与 `run_avp_arm_hand_sim.py` 均通过 `load_calibration(...)` 加载该 YAML,默认路径一致。**运行 live teleop 前必须存在 calibration 文件**;若不存在,直接 `FileNotFoundError` 并提示 `Run calibrate_avp_hand first.`,**不会** 偷偷使用 fake / default mapping。
+`run_avp_sg100_sim.py` 与 `run_avp_arm_hand_sim.py` 均通过 `load_calibration(...)` 加载该 YAML,默认路径一致。该产物不是 checked-in universal user calibration;**运行 live teleop 前必须先生成或通过 `--calibration` 指定**。若不存在会直接 `FileNotFoundError`,不会偷偷使用 fake/default hand mapping。
 
 ---
 
@@ -800,13 +903,13 @@ python -m sg100_teleop.sim.run_fake_avp_arm_hand_teleop
 
 ```text
 IK failures = 0
-max arm q_goal step/frame          ≈ 0.005322 rad
+max arm q_goal step/frame          ≈ 0.002817 rad
 max hand q_goal step/frame         ≈ 0.046562 rad
-min sigma_min                      ≈ 0.016619
-max condition                      ≈ 46.09
-max simulated TCP position error   ≈ 2.72 mm
-max simulated TCP rotation error   ≈ 0.328 deg
-max SG100 tracking error           ≈ 0.12264 rad
+min sigma_min                      ≈ 0.061328
+max condition                      ≈ 9.884
+max simulated TCP position error   ≈ 4.446 mm
+max simulated TCP rotation error   ≈ 0.310 deg
+max SG100 tracking error           ≈ 0.122686 rad
 FAKE AVP 17DOF TELEOP: PASS
 ```
 
@@ -843,7 +946,7 @@ python -m sg100_teleop.sim.run_avp_arm_hand_sim --help
 | `--port` | ❌ | `50051` | AVP MuJoCo streaming gRPC port |
 | `--tracking-hz` | ❌ | `60.0` | AVP tracking 查询频率 |
 | `--stream-hz` | ❌ | `60.0` | MuJoCo state 回传 AVP 频率 |
-| `--translation-scale` | ❌ | `0.5` | AVP 相对 wrist 平移 → TCP 平移 scale |
+| `--avp-to-tcp-config` | ❌ | `sg100_teleop/config/avp_to_tcp_identity.yaml` | proper local basis + translation scale YAML |
 | `--filter-tau` | ❌ | `0.06` | SG100 hand 低通时间常数 |
 | `--max-hand-velocity` | ❌ | `4.0` | SG100 hand joint 速度上限 |
 | `--tracking-timeout` | ❌ | `0.5` | 报告 tracking loss 的超时(秒) |
@@ -852,19 +955,40 @@ python -m sg100_teleop.sim.run_avp_arm_hand_sim --help
 
 运行时要点(与 [§3.3](#33-combined-arm-hand最终主链) 一致):
 
-- 同一帧 right-hand tracking:`hand[0]` → arm 分支,`whole hand` → hand 分支。
-- 首帧有效 wrist 建立 wrist calibration,**该帧不产生 arm IK 移动**(RM65 保持 teleop-ready)。
-- 后续帧:`AVPWristRelativeMapper.map()` → TCP target → `RM65IKSolver.solve(q_seed=q_arm_goal, ...)`。
+- `TrackingFrameGate` 先拒绝 duplicate/untracked/stale/malformed frame;同一张 accepted right-hand frame 的 `hand[0]` → arm,`whole hand` → hand。
+- 第一张有效帧只使 state 进入 `WAITING_FOR_NEUTRAL_CONFIRM`,不会 calibration 或 active-follow。
+- 用户在 neutral pose 按 C 后,**下一张** NEW+VALID frame 同时建立 `T_avp_wrist_0`,`T_tcp_runtime_0`,`q_hand0_runtime`,state → `TELEOP_ACTIVE`。
+- Active frame:`AVPWristRelativeMapper.map()` → TCP target → `RM65IKSolver.solve(q_seed=q_arm_goal, ...)`。
 - IK success → 更新 `q_arm_goal`;IK fail → HOLD。
 - hand:`q_hand_goal` → `JointCommandFilter@500Hz` → `q_hand_cmd`;arm:`q_arm_goal` 直送 `ctrl[0:6]`(无额外 arm filter)。
 - physics 500 Hz;`viewer.sync()` 在 physics loop 之外;`streamer.update_sim()` 按 `--stream-hz` 回传。
-- tracking loss / IK failure 均 HOLD(见 [§15](#15-tracking-loss--ik-failure-行为))。
+- tracking loss / IK failure 均 HOLD;tracking timeout 还会 disarm 并要求重新 C confirmation(见 §15)。
 
 ---
 
 ## 18. 测试与运行命令
 
-所有 test 以 `python -m sg100_teleop.tests.<name>` 运行,均为独立 `main()` 脚本,打印 `PASS` 即通过。所有路径解析基于 `Path(__file__).resolve().parents[2]`,**不依赖 cwd**。
+当前仓库没有配置 pytest runner;核心 tests 是可直接执行的独立 `main()` scripts。使用实际存在的命令 `python -m sg100_teleop.tests.<name>`,打印 `PASS` 即通过。不要在文档中写一个不存在的 pytest workflow。
+
+### 18.0 Tracking / arming / coordinate mapping
+
+| Category | Test | Purpose | When to run |
+|---|---|---|---|
+| Tracking | `test_avp_streamer_frame_metadata` | source sequence、receive timestamp、right-hand validity transport metadata | streamer/protocol change |
+| Tracking | `test_avp_tracking_freshness` | duplicate/untracked/stale/malformed gate behavior | combined tracking change |
+| Arming | `test_teleop_arming` | explicit C-style request、same-frame anchors、timeout/re-arm | arming/runtime change |
+| Coordinate | `test_avp_to_tcp_config` | YAML schema、proper rotation、identity warning | config loader change |
+| Coordinate | `test_avp_to_tcp_basis_six_axis` | nonidentity ±translation/rotation axes | basis semantics change |
+| Coordinate/IK | `test_avp_to_tcp_basis_ik` | configured six-axis target reaches RM65 IK/FK | mapper or IK change |
+
+```bash
+python -m sg100_teleop.tests.test_avp_streamer_frame_metadata
+python -m sg100_teleop.tests.test_avp_tracking_freshness
+python -m sg100_teleop.tests.test_teleop_arming
+python -m sg100_teleop.tests.test_avp_to_tcp_config
+python -m sg100_teleop.tests.test_avp_to_tcp_basis_six_axis
+python -m sg100_teleop.tests.test_avp_to_tcp_basis_ik
+```
 
 ### 18.1 SG100 retargeting
 
@@ -873,6 +997,14 @@ python -m sg100_teleop.tests.test_sg100_retargeter
 ```
 
 验证 `CanonicalHandState → SG100 q[11]`:neutral→0、full activation→不对称 joint limit(精确 `1e-6`)、4 个 distal `-1`→lower 端。
+
+### 18.1.1 SG100 physical semantics
+
+```bash
+python -m sg100_teleop.tests.test_sg100_physical_joint_semantics
+```
+
+验证 11/11 direct parent-local physical joint axis/sign 和 11/11 canonical-to-distal-geometry semantics,包括 flexion、opposition、abduction/adduction、outward 和 distal signed monotonic response。修改 SG100 MJCF、semantic YAML 或 retargeter 时必跑。
 
 ### 18.2 AVP hand feature extractor
 
@@ -957,59 +1089,87 @@ python -m sg100_teleop.tests.test_rm65_continuous_tcp_teleop
 
 ```text
 IK failures                       = 0 / 500
-IK position error max             ≈ 0.0685 mm
-IK rotation error max             ≈ 0.00279 deg
-SIM TCP position error max        ≈ 1.976 mm
-SIM TCP rotation error max        ≈ 0.236 deg
-max q-goal step/frame             ≈ 0.002082 rad
-min sigma_min                     ≈ 0.021957
-max condition                     ≈ 34.80
-max hand |qpos|                   ≈ 0.000193 rad
+IK position error max             ≈ 0.05944 mm
+IK rotation error max             ≈ 0.000061 deg
+SIM TCP position error max        ≈ 2.065 mm
+SIM TCP rotation error max        ≈ 0.250 deg
+max q-goal step/frame             ≈ 0.001753 rad
+min sigma_min                     ≈ 0.058077
+max condition                     ≈ 10.418
+max hand |qpos|                   ≈ 0.000211 rad
 CONTINUOUS TCP TELEOP: PASS
 ```
 
+### 18.10 Raw AVP-format combined integration
+
+```bash
+python -m sg100_teleop.tests.test_raw_avp_to_combined_mujoco
+```
+
+从 production-format `TrackingData` 开始,真实经过 FrameGate、Arming、adapter/calibration/retargeter、nonidentity wrist basis、IK、q17 layout/control。覆盖 wrist-only、hand-only、same-frame arm+hand、duplicate/invalid frame、robot-only 和 tabletop scene;不从 `CanonicalHandState` 中途起跑。
+
+### 18.11 Tabletop scene compatibility
+
+```bash
+python -m sg100_teleop.tests.test_combined_scene_compatibility
+```
+
+验证 robot-only `nq=nv=nu=17`,tabletop scene 仍只有 17 robot actuators,extra bottle freejoint 未被 robot initialization 覆盖且 q17 control 后保持 finite/valid。它不验证自动抓取或 pickup。
+
 ---
 
-## 19. 推荐完整 regression
+## 19. FAST CORE REGRESSION
 
 ```bash
 cd ~/VisionProTeleop
 source .venv/bin/activate
 
+python -m compileall -q sg100_teleop avp_stream
+python -m sg100_teleop.tests.test_avp_tracking_freshness
+python -m sg100_teleop.tests.test_teleop_arming
+python -m sg100_teleop.tests.test_avp_to_tcp_config
+python -m sg100_teleop.tests.test_avp_to_tcp_basis_six_axis
+python -m sg100_teleop.tests.test_avp_to_tcp_basis_ik
+python -m sg100_teleop.tests.test_avp_wrist_mapper
 python -m sg100_teleop.tests.test_sg100_retargeter
+python -m sg100_teleop.tests.test_sg100_physical_joint_semantics
 python -m sg100_teleop.tests.test_avp_feature_extractor
 python -m sg100_teleop.tests.test_hand_calibration
-python -m sg100_teleop.tests.test_calibration_session
-python -m sg100_teleop.tests.test_avp_wrist_mapper
-python -m sg100_teleop.tests.test_rm65_fk_tcp
-python -m sg100_teleop.tests.test_rm65_tcp_jacobian
-python -m sg100_teleop.tests.test_rm65_ik_reachable_targets
 python -m sg100_teleop.tests.test_rm65_continuous_tcp_teleop
+python -m sg100_teleop.tests.test_raw_avp_to_combined_mujoco
+python -m sg100_teleop.tests.test_combined_scene_compatibility
 ```
 
-然后 combined interactive regression:
+需要确认 interactive combined dynamics 时再运行 20 s viewer regression:
 
 ```bash
 python -m sg100_teleop.sim.run_fake_avp_arm_hand_teleop
 ```
 
-修改核心 mapping / calibration / IK / Jacobian 之后必须重新运行上述列表。
+修改 tracking、arming、mapping、calibration、IK、retargeting、robot layout 或 scene compatibility 后必须重新运行相应 core tests;跨模块改动运行整个列表。
 
 ---
 
-## 20. 诊断型测试(不进入主 regression)
+## 20. EXTENDED / EXPERIMENTAL VALIDATION
 
-以下测试保留,但定位为 **诊断 / 分析**,**不在 [§19](#19-推荐完整-regression) 的主 regression 列表中**:
+以下测试保留用于 calibration robustness、FK/Jacobian 深层验证、workspace/singularity 和 grasp experiments,但不要求每次 FAST CORE 都运行:
 
 ```text
+test_calibration_session.py
+test_rm65_fk_tcp.py
+test_rm65_tcp_jacobian.py
+test_rm65_ik_reachable_targets.py
 test_rm65_ik.py
 test_rm65_ik_z_scan.py
+test_rm65_sg100_workspace_sweep.py
+test_rm65_sg100_grasp_pose_edges.py
 ```
 
-- `test_rm65_ik.py`:在 `RM65_TELEOP_READY_Q` 邻域测 6 个 world-frame 平移 / 旋转目标(±20 mm / ±5 deg),含 PASS 断言(`RM65 6D IK VALIDATION: PASS`)。用于分析 6D 邻域行为,非完整 workspace 覆盖。
+- `test_rm65_ik.py`:保留其自身 diagnostic seed,测 6 个 world-frame 平移/旋转目标(±20 mm/±5 deg)。用于分析局部 6D 行为,不定义当前 teleop-ready anchor,也不覆盖完整 workspace。
 - `test_rm65_ik_z_scan.py`:**纯诊断,无 PASS/FAIL 断言**。包含 intentionally near-singular / unreachable 的 +Z 目标(DIRECT scan + +Z continuation)。用于分析 workspace limit / singularity / `sigma_min` / condition number。
+- `test_rm65_sg100_workspace_sweep.py` 与 `test_rm65_sg100_grasp_pose_edges.py`:耗时 workspace/grasp-reference experiments,不是日常 regression,也不是 autonomous grasp controller。
 
-> **不要在文档中要求这两个测试「所有目标必须 PASS」。** 尤其 `test_rm65_ik_z_scan.py` 的部分目标按设计就会 FAIL(见 [§11](#11-已知-z-singularity-行为诊断结论非-solver-bug))。
+> **不要要求这两个 local IK diagnostic 的所有目标都 PASS。** 尤其 `test_rm65_ik_z_scan.py` 的部分目标按设计就会 FAIL(见 §11)。
 
 运行(可选,分析用):
 
@@ -1020,64 +1180,102 @@ python -m sg100_teleop.tests.test_rm65_ik_z_scan
 
 ---
 
-## 21. Validation Matrix
+## 21. Phase 1–6 Validation Summary
 
-| 模块 | 状态 |
-|---|---|
-| SG100 MuJoCo(standalone) | 已验证 |
-| SG100 retargeting | 已验证 |
-| SG100 hand filtering(JointCommandFilter) | 已验证 |
-| AVP hand synthetic feature extraction | 已验证 |
-| Hand calibration pipeline | 已验证 |
-| RM65 standalone MuJoCo | 已验证 |
-| RM65 + SG100 17DoF combined MuJoCo | 已验证 |
-| RM65 teleop TCP(`sg100_base_link`) | 已验证 |
-| RM65 FK | 已验证 |
-| RM65 analytical Jacobian | 已验证 |
-| RM65 DLS IK | 已验证 |
-| RM65 guaranteed-reachable IK | 已验证 |
-| Continuous TCP teleop | 已验证 |
-| AVP relative wrist mapper | Synthetic 已验证 |
-| Fake AVP arm teleop | 已验证 |
-| Fake AVP 17DoF arm-hand teleop | 已验证 |
-| `run_avp_arm_hand_sim.py` syntax / structure | 已验证 |
-| Real AVP live tracking | **尚未验证** |
-| Real AVP wrist axis mapping | **尚未验证** |
-| Real AVP → RM65 live arm teleop | **尚未验证** |
-| Real AVP → SG100 live hand teleop | **尚未验证** |
-| Real AVP 17DoF combined teleop | **尚未验证** |
-| Real robot teleoperation | **不属于当前项目范围** |
-| Formal VLA data collection | **不属于当前项目范围** |
+| Phase | Purpose | Status | Key result |
+|---|---|---|---|
+| 1 | Tabletop scene compatibility | PASS | extra freejoint-safe robot initialization/control |
+| 2 | Tracking freshness + right-hand validity | PASS | duplicate/untracked frames do not update or refresh timeout |
+| 3 | Explicit neutral calibration / arming | PASS | confirmation-gated same-frame wrist/hand anchors; timeout requires re-arm |
+| 4 | Configurable AVP-to-TCP basis | PASS | strict proper-rotation YAML, nonidentity six-axis mapper→IK |
+| 5 | Raw AVP-format → q17 → MuJoCo | PASS | production-format TrackingData drives robot-only/tabletop arm+hand pipeline |
+| 6 | SG100 physical semantic regression | PASS | 11/11 direct + 11/11 canonical physical semantics; no sign mismatch |
 
-> 绝对不要把「尚未验证」自动改成「已完成」。
+Phase 5 also established:wrist-only motion does not materially drive hand articulation;hand-only articulation does not materially drive arm motion;same-frame arm+hand update PASS;robot-only and tabletop MuJoCo PASS;bottle freejoint finite/valid. **NO REAL AVP HARDWARE WAS USED.**
 
 ---
 
-## 22. 真实 AVP 到手后的 bring-up 顺序
+## 22. Readiness Matrix
+
+| Capability | Status |
+|---|---|
+| Transport protocol | PASS |
+| Frame freshness | PASS |
+| Right-hand validity | PASS |
+| Teleop arming | PASS |
+| Relative wrist SE(3) | PASS |
+| Configurable local basis | PASS |
+| RM65 6D IK | PASS |
+| Raw AVP hand parsing | PASS |
+| Hand calibration framework | PASS |
+| Canonical hand representation | PASS |
+| SG100 retargeting semantics | PASS |
+| SG100 physical MuJoCo semantics | PASS |
+| Raw-format q17 integration | PASS |
+| Robot-only MuJoCo | PASS |
+| Tabletop scene integration | PASS |
+| Real AVP axis calibration | **PENDING HARDWARE** |
+| Real-user hand calibration | **PENDING HARDWARE** |
+| Real AVP latency/jitter | **PENDING HARDWARE** |
+| Real combined teleoperation | **PENDING HARDWARE** |
+| Real tabletop object grasp | **PENDING HARDWARE** |
+
+PASS 表示当前 repository implementation 的 software/synthetic/MuJoCo regression 通过,不等于 hardware acceptance。
+
+---
+
+## 23. AVP Hardware Bring-up Checklist
 
 ```text
-1. VisionProStreamer connection
-2. right-hand tracking availability
-3. hand[0] wrist SE(3) sanity check
-4. AVP wrist +X / +Y / +Z visual direction validation
-5. determine AVP_TO_TCP_LOCAL_ROTATION
-6. determine appropriate translation_scale
-7. AVP → RM65 arm-only simulation
-8. AVP → SG100 hand-only simulation
-9. AVP → RM65 + SG100 17DoF combined simulation
+ 1. Build/install the current visionOS app.
+ 2. Verify protobuf compatibility, right_hand_valid and sourceFrameSequence.
+ 3. Check streaming freshness; cached reads must retain sequence/timestamp.
+ 4. Perform the current user's 10-pose HandCalibration.
+ 5. Run AVP→TCP six-axis calibration:forward/back, left/right, up/down,
+    local Rx/Ry/Rz.
+ 6. Write and review a hardware-validated basis/translation-scale YAML.
+ 7. Move RM65 simulation to RM65_TELEOP_READY_Q.
+ 8. Acquire NEW+VALID+fresh right-hand tracking.
+ 9. User assumes a comfortable neutral wrist/hand pose.
+10. Press C (or future source-agnostic UI trigger) for neutral calibration.
+11. Validate hand-only:open, fist, pinch, opposition.
+12. Validate small arm translations one axis at a time.
+13. Validate small wrist rotations one axis at a time.
+14. Validate combined free-space arm-hand teleoperation.
+15. Deliberately lose tracking and confirm timeout/disarm/HOLD.
+16. Reacquire tracking, confirm no auto-rearm, then recalibrate.
+17. Load rm65_sg100_grasp_scene.xml.
+18. Approach the object manually without scripted grasp logic.
+19. Close fingers manually and evaluate contact/grasp.
+20. Lift/manipulate only after all previous acceptance steps pass.
 ```
 
-> **禁止跳过 axis mapping(第 4–5 步)就直接宣称 real AVP combined control 完成。**
+> 禁止跳过 user calibration、six-axis basis、tracking-loss/disarm 验证就直接宣称 real AVP combined control 或 tabletop grasp 完成。
+
+### 23.1 Future real-AVP acceptance metrics
+
+Hardware session 应记录但当前尚无真实数值:
+
+| Metric | Suggested measurement |
+|---|---|
+| Tracking update rate | accepted NEW+VALID frames/s |
+| Tracking-loss rate | invalid/timeout events per minute |
+| End-to-end latency | sensed motion → visible MuJoCo response |
+| Hand command jitter | stationary-pose q_hand RMS/peak-to-peak |
+| Repeatability | repeated pose endpoint dispersion |
+| Range utilization | per-joint fraction of safe SG100 range |
+| Monotonicity | human motion progression vs semantic/q response |
+
+Acceptance motions:`OPEN`,`FIST`,`INDEX FLEX`,`THUMB OPPOSITION`,`PINCH`,`SPREAD`,`COMBINED GRASP`。这些是 future hardware metrics;不得填入 fake/synthetic PASS numbers。
 
 ---
 
-## 23. Known Limitations
+## 24. Known Limitations
 
 - 真实 AVP 端到端验证尚未执行(synthetic / fake / sim 已通过)。
-- AVP wrist axis mapping 当前为 Identity,仅 synthetic validated;真实 AVP wrist local axis 未做真机视觉验证。
-- `translation_scale = 0.5` 是 validation 默认,不代表真实标定后的唯一正确 scale。
+- checked-in identity basis/`translation_scale=0.5` 是 **UNCALIBRATED DEVELOPMENT DEFAULT**;真实 AVP wrist-local axis/scale 尚未完成 hardware six-axis calibration。
 - thumb opposition / abduction 由 palm-local geometric projection 建模,真实 thumb 3D coupling 可能在真机数据中显现。
-- 当前 SG100 CAD mesh 为 visual only(无 collision),尚无 final grasp collision geometry / 外部物体 grasp 验证。
+- robot/tabletop validation scene 已有明确 collision proxies,但尚无真实 AVP contact、pickup 或 grasp-quality acceptance。
 - 只做 right SG100 hand(`--hand` 仅 `choices=["right"]`)。
 - simulation 参数(`damping / armature / kp`)不代表真实 motor dynamics,用于稳定 validation backend。
 - RM65 当前第一版无额外 arm command filter;IK-failure / tracking-loss 的 HOLD 仅是 simulation validation 策略,非真机安全机制。
@@ -1085,7 +1283,7 @@ python -m sg100_teleop.tests.test_rm65_ik_z_scan
 
 ---
 
-## 24. Troubleshooting
+## 25. Troubleshooting
 
 ### `avp_stream` import fails
 检查 `.venv` 是否激活(`source .venv/bin/activate`),以及 `avp_stream` 是否已 `pip install -e .` 安装。
@@ -1103,14 +1301,14 @@ python -m sg100_teleop.tests.test_rm65_ik_z_scan
 若 runner 报 `nq/nv/nu != 17` 或 qpos/DoF/actuator order 不一致,检查 `rm65_sg100_sim.xml` 是否被改动。joint order 必须为 `joint_1..6` + SG100 11 joints。
 
 ### IK hold 频繁 / TCP 跟踪误差大
-按 [§11](#11-已知-z-singularity-行为诊断结论非-solver-bug):优先检查目标是否接近当前位形奇异区或超出 workspace;用 `test_rm65_ik_z_scan.py` 分析。**不要** 首先改 IK 参数或 MuJoCo joint axis。
+按 §11 的限制理解 diagnostic seed;优先检查目标是否接近当前位形奇异区或超出 workspace,再用 `test_rm65_ik_z_scan.py` 分析。**不要** 首先改 IK 参数或 MuJoCo joint axis。
 
 ### Hand moves but SG100 direction is wrong
 按顺序排查:calibration pose 是否做反 → YAML endpoint 是否合理 → raw feature(`--verbose`)→ `sg100_joint_semantics.yaml` mapping type。**不要** 首先改 MuJoCo joint axis(joint direction 已 sweep 验证)。
 
 ---
 
-## 25. Development Rules / Architecture Constraints
+## 26. Development Rules / Architecture Constraints
 
 1. **不要** 向 `avp_stream/` 写 SG100 / RM65-specific logic。`avp_stream` 是通用 AVP tracking 库,属上游。
 2. **不要** 让 `SG100Retargeter` 依赖 AVP joint index。Retargeter 只接受 `CanonicalHandState`。
@@ -1122,7 +1320,7 @@ python -m sg100_teleop.tests.test_rm65_ik_z_scan
 8. future Manus(或其它 glove)集成应实现 `Manus → CanonicalHandState`,**而不是** 另复制一套 SG100 retargeter。
 9. 不要随意更改:SG100 joint order / range / direction semantics、RM65 IK adaptive damping 参数、combined model joint order、`CanonicalHandState` 的 `[0,1]/[-1,1]` 约定。
 10. 不要重新开启 CAD full mesh self-collision(q=0 历史 penetration 由 CAD overlap 引起,非 joint origin 错误)。
-11. 修改核心模块后必须运行 [§19](#19-推荐完整-regression) 全部 regression。
+11. 修改核心模块后必须运行 [§19](#19-fast-core-regression) 全部 regression。
 12. **不允许「顺手重构」**——可追溯性与 regression stability 优先于代码风格统一。
 
 > **项目范围说明**
