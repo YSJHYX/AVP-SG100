@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<mujoco model="RM65-SG100-avp-grasp-scene">
+
+  <!--
+    AVP teleop + grasp scene.
+
+    Derived from rm65_sg100_grasp_scene.xml. Differences:
+      * includes rm65_sg100_avp_grasp_robot.xml (collision robot with the
+        palm backstop and link-2 capsules baked in);
+      * gravity is ON (0 0 -9.81) so the water bottle rests on the table.
+
+    When this scene is driven by run_avp_arm_hand_sim.py, the arm needs a
+    one-line gravity-compensation feedforward in the physics loop (see plan);
+    this XML itself is gravity-correct and validated standalone.
+  -->
+
+  <!--
+    Main-file option wins over the included robot's option, so this sets
+    gravity for the whole model.
+  -->
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81" />
+  <compiler angle="radian" />
+
+  <include file="rm65_sg100_avp_grasp_robot.xml"/>
+
+  <!--
+    Scene-level workspace reference markers.
+
+    These are visualization/debug sites only.
+    They do not participate in collision or dynamics.
+  -->
+  <worldbody>
+
+    <!-- Q_TELEOP_READY TCP position -->
+    <site
+      name="workspace_ready"
+      type="sphere"
+      pos="0.25048434 0.11727796 0.62550799"
+      size="0.006"
+      rgba="0 1 0 1"
+    />
+
+    <!-- radial = +60 mm -->
+    <site
+      name="workspace_outward_60"
+      type="sphere"
+      pos="0.30482326 0.14271970 0.62550799"
+      size="0.005"
+      rgba="1 0 0 1"
+    />
+
+    <!-- radial = -60 mm -->
+    <site
+      name="workspace_inward_60"
+      type="sphere"
+      pos="0.19614543 0.09183622 0.62550799"
+      size="0.005"
+      rgba="1 0 0 1"
+    />
+
+    <!-- lateral = +160 mm = LEFT -->
+    <site
+      name="workspace_left_160"
+      type="sphere"
+      pos="0.18263970 0.26218174 0.62550799"
+      size="0.005"
+      rgba="0 0 1 1"
+    />
+
+    <!-- lateral = -140 mm = RIGHT -->
+    <site
+      name="workspace_right_140"
+      type="sphere"
+      pos="0.30984840 -0.00951285 0.62550799"
+      size="0.005"
+      rgba="0 0 1 1"
+    />
+
+        <!-- ======================================================
+         Physical table
+
+         Local +X = workspace OUTWARD
+         Local +Y = workspace LEFT
+         Local +Z = world UP
+
+         Dimensions:
+           depth     = 300 mm
+           width     = 600 mm
+           thickness = 40 mm
+
+         Collision:
+           bottle <-> table ON
+           finger <-> table OFF (by intent; see validate script note)
+         ====================================================== -->
+
+    <body
+      name="grasp_table"
+      pos="0.36167811 0.25822177 0.51030240"
+      quat="0.97612720 0 0 0.21719966"
+    >
+      <geom
+        name="grasp_table_collision"
+        type="box"
+        size="0.150 0.300 0.020"
+        rgba="0.55 0.55 0.55 1"
+        contype="4"
+        conaffinity="3"
+        friction="0.8 0.005 0.0001"
+      />
+    </body>
+
+        <!-- ======================================================
+         Upright primitive water bottle
+
+         Height   = 220 mm
+         Diameter = 60 mm
+
+         Initial placement:
+           105 mm OUTWARD from READY grasp reference.
+           Bottle bottom (z 0.53030) sits exactly on the table top.
+
+         Free joint makes bottle a dynamic 6-DoF rigid body.
+
+         Collision:
+           finger <-> bottle ON
+           bottle <-> table ON
+         ====================================================== -->
+
+    <body
+      name="water_bottle"
+      pos="0.46101150 0.29368833 0.64030240"
+    >
+      <freejoint
+        name="water_bottle_free"
+      />
+
+      <geom
+        name="water_bottle_collision"
+        type="cylinder"
+        size="0.030 0.110"
+        mass="0.500"
+        rgba="0.2 0.6 1.0 0.75"
+        contype="2"
+        conaffinity="1"
+        friction="0.8 0.005 0.0001"
+      />
+
+      <!--
+          Intended side-grasp height.
+
+          World grasp-reference Z:
+            0.67975069
+
+          Bottle center Z:
+            0.64030240
+
+          Therefore local grasp Z:
+            +0.03944829
+      -->
+      <site
+        name="water_bottle_grasp_center"
+        type="sphere"
+        pos="0 0 0.03944829"
+        size="0.006"
+        rgba="1 0.4 0 1"
+      />
+
+      <!--
+          80 mm vertical grasp-critical band.
+      -->
+      <site
+        name="water_bottle_grasp_roi_low"
+        type="sphere"
+        pos="0 0 -0.00055171"
+        size="0.004"
+        rgba="1 1 0 1"
+      />
+
+      <site
+        name="water_bottle_grasp_roi_high"
+        type="sphere"
+        pos="0 0 0.07944829"
+        size="0.004"
+        rgba="1 1 0 1"
+      />
+
+    </body>
+
+  </worldbody>
+
+</mujoco>

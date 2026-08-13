@@ -34,7 +34,7 @@ from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = (
     REPO_ROOT / "sg100_teleop" / "assets" / "rm65_sg100" / "mjcf"
-    / "rm65_sg100_grasp_scene.xml"
+    / "rm65_sg100_avp_grasp_scene.xml"
 )
 
 ARM_DOF, HAND_DOF = 6, 11
@@ -46,6 +46,7 @@ BOTTLE_DR = 0.15
 BOTTLE_Z = 0.64030
 HAND_DX, HAND_DY, HAND_DZ = -0.08, -0.13, 0.0     # hand offset from bottle center (world)
 HAND_ROLL = 0.0                                     # wrist roll [deg]
+THUMB_J2_OPEN = -0.6                                # initial (open) thumb_j2 [rad]; 0=neutral, range [-2.61,0]
 PALM_POS = (0.0, -0.03, 0.05)                       # palm backstop in palm-local
 PALM_SIZE = (0.045, 0.035, 0.010)
 PALM_QUAT = (0.5, 0.5, 0.5, -0.5)                   # 90 about X, then 90 about Y
@@ -105,6 +106,11 @@ def _add_palm_collision(spec, palm_pos, palm_size, palm_quat):
     for b in spec.bodies:
         try:
             if b.name == "sg100_base_link":
+                # The AVP grasp scene already bakes the palm backstop into the
+                # XML; skip injecting a duplicate in that case. (--palm-pos is
+                # then a no-op; edit the XML to move the baked backstop.)
+                if any(getattr(g, "name", "") == "palm_collision" for g in b.geoms):
+                    return
                 g = b.add_geom()
                 g.name = "palm_collision"
                 g.type = mujoco.mjtGeom.mjGEOM_BOX
@@ -176,15 +182,16 @@ def main() -> None:
         q_lift = q_grasp  # no room to lift; just hold
 
     hand_open = np.zeros(HAND_DOF)
+    hand_open[1] = THUMB_J2_OPEN   # thumb_j2 (index 1 in SG100_JOINT_ORDER)
     hand_closed = _hand_closed(retargeter, CLOSE_AMOUNT)
 
     # start at the grasp pose, fingers open
     data.qpos[:ARM_DOF] = q_grasp
-    # zero HAND joints only -- do NOT touch qpos[17:] (that is the bottle freejoint)
-    data.qpos[ARM_DOF:ARM_DOF + HAND_DOF] = 0.0
+    # set HAND joints to the open pose -- do NOT touch qpos[17:] (bottle freejoint)
+    data.qpos[ARM_DOF:ARM_DOF + HAND_DOF] = hand_open
     data.qvel[:] = 0.0
     data.ctrl[:ARM_DOF] = q_grasp
-    data.ctrl[ARM_DOF:] = 0.0
+    data.ctrl[ARM_DOF:] = hand_open
     mujoco.mj_forward(model, data)
 
     print("=" * 56)
