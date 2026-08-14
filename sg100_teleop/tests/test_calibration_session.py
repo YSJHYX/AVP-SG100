@@ -5,6 +5,12 @@ import numpy as np
 
 from sg100_teleop.calibration.session import (
     CalibrationSession,
+    MIN_BIDIRECTIONAL_SEPARATION_RAD,
+    REQUIRED_POSES,
+)
+from sg100_teleop.calibration.calibrate_avp_hand import (
+    POSE_INSTRUCTIONS,
+    retry_pose_names,
 )
 from sg100_teleop.calibration.io import (
     save_calibration,
@@ -99,6 +105,22 @@ def make_raw(
     return AVPRawHandFeatures(
         **values
     )
+
+
+def populate_once(
+    session,
+    pose_noise=None,
+):
+    pose_noise = pose_noise or {}
+
+    for pose_name in POSE_VALUES:
+        session.add_sample(
+            pose_name,
+            make_raw(
+                pose_name,
+                noise=pose_noise.get(pose_name),
+            ),
+        )
 
 
 def main():
@@ -233,12 +255,109 @@ def main():
             == after.as_dict()
         )
 
+    # Structured diagnostics must identify an endpoint that is too
+    # close to neutral independently from a same-side failure.
+    too_small_session = CalibrationSession()
+    populate_once(
+        too_small_session,
+        pose_noise={
+            "finger_distal_negative": {
+                "index_distal": 1.0 - (
+                    MIN_BIDIRECTIONAL_SEPARATION_RAD / 2.0
+                ),
+            },
+        },
+    )
+    too_small = too_small_session.bidirectional_diagnostics()[
+        "index_distal"
+    ]
+    assert not too_small.passed
+    assert (
+        "negative_too_close_to_neutral"
+        in too_small.failure_reasons
+    )
+
+    same_side_session = CalibrationSession()
+    populate_once(
+        same_side_session,
+        pose_noise={
+            "neutral": {
+                "index_distal": -2.0,
+            },
+        },
+    )
+    same_side = same_side_session.bidirectional_diagnostics()[
+        "index_distal"
+    ]
+    assert not same_side.passed
+    assert "endpoints_on_same_side" in same_side.failure_reasons
+    assert same_side.product > 0.0
+
+    try:
+        same_side_session.build()
+    except ValueError as exc:
+        message = str(exc)
+        assert "index_distal" in message
+        assert "product=" in message
+        assert "endpoints_on_same_side" in message
+    else:
+        raise AssertionError(
+            "Same-side bidirectional endpoints were not rejected"
+        )
+
+    # Retry selection is minimal, stable, and always includes a fresh
+    # neutral sample.  Replacing a pose must discard the old attempt.
+    assert retry_pose_names(("thumb_distal",)) == (
+        "neutral",
+        "thumb_distal_negative",
+        "thumb_distal_positive",
+    )
+    assert retry_pose_names(("middle_distal",)) == (
+        "neutral",
+        "finger_distal_negative",
+        "finger_distal_positive",
+    )
+    assert retry_pose_names(
+        ("thumb_distal", "little_distal")
+    ) == (
+        "neutral",
+        "thumb_distal_negative",
+        "thumb_distal_positive",
+        "finger_distal_negative",
+        "finger_distal_positive",
+    )
+
+    replace_session = CalibrationSession()
+    replace_session.add_sample("neutral", make_raw("neutral"))
+    replace_session.add_sample("neutral", make_raw("neutral"))
+    replace_session.clear_pose("neutral")
+    assert replace_session.sample_count("neutral") == 0
+    replace_session.add_sample("neutral", make_raw("neutral"))
+    assert replace_session.sample_count("neutral") == 1
+
+    # Prompt keys/order are an external workflow contract.  Every
+    # instruction is Chinese and neutral explicitly permits slight bend.
+    assert tuple(name for name, _ in POSE_INSTRUCTIONS) == REQUIRED_POSES
+    assert "轻微弯曲" in dict(POSE_INSTRUCTIONS)["neutral"]
+    assert "不要刻意完全伸直" in dict(POSE_INSTRUCTIONS)["neutral"]
+    assert all(
+        any("\u4e00" <= char <= "\u9fff" for char in instruction)
+        for _, instruction in POSE_INSTRUCTIONS
+    )
+    prompt_text = "\n".join(
+        instruction
+        for _, instruction in POSE_INSTRUCTIONS
+    )
+    assert "Natural open hand" not in prompt_text
+    assert "Move thumb inward" not in prompt_text
+    assert "Extend distal finger joints" not in prompt_text
+
     print()
     print("PASS")
     print(
         "Multi-frame median calibration, "
-        "outlier robustness and YAML "
-        "roundtrip all work."
+        "endpoint diagnostics, retry selection, "
+        "prompt contract and YAML roundtrip all work."
     )
 
 

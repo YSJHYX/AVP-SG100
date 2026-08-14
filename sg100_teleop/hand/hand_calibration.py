@@ -101,11 +101,14 @@ class BidirectionalCalibration:
         # should normally lie on opposite sides of neutral.
         if neg_delta * pos_delta >= 0:
             raise ValueError(
-                "Bidirectional raw endpoints must lie "
-                "on opposite sides of neutral. "
-                "This may indicate that the selected raw "
-                "feature is insufficient to distinguish "
-                "the two motion directions."
+                "Bidirectional raw endpoints must lie on "
+                "opposite sides of neutral. "
+                f"negative={self.negative:+.6f}, "
+                f"neutral={self.neutral:+.6f}, "
+                f"positive={self.positive:+.6f}, "
+                f"neg_delta={neg_delta:+.6f}, "
+                f"pos_delta={pos_delta:+.6f}, "
+                f"product={neg_delta * pos_delta:+.6f}."
             )
 
     def normalize(self, value: float) -> float:

@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -25,6 +26,53 @@ REQUIRED_POSES = (
     "finger_distal_positive",
     "little_outward",
 )
+
+
+# Raw bidirectional features are angles in radians.  About 1.1 degrees
+# is large enough to reject endpoints that are effectively neutral at
+# AVP tracking noise scale, while remaining conservative for users with
+# a limited comfortable range of motion.
+MIN_BIDIRECTIONAL_SEPARATION_RAD = 0.02
+
+
+BIDIRECTIONAL_POSE_SOURCES = {
+    "thumb_distal": (
+        "thumb_distal_negative",
+        "thumb_distal_positive",
+    ),
+    "index_distal": (
+        "finger_distal_negative",
+        "finger_distal_positive",
+    ),
+    "middle_distal": (
+        "finger_distal_negative",
+        "finger_distal_positive",
+    ),
+    "little_distal": (
+        "finger_distal_negative",
+        "finger_distal_positive",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class BidirectionalEndpointDiagnostic:
+    feature_name: str
+    negative: float
+    neutral: float
+    positive: float
+    negative_delta: float
+    positive_delta: float
+    product: float
+    failure_reasons: tuple[str, ...]
+
+    @property
+    def passed(self) -> bool:
+        return not self.failure_reasons
+
+    @property
+    def status(self) -> str:
+        return "PASS" if self.passed else "FAIL"
 
 
 class CalibrationSession:
@@ -75,6 +123,19 @@ class CalibrationSession:
             )
         )
 
+    def clear_pose(
+        self,
+        pose_name: str,
+    ) -> None:
+        """Discard a pose so a retry replaces, rather than mixes, samples."""
+
+        if pose_name not in REQUIRED_POSES:
+            raise ValueError(
+                f"Unknown calibration pose: {pose_name}"
+            )
+
+        self._samples[pose_name].clear()
+
     def missing_poses(self) -> list[str]:
         return [
             pose
@@ -118,6 +179,70 @@ class CalibrationSession:
 
         return result
 
+    def bidirectional_diagnostics(
+        self,
+        minimum_separation: float = (
+            MIN_BIDIRECTIONAL_SEPARATION_RAD
+        ),
+    ) -> dict[str, BidirectionalEndpointDiagnostic]:
+        """Validate raw bidirectional endpoint geometry by feature."""
+
+        if minimum_separation <= 0.0:
+            raise ValueError(
+                "minimum_separation must be positive"
+            )
+
+        missing = self.missing_poses()
+
+        if missing:
+            raise ValueError(
+                "Cannot diagnose calibration. "
+                f"Missing poses: {missing}"
+            )
+
+        neutral = self.pose_median("neutral")
+        diagnostics = {}
+
+        for feature_name, (
+            negative_pose,
+            positive_pose,
+        ) in BIDIRECTIONAL_POSE_SOURCES.items():
+            negative = self.pose_median(
+                negative_pose
+            )[feature_name]
+            neutral_value = neutral[feature_name]
+            positive = self.pose_median(
+                positive_pose
+            )[feature_name]
+            negative_delta = negative - neutral_value
+            positive_delta = positive - neutral_value
+            product = negative_delta * positive_delta
+            reasons = []
+
+            if abs(negative_delta) < minimum_separation:
+                reasons.append("negative_too_close_to_neutral")
+
+            if abs(positive_delta) < minimum_separation:
+                reasons.append("positive_too_close_to_neutral")
+
+            if product >= 0.0:
+                reasons.append("endpoints_on_same_side")
+
+            diagnostics[feature_name] = (
+                BidirectionalEndpointDiagnostic(
+                    feature_name=feature_name,
+                    negative=negative,
+                    neutral=neutral_value,
+                    positive=positive,
+                    negative_delta=negative_delta,
+                    positive_delta=positive_delta,
+                    product=product,
+                    failure_reasons=tuple(reasons),
+                )
+            )
+
+        return diagnostics
+
     def build(self) -> HandCalibration:
         missing = self.missing_poses()
 
@@ -125,6 +250,32 @@ class CalibrationSession:
             raise ValueError(
                 "Cannot build calibration. "
                 f"Missing poses: {missing}"
+            )
+
+        diagnostics = self.bidirectional_diagnostics()
+        failures = [
+            diagnostic
+            for diagnostic in diagnostics.values()
+            if not diagnostic.passed
+        ]
+
+        if failures:
+            details = "; ".join(
+                (
+                    f"{item.feature_name}: "
+                    f"negative={item.negative:+.6f}, "
+                    f"neutral={item.neutral:+.6f}, "
+                    f"positive={item.positive:+.6f}, "
+                    f"neg_delta={item.negative_delta:+.6f}, "
+                    f"pos_delta={item.positive_delta:+.6f}, "
+                    f"product={item.product:+.6f}, "
+                    f"reasons={list(item.failure_reasons)}"
+                )
+                for item in failures
+            )
+            raise ValueError(
+                "Invalid bidirectional calibration endpoints: "
+                + details
             )
 
         neutral = self.pose_median(

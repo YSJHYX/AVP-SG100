@@ -106,14 +106,49 @@ def _signed_angle(
     v1: np.ndarray,
     v2: np.ndarray,
     axis: np.ndarray,
+    *,
+    context: str = "signed angle",
 ) -> float:
     """
     Signed rotation from v1 to v2 around axis.
+
+    Only the components perpendicular to ``axis`` participate in
+    the angle.  This is important for articulated hand geometry:
+    out-of-plane motion must not contaminate an angle measured about
+    the selected joint axis.
     """
 
-    a = _normalize(v1)
-    b = _normalize(v2)
-    axis = _normalize(axis)
+    try:
+        axis = _normalize(axis)
+    except ValueError as exc:
+        raise ValueError(
+            f"{context}: invalid rotation axis"
+        ) from exc
+
+    a_projected = (
+        np.asarray(v1, dtype=np.float64)
+        - np.dot(v1, axis) * axis
+    )
+    b_projected = (
+        np.asarray(v2, dtype=np.float64)
+        - np.dot(v2, axis) * axis
+    )
+
+    try:
+        a = _normalize(a_projected)
+    except ValueError as exc:
+        raise ValueError(
+            f"{context}: first vector has a degenerate "
+            "projection perpendicular to the rotation axis"
+        ) from exc
+
+    try:
+        b = _normalize(b_projected)
+    except ValueError as exc:
+        raise ValueError(
+            f"{context}: second vector has a degenerate "
+            "projection perpendicular to the rotation axis"
+        ) from exc
 
     sin_value = np.dot(
         axis,
@@ -146,6 +181,39 @@ def _project_to_plane(
     )
 
     return _normalize(projected)
+
+
+def _finger_lateral_flexion_axis(
+    proximal_direction: np.ndarray,
+    palm_z: np.ndarray,
+    palm_x: np.ndarray,
+    *,
+    context: str,
+) -> np.ndarray:
+    """Build a stable per-finger lateral axis in the palm plane."""
+
+    try:
+        finger_forward = _project_to_plane(
+            proximal_direction,
+            palm_z,
+        )
+        axis = _normalize(
+            np.cross(
+                finger_forward,
+                _normalize(palm_z),
+            )
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"{context}: cannot construct finger flexion axis"
+        ) from exc
+
+    # Give every finger axis the same handedness even when the fingers
+    # are naturally spread in the palm plane.
+    if np.dot(axis, _normalize(palm_x)) < 0.0:
+        axis = -axis
+
+    return axis
 
 
 @dataclass(frozen=True)
@@ -472,6 +540,7 @@ class AVPHandFeatureExtractor:
             thumb_mid - thumb_base,
             thumb_tip - thumb_mid,
             palm_z,
+            context="thumb_distal",
         )
 
         # ---------------------------------------------------------
@@ -497,6 +566,7 @@ class AVPHandFeatureExtractor:
             middle_direction,
             index_direction,
             palm_z,
+            context="index_adduction",
         )
 
         # ---------------------------------------------------------
@@ -524,16 +594,37 @@ class AVPHandFeatureExtractor:
         # ---------------------------------------------------------
         # Distal signed bend
         #
-        # Common lateral palm axis is used as the signed reference.
-        # Exact sign is calibrated later.
+        # Each finger gets a local lateral axis derived from its own
+        # proximal direction.  This avoids sign/scale distortion when
+        # fingers are naturally spread in the palm plane.
         # ---------------------------------------------------------
+
+        index_distal_axis = _finger_lateral_flexion_axis(
+            index_base - index_knuckle,
+            palm_z,
+            palm_x,
+            context="index_distal",
+        )
+        middle_distal_axis = _finger_lateral_flexion_axis(
+            middle_base - middle_knuckle,
+            palm_z,
+            palm_x,
+            context="middle_distal",
+        )
+        little_distal_axis = _finger_lateral_flexion_axis(
+            little_base - little_knuckle,
+            palm_z,
+            palm_x,
+            context="little_distal",
+        )
 
         index_distal = _signed_angle(
             index_mid
             - index_base,
             index_tip
             - index_mid,
-            palm_x,
+            index_distal_axis,
+            context="index_distal",
         )
 
         middle_distal = _signed_angle(
@@ -541,7 +632,8 @@ class AVPHandFeatureExtractor:
             - middle_base,
             middle_tip
             - middle_mid,
-            palm_x,
+            middle_distal_axis,
+            context="middle_distal",
         )
 
         little_distal = _signed_angle(
@@ -549,7 +641,8 @@ class AVPHandFeatureExtractor:
             - little_base,
             little_tip
             - little_mid,
-            palm_x,
+            little_distal_axis,
+            context="little_distal",
         )
 
         # ---------------------------------------------------------
@@ -566,6 +659,7 @@ class AVPHandFeatureExtractor:
             middle_direction,
             little_direction,
             palm_z,
+            context="little_outward",
         )
 
         return AVPRawHandFeatures(

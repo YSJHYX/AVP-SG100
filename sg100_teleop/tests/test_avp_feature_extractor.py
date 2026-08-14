@@ -4,6 +4,8 @@ from scipy.spatial.transform import Rotation
 from sg100_teleop.tracking.avp_hand_adapter import (
     AVPHandFeatureExtractor,
     AVP_JOINT_INDEX,
+    _finger_lateral_flexion_axis,
+    _signed_angle,
 )
 
 
@@ -141,6 +143,78 @@ def bend_index(joints):
     return result
 
 
+def set_finger_distal_angle(
+    joints,
+    finger_name,
+    angle,
+):
+    """Rotate a synthetic distal segment about that finger's own axis."""
+
+    result = joints.copy()
+    knuckle = result[
+        AVP_JOINT_INDEX[f"{finger_name}Knuckle"],
+        :3,
+        3,
+    ]
+    base = result[
+        AVP_JOINT_INDEX[f"{finger_name}IntermediateBase"],
+        :3,
+        3,
+    ]
+    mid = result[
+        AVP_JOINT_INDEX[f"{finger_name}IntermediateTip"],
+        :3,
+        3,
+    ]
+    proximal = base - knuckle
+    palm_z = np.array([0.0, 0.0, 1.0])
+    palm_x = np.array([1.0, 0.0, 0.0])
+    axis = _finger_lateral_flexion_axis(
+        proximal,
+        palm_z,
+        palm_x,
+        context=f"test_{finger_name}",
+    )
+    distal = mid - base
+    rotated = Rotation.from_rotvec(
+        angle * axis
+    ).apply(distal)
+    result[
+        AVP_JOINT_INDEX[f"{finger_name}Tip"],
+        :3,
+        3,
+    ] = mid + rotated
+    return result
+
+
+def build_spread_distal_pose(angle):
+    hand = build_straight_hand()
+
+    # Give each finger a distinct proximal direction in the palm plane.
+    for name, x_step in (
+        ("index", 0.006),
+        ("middle", 0.002),
+        ("little", -0.005),
+    ):
+        base_index = AVP_JOINT_INDEX[
+            f"{name}IntermediateBase"
+        ]
+        mid_index = AVP_JOINT_INDEX[
+            f"{name}IntermediateTip"
+        ]
+        tip_index = AVP_JOINT_INDEX[f"{name}Tip"]
+        hand[base_index, 0, 3] += x_step
+        hand[mid_index, 0, 3] += 2.0 * x_step
+        hand[tip_index, 0, 3] += 3.0 * x_step
+        hand = set_finger_distal_angle(
+            hand,
+            name,
+            angle,
+        )
+
+    return hand
+
+
 def main():
     extractor = AVPHandFeatureExtractor()
 
@@ -251,13 +325,112 @@ def main():
         > base.index_flexion + 0.3
     )
 
+    # ---------------------------------------------------------
+    # Test 4:
+    # Signed angles must use the axis-perpendicular projections.
+    # Large axial contamination must not change the result.
+    # ---------------------------------------------------------
+
+    axis = np.array([0.0, 0.0, 1.0])
+    positive_angle = _signed_angle(
+        np.array([1.0, 0.0, 8.0]),
+        np.array([np.cos(0.6), np.sin(0.6), -11.0]),
+        axis,
+        context="positive_projection_test",
+    )
+    negative_angle = _signed_angle(
+        np.array([1.0, 0.0, -5.0]),
+        np.array([np.cos(-0.4), np.sin(-0.4), 9.0]),
+        axis,
+        context="negative_projection_test",
+    )
+
+    assert abs(positive_angle - 0.6) < 1e-8
+    assert abs(negative_angle + 0.4) < 1e-8
+    assert positive_angle > 0.0
+    assert negative_angle < 0.0
+
+    try:
+        _signed_angle(
+            axis,
+            np.array([1.0, 0.0, 0.0]),
+            axis,
+            context="degenerate_test",
+        )
+    except ValueError as exc:
+        assert "degenerate_test" in str(exc)
+        assert "projection" in str(exc)
+    else:
+        raise AssertionError(
+            "Degenerate signed-angle projection was not rejected"
+        )
+
+    # ---------------------------------------------------------
+    # Test 5:
+    # Per-finger axes remain in the palm plane and share palm-x
+    # handedness for naturally spread proximal directions.
+    # ---------------------------------------------------------
+
+    palm_z = np.array([0.0, 0.0, 1.0])
+    palm_x = np.array([1.0, 0.0, 0.0])
+
+    for i, direction in enumerate(
+        (
+            np.array([0.30, 1.0, 0.15]),
+            np.array([0.05, 1.0, -0.20]),
+            np.array([-0.35, 1.0, 0.10]),
+        )
+    ):
+        finger_axis = _finger_lateral_flexion_axis(
+            direction,
+            palm_z,
+            palm_x,
+            context=f"axis_test_{i}",
+        )
+        assert abs(np.linalg.norm(finger_axis) - 1.0) < 1e-8
+        assert abs(np.dot(finger_axis, palm_z)) < 1e-8
+        assert np.dot(finger_axis, palm_x) > 0.0
+
+    # ---------------------------------------------------------
+    # Test 6:
+    # A relaxed, slightly bent neutral pose must lie between
+    # realistic negative and positive distal endpoints.
+    # ---------------------------------------------------------
+
+    negative_features = extractor.extract(
+        build_spread_distal_pose(-0.25)
+    )
+    neutral_features = extractor.extract(
+        build_spread_distal_pose(0.12)
+    )
+    positive_features = extractor.extract(
+        build_spread_distal_pose(0.55)
+    )
+
+    for feature_name in (
+        "index_distal",
+        "middle_distal",
+        "little_distal",
+    ):
+        negative_delta = (
+            getattr(negative_features, feature_name)
+            - getattr(neutral_features, feature_name)
+        )
+        positive_delta = (
+            getattr(positive_features, feature_name)
+            - getattr(neutral_features, feature_name)
+        )
+        assert negative_delta < -0.3
+        assert positive_delta > 0.3
+        assert negative_delta * positive_delta < 0.0
+
     print()
     print("PASS")
     print(
         "AVP geometric feature extractor "
         "is rigid-transform invariant, "
-        "scale invariant, and responds "
-        "to synthetic index flexion."
+        "scale invariant, uses projected signed angles, "
+        "and preserves realistic distal endpoint signs."
     )
 
 

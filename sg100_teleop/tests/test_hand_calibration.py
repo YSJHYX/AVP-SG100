@@ -186,11 +186,44 @@ def main():
         negative.index_distal + 1.0
     ) < 1e-8
 
+    # Semantic negative/positive labels, rather than raw numerical
+    # signs, define the normalized output direction.
+    reversed_raw_signs = BidirectionalCalibration(
+        negative=0.5,
+        neutral=0.0,
+        positive=-0.8,
+    )
+    assert abs(
+        reversed_raw_signs.normalize(0.5) + 1.0
+    ) < 1e-8
+    assert abs(
+        reversed_raw_signs.normalize(-0.8) - 1.0
+    ) < 1e-8
+    assert abs(
+        reversed_raw_signs.normalize(0.0)
+    ) < 1e-8
+
+    try:
+        BidirectionalCalibration(
+            negative=0.4,
+            neutral=0.0,
+            positive=0.9,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert "opposite sides" in message
+        assert "product=" in message
+        assert "neg_delta=" in message
+    else:
+        raise AssertionError(
+            "Same-side endpoints must remain a hard invariant"
+        )
+
     print()
     print("PASS")
     print(
         "Raw features -> CanonicalHandState "
-        "normalization works."
+        "normalization and bidirectional semantics work."
     )
 
 

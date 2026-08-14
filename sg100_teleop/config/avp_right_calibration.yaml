@@ -1,0 +1,58 @@
+schema_version: 1
+metadata:
+  created_at_utc: '2026-08-14T05:27:07.316292+00:00'
+  device: apple_vision_pro
+  tracking_library: avp_stream
+  hand: right
+  sampling_hz: 60.0
+  duration_per_pose_sec: 1.5
+  samples_per_pose:
+    neutral: 90
+    thumb_opposition: 90
+    thumb_abduction: 90
+    thumb_distal_negative: 90
+    thumb_distal_positive: 89
+    index_adduction: 90
+    finger_flexion: 90
+    finger_distal_negative: 90
+    finger_distal_positive: 90
+    little_outward: 90
+unidirectional:
+  thumb_opposition:
+    neutral: 1.2203422038748126
+    active: -0.25080963746920226
+  thumb_abduction:
+    neutral: 0.7052428607601491
+    active: 1.2493097691655097
+  index_adduction:
+    neutral: -0.17426644034736982
+    active: -0.02554713428591844
+  index_flexion:
+    neutral: 0.26791531533922724
+    active: 0.6819211946209334
+  middle_flexion:
+    neutral: 0.26365402380033565
+    active: 0.6896235090762761
+  little_outward:
+    neutral: 0.185982767946975
+    active: 0.6138507683882455
+  little_flexion:
+    neutral: 0.2100234628126027
+    active: 0.29965919223212995
+bidirectional:
+  thumb_distal:
+    negative: -0.21398594604468996
+    neutral: -0.14491916409216077
+    positive: 0.916310539128625
+  index_distal:
+    negative: -0.04428932095419587
+    neutral: 0.0354288837192266
+    positive: 0.38655361214378925
+  middle_distal:
+    negative: -0.057710055246800104
+    neutral: 0.008026515657371842
+    positive: 0.5077215254674693
+  little_distal:
+    negative: 0.004029624767322463
+    neutral: 0.06161074194892842
+    positive: 0.3355139223847391
