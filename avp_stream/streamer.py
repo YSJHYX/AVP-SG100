@@ -18,6 +18,7 @@ import traceback
 import logging
 import atexit
 import signal
+import zipfile
 from copy import deepcopy
 from typing import Optional, Tuple, List, Dict, Any, Callable, TYPE_CHECKING
 from pathlib import Path
@@ -2637,6 +2638,68 @@ class VisionProStreamer:
         
         self._log(f"[CONFIG] Audio configured: {effective_sample_rate}Hz (device={device}, stereo={stereo})")
     
+    @staticmethod
+    def _validate_prebuilt_usdz(path: str) -> str:
+        """Validate a prebuilt USDZ without requiring USD libraries."""
+
+        if not isinstance(path, (str, os.PathLike)):
+            raise TypeError(
+                "Prebuilt USDZ path must be a string or path-like value"
+            )
+
+        resolved = Path(path).expanduser().resolve()
+
+        if not resolved.exists():
+            raise FileNotFoundError(
+                f"Prebuilt USDZ file does not exist: {resolved}"
+            )
+
+        if not resolved.is_file():
+            raise RuntimeError(
+                f"Prebuilt USDZ path is not a regular file: {resolved}"
+            )
+
+        if resolved.suffix.lower() != ".usdz":
+            raise RuntimeError(
+                f"Prebuilt scene must use the .usdz suffix: {resolved}"
+            )
+
+        try:
+            file_size = resolved.stat().st_size
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not inspect prebuilt USDZ file: {resolved}: {exc}"
+            ) from exc
+
+        if file_size <= 0:
+            raise RuntimeError(
+                f"Prebuilt USDZ file is empty: {resolved}"
+            )
+
+        if not os.access(resolved, os.R_OK):
+            raise RuntimeError(
+                f"Prebuilt USDZ file is not readable: {resolved}"
+            )
+
+        try:
+            with resolved.open("rb") as stream:
+                stream.read(1)
+
+            with zipfile.ZipFile(resolved) as archive:
+                bad_member = archive.testzip()
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise RuntimeError(
+                f"Prebuilt USDZ is not a readable ZIP archive: {resolved}: {exc}"
+            ) from exc
+
+        if bad_member is not None:
+            raise RuntimeError(
+                "Prebuilt USDZ failed ZIP integrity validation: "
+                f"{resolved} (corrupted member: {bad_member})"
+            )
+
+        return str(resolved)
+
     def configure_mujoco(
         self,
         xml_path: str,
@@ -2647,6 +2710,7 @@ class VisionProStreamer:
         force_reload: bool = False,
         streaming_hz: int = 120,
         wait_for_usdz_transfer: bool = False,
+        usdz_path: Optional[str] = None,
     ):
         """
         Configure MuJoCo simulation streaming. Call this before serve().
@@ -2667,6 +2731,8 @@ class VisionProStreamer:
             wait_for_usdz_transfer: If True, delay pose streaming until USDZ transfer
                         completes. Useful for large scenes where you want the 3D model
                         to be fully loaded before poses start animating. (default: False)
+            usdz_path: Optional prebuilt USDZ scene. When provided, this file is
+                        validated and sent directly; XML cache/conversion is bypassed.
         
         Example::
         
@@ -2682,6 +2748,12 @@ class VisionProStreamer:
                 streamer.update_sim()
         """
         
+        resolved_usdz_path = None
+        if usdz_path is not None:
+            resolved_usdz_path = self._validate_prebuilt_usdz(
+                usdz_path
+            )
+
         # Process relative_to parameter
         attach_to = None
         if relative_to is not None:
@@ -2726,6 +2798,7 @@ class VisionProStreamer:
             "force_reload": force_reload,
             "streaming_hz": streaming_hz,
             "wait_for_usdz_transfer": wait_for_usdz_transfer,
+            "usdz_path": resolved_usdz_path,
         }
         
         # Automatically switch to simulation-relative coordinates
@@ -3748,9 +3821,19 @@ class VisionProStreamer:
         import struct
         
         is_isaac = self._sim_config.get("type") == "isaac"
+        prebuilt_usdz = self._sim_config.get("usdz_path")
+        force_reload = self._sim_config.get("force_reload", False)
         
         # Get or generate the USDZ file path (using existing caching logic)
-        if is_isaac:
+        if prebuilt_usdz is not None:
+            usdz_path = self._validate_prebuilt_usdz(
+                prebuilt_usdz
+            )
+            self._log(
+                f"[USDZ-WEBRTC] Using prebuilt scene: {usdz_path}",
+                force=True,
+            )
+        elif is_isaac:
             # Isaac Lab: export to cached USDZ
             if self._isaac_stage is None or self._isaac_config is None:
                 self._log("[USDZ-WEBRTC] Error: No Isaac stage configured", force=True)
@@ -4073,6 +4156,30 @@ class VisionProStreamer:
         """
         import tempfile
         import hashlib
+
+        prebuilt_usdz = self._sim_config.get("usdz_path")
+
+        if prebuilt_usdz is not None:
+            usdz_path = self._validate_prebuilt_usdz(
+                prebuilt_usdz
+            )
+            self._log(
+                f"[USDZ] Using prebuilt scene: {usdz_path}",
+                force=True,
+            )
+            sent = self._send_usdz_data(
+                usdz_path,
+                attach_to,
+                grpc_port,
+            )
+
+            if not sent:
+                raise RuntimeError(
+                    "Failed to send explicitly configured prebuilt "
+                    f"USDZ scene to Vision Pro: {usdz_path}"
+                )
+
+            return True
         
         xml_path = self._sim_config["xml_path"]
         force_reload = self._sim_config.get("force_reload", False)

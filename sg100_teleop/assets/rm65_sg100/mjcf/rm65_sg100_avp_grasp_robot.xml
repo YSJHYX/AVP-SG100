@@ -46,8 +46,14 @@
     <mesh name="sg100_little_linik3" content_type="model/stl" file="../../sg100/meshes_mujoco/little_linik3.STL" />
   </asset>
   <worldbody>
-    <geom type="mesh" rgba="1 1 1 1" mesh="base_link" name="rm65_visual_0" group="1" contype="0" conaffinity="0" />
-    <body name="link_1" pos="0 0 0.2405">
+    <!--
+      Keep the fixed RM65 pedestal as a real MuJoCo body so the AVP pose
+      stream can place it with the rest of the robot scene.  This body has
+      no joint and therefore adds no qpos/DoF.
+    -->
+    <body name="base_link">
+      <geom type="mesh" rgba="1 1 1 1" mesh="base_link" name="rm65_visual_0" group="1" contype="0" conaffinity="0" />
+      <body name="link_1" pos="0 0 0.2405">
       <inertial pos="0.000941 0.007803 -0.10744" quat="0.997511 -0.0583785 0.00606547 -0.0390687" mass="1.51" diaginertia="0.00266445 0.00233888 0.00165429" />
       <joint name="joint_1" pos="0 0 0" axis="0 0 1" range="-3.106 3.106" actuatorfrcrange="-60 60" damping="0.1" armature="0.01" />
       <geom type="mesh" rgba="1 1 1 1" mesh="link_1" name="rm65_visual_1" group="1" contype="8" conaffinity="4" />
@@ -241,6 +247,7 @@
             </body>
           </body>
         </body>
+      </body>
       </body>
     </body>
   </worldbody>

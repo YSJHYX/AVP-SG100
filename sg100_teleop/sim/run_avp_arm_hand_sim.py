@@ -116,6 +116,16 @@ def main():
     )
 
     parser.add_argument(
+        "--usdz",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Prebuilt MuJoCo USDZ scene. When provided, "
+            "cache and conversion are bypassed."
+        ),
+    )
+
+    parser.add_argument(
         "--port",
         type=int,
         default=50051,
@@ -173,7 +183,7 @@ def main():
         "--attach",
         nargs=4,
         type=float,
-        default=[0.0, 0.7, 0.8, 0.0],
+        default=[0.0, 0.0, 0.8, 90],
         metavar=("X", "Y", "Z", "YAW_DEG"),
         help=(
             "Placement of the MuJoCo robot "
@@ -229,6 +239,15 @@ def main():
     avp_to_tcp_config_path = Path(
         args.avp_to_tcp_config
     )
+
+    prebuilt_usdz_path = None
+
+    if args.usdz is not None:
+        prebuilt_usdz_path = (
+            VisionProStreamer._validate_prebuilt_usdz(
+                args.usdz
+            )
+        )
 
     if not model_path.exists():
         raise FileNotFoundError(
@@ -292,6 +311,25 @@ def main():
         "AVP/TCP config    :",
         avp_to_tcp_config_path,
     )
+
+    print(
+        "USDZ source       :",
+        (
+            "prebuilt"
+            if prebuilt_usdz_path is not None
+            else "cache/converter"
+        ),
+    )
+
+    if prebuilt_usdz_path is not None:
+        print(
+            "USDZ path         :",
+            prebuilt_usdz_path,
+        )
+        print(
+            "USDZ size         :",
+            f"{Path(prebuilt_usdz_path).stat().st_size / (1024 * 1024):.2f} MB",
+        )
 
     print(
         "basis source      :",
@@ -787,6 +825,7 @@ def main():
             args.attach
         ),
         grpc_port=args.port,
+        usdz_path=prebuilt_usdz_path,
     )
 
 
