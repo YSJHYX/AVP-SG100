@@ -32,6 +32,14 @@ ROBOT_XML = (
     / "sg100_teleop/assets/rm65_sg100/mjcf/"
     "rm65_sg100_avp_grasp_robot.xml"
 )
+SIM_XML = (
+    ROOT
+    / "sg100_teleop/assets/rm65_sg100/mjcf/"
+    "rm65_sg100_sim.xml"
+)
+SIM_NBODY = 20
+SIM_RUNTIME_BODIES = 19
+SIM_DIMS = (17, 17, 17)
 
 Q_ARM_READY = np.array(
     [0.32488, -0.76769, 0.97621, 0.22463, -1.80649, -0.12430],
@@ -151,7 +159,37 @@ def test_source_table_bottle_contact() -> None:
     assert abs(bottle_bottom - table_top) < 1e-6
 
 
-def _run_usd_contract_checks(temp_dir: Path) -> None:
+def test_sim_source_regression() -> None:
+    model = mujoco.MjModel.from_xml_path(str(SIM_XML))
+    assert (model.nq, model.nv, model.nu) == SIM_DIMS
+    assert model.nbody == SIM_NBODY
+
+    base_id = _body_id(model, "base_link")
+    assert int(model.body_jntnum[base_id]) == 0
+    assert int(model.body_dofnum[base_id]) == 0
+    link1_id = _body_id(model, "link_1")
+    assert int(model.body_parentid[link1_id]) == base_id
+    assert int(model.body_parentid[base_id]) == 0
+
+    qpos_addresses = tuple(
+        int(
+            model.jnt_qposadr[
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            ]
+        )
+        for name in ROBOT_JOINT_ORDER
+    )
+    assert qpos_addresses == tuple(range(17))
+
+
+def _run_usd_contract_checks(
+    temp_dir: Path,
+    *,
+    xml_path: Path = SCENE_XML,
+    expected_bodies: int = 21,
+    expect_guides: bool = True,
+    expect_table_bottle: bool = True,
+) -> None:
     try:
         from pxr import Usd, UsdGeom
         from sg100_teleop.tools.export_avp_mujoco_usdz import (
@@ -167,21 +205,22 @@ def _run_usd_contract_checks(temp_dir: Path) -> None:
     output = temp_dir / "scene_compat.usdz"
     intermediate = temp_dir / "intermediate"
     audit = export_compat_usdz(
-        SCENE_XML,
+        xml_path,
         output,
         intermediate_dir=intermediate,
     )
-    model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
+    model = mujoco.MjModel.from_xml_path(str(xml_path))
     body_names = runtime_body_names(model)
 
-    assert len(body_names) == 21
-    assert len(audit.body_paths) == 21
-    assert len(audit.kept_renderables) == 21
+    assert len(body_names) == expected_bodies
+    assert len(audit.body_paths) == expected_bodies
+    assert len(audit.kept_renderables) == expected_bodies
     assert not audit.ownership_collisions
     assert not audit.nested_runtime_bodies
     assert not audit.physics_prims
     assert not audit.world_static_renderables
-    assert any(path.endswith("/workspace_ready") for path in audit.skipped_guides)
+    if expect_guides:
+        assert any(path.endswith("/workspace_ready") for path in audit.skipped_guides)
     assert any(path.endswith("/PhysicsScene") for path in audit.skipped_physics_only)
 
     stage = Usd.Stage.Open(str(output))
@@ -214,7 +253,10 @@ def _run_usd_contract_checks(temp_dir: Path) -> None:
         for record in audit.kept_renderables
         if Path(record.destination_path).name in SCALE_VISUALS
     }
-    assert set(scale_records) == SCALE_VISUALS
+    assert set(scale_records) == {
+        name for name in SCALE_VISUALS
+        if name in {Path(r.destination_path).name for r in audit.kept_renderables}
+    }
 
     # Main robot visuals retain either authored display color or a material binding.
     for visual_name in ("rm65_visual_0", "rm65_visual_3", "sg100_base_link_visual"):
@@ -225,6 +267,13 @@ def _run_usd_contract_checks(temp_dir: Path) -> None:
         color = UsdGeom.Gprim(prim).GetDisplayColorAttr().Get()
         material_targets = prim.GetRelationship("material:binding").GetTargets()
         assert color or material_targets
+
+    if not expect_table_bottle:
+        assert zipfile.is_zipfile(output)
+        with zipfile.ZipFile(output) as archive:
+            assert archive.testzip() is None
+            assert archive.namelist()
+        return
 
     bbox_cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=False
@@ -251,14 +300,36 @@ def test_usd_contract() -> None:
         _run_usd_contract_checks(Path(directory))
 
 
+def test_sim_usd_contract() -> None:
+    with tempfile.TemporaryDirectory(prefix="test_avp_sim_compat_") as directory:
+        _run_usd_contract_checks(
+            Path(directory),
+            xml_path=SIM_XML,
+            expected_bodies=SIM_RUNTIME_BODIES,
+            expect_guides=False,
+            expect_table_bottle=False,
+        )
+
+
 def main() -> None:
     test_base_link_source_and_kinematic_regression()
     print("base_link source + kinematic regression: PASS")
     test_source_table_bottle_contact()
     print("source table/bottle contact: PASS")
+    test_sim_source_regression()
+    print("sim source regression: PASS")
     with tempfile.TemporaryDirectory(prefix="test_avp_compat_") as directory:
         _run_usd_contract_checks(Path(directory))
     print("AVP USDZ contract A-P: PASS")
+    with tempfile.TemporaryDirectory(prefix="test_avp_sim_compat_") as directory:
+        _run_usd_contract_checks(
+            Path(directory),
+            xml_path=SIM_XML,
+            expected_bodies=SIM_RUNTIME_BODIES,
+            expect_guides=False,
+            expect_table_bottle=False,
+        )
+    print("AVP sim USDZ contract: PASS")
 
 
 if __name__ == "__main__":

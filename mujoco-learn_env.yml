@@ -201,4 +201,4 @@ dependencies:
       - websockets==15.0.1
       - werkzeug==3.1.3
       - zipp==3.21.0
-prefix: /home/cy/miniconda3/envs/mujoco-learn
+prefix: /home/heymandex2025/miniconda3/envs/mujoco-learn
