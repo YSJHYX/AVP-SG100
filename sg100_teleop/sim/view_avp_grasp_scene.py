@@ -42,7 +42,7 @@ SCENE_PATH = (
     / "assets"
     / "rm65_sg100"
     / "mjcf"
-    / "rm65_sg100_avp_grasp_scene.xml"
+    / "rm65_sg100_avp_grasp_robot.xml"
 )
 
 # Mirrors RM65_TELEOP_READY_Q in run_avp_arm_hand_sim.py (inlined to avoid the

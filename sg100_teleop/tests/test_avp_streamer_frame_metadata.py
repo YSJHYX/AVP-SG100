@@ -14,7 +14,7 @@ def matrix_message(matrix):
     return message
 
 
-def hand_update(source_sequence=8, right_valid=True):
+def hand_update(source_sequence=8, right_valid=True, right_wrist=None):
     update = handtracking_pb2.HandUpdate(
         source_frame_sequence=source_sequence,
         left_hand_tracked=False,
@@ -23,7 +23,7 @@ def hand_update(source_sequence=8, right_valid=True):
     identity = np.eye(4)
     update.Head.CopyFrom(matrix_message(identity))
     update.left_hand.wristMatrix.CopyFrom(matrix_message(identity))
-    update.right_hand.wristMatrix.CopyFrom(matrix_message(identity))
+    update.right_hand.wristMatrix.CopyFrom(matrix_message(right_wrist if right_wrist is not None else identity))
     for _ in range(27):
         update.left_hand.skeleton.jointMatrices.append(matrix_message(identity))
         update.right_hand.skeleton.jointMatrices.append(matrix_message(identity))
@@ -93,10 +93,27 @@ def test_repeated_transport_packet_with_same_source_frame_keeps_source_identity(
     assert second["transport_receive_sequence"] == 2
 
 
+def test_legacy_app_infers_validity_from_wrist_matrix():
+    # Old app builds send neither tracked flags nor source_frame_sequence.
+    # Validity must fall back to the wrist matrix: non-identity -> tracked.
+    streamer = bare_streamer()
+    posed_wrist = np.eye(4)
+    posed_wrist[:3, 3] = [0.1, 0.2, 0.9]
+    streamer._process_hand_update(
+        hand_update(source_sequence=0, right_valid=False, right_wrist=posed_wrist)
+    )
+
+    assert streamer.get_latest().right_hand_valid is True
+
+    streamer._process_hand_update(hand_update(source_sequence=0, right_valid=False))
+    assert streamer.get_latest().right_hand_valid is False
+
+
 def main():
     test_source_sequence_stays_stable_across_cached_queries()
     test_transport_sequence_increments_only_when_packet_is_processed()
     test_repeated_transport_packet_with_same_source_frame_keeps_source_identity()
+    test_legacy_app_infers_validity_from_wrist_matrix()
     print("AVP STREAMER FRAME METADATA: PASS")
 
 

@@ -69,10 +69,24 @@ except ValueError:
 LIBRARY_VERSION = "2.50.0"
 LIBRARY_VERSION_CODE = 25000  # 2*10000 + 50*100 + 0
 
-YUP2ZUP = np.array([[[1, 0, 0, 0], 
-                    [0, 0, -1, 0], 
+YUP2ZUP = np.array([[[1, 0, 0, 0],
+                    [0, 0, -1, 0],
                     [0, 1, 0, 0],
                     [0, 0, 0, 1]]], dtype = np.float64)
+
+
+def _matrix_is_identity(matrix, tol: float = 1e-6) -> bool:
+    """True when a protobuf Matrix4x4 equals the identity within tol.
+
+    Old VisionOS app builds leave wristMatrix at identity until ARKit
+    produces the first pose, so identity is the "never tracked" signal.
+    """
+    for row in range(4):
+        for col in range(4):
+            expected = 1.0 if row == col else 0.0
+            if abs(getattr(matrix, f"m{row}{col}", 0.0) - expected) > tol:
+                return False
+    return True
 
 
 # =============================================================================
@@ -1127,6 +1141,28 @@ class VisionProStreamer:
                 left_fingers_compat = left_fingers_full
                 right_fingers_compat = right_fingers_full
             
+            # Hand validity flags. New app builds send left/right_hand_tracked
+            # (proto fields 4/5) alongside source_frame_sequence (field 6).
+            # Old builds populate none of them: proto3 defaults the bools to
+            # False, which would mark every frame invalid downstream. When the
+            # source sequence is absent, infer validity from the wrist matrix
+            # instead -- identity means ARKit never produced a pose for that
+            # hand. Limitation: an old app keeps the last wrist pose after the
+            # hand is lost, so "lost" frames look valid with a frozen pose.
+            left_hand_valid = bool(getattr(hand_update, "left_hand_tracked", False))
+            right_hand_valid = bool(getattr(hand_update, "right_hand_tracked", False))
+            if int(getattr(hand_update, "source_frame_sequence", 0)) == 0:
+                left_hand_valid = not _matrix_is_identity(hand_update.left_hand.wristMatrix)
+                right_hand_valid = not _matrix_is_identity(hand_update.right_hand.wristMatrix)
+                if not getattr(self, "_legacy_validity_logged", False):
+                    self._legacy_validity_logged = True
+                    self._log(
+                        "[HAND-TRACKING] Legacy app build detected (no "
+                        "source_frame_sequence): inferring hand validity "
+                        "from wrist matrices",
+                        force=True,
+                    )
+
             transformations = {
                 "left_wrist": left_wrist,
                 "right_wrist": right_wrist,
@@ -1137,8 +1173,8 @@ class VisionProStreamer:
                 "head": head,
                 "left_pinch_distance": get_pinch_distance(hand_update.left_hand.skeleton.jointMatrices),
                 "right_pinch_distance": get_pinch_distance(hand_update.right_hand.skeleton.jointMatrices),
-                "left_hand_valid": bool(getattr(hand_update, "left_hand_tracked", False)),
-                "right_hand_valid": bool(getattr(hand_update, "right_hand_tracked", False)),
+                "left_hand_valid": left_hand_valid,
+                "right_hand_valid": right_hand_valid,
             }
 
             transformations["right_wrist_roll"] = get_wrist_roll(transformations["right_wrist"])
