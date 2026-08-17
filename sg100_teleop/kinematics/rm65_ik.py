@@ -66,15 +66,82 @@ def so3_log(R: np.ndarray) -> np.ndarray:
     )
 
 
+def rotation_matrix_to_quat_wxyz(R: np.ndarray) -> np.ndarray:
+    """
+    Rotation matrix -> quaternion in the official library's
+    (w, x, y, z) component order. Robust for any rotation angle.
+    """
+    R = np.asarray(R, dtype=np.float64)
+
+    tr = float(np.trace(R))
+
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        w = 0.25 * s
+        x = (R[2, 1] - R[1, 2]) / s
+        y = (R[0, 2] - R[2, 0]) / s
+        z = (R[1, 0] - R[0, 1]) / s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+
+    quat = np.array([w, x, y, z], dtype=np.float64)
+
+    norm = float(np.linalg.norm(quat))
+    if norm > 0.0:
+        quat /= norm
+
+    return quat
+
+
 class RM65IKSolver:
     """
     6D Cartesian IK for RM65.
 
     TCP:
-        sg100_base_link
+        sg100_base_link (coincides with the RM65 joint-6 flange frame,
+        so the target pose is the official T06 pose).
 
     Solver:
-        adaptive damped least-squares Jacobian IK
+        RealMan's official offline algorithm library from the
+        ``Robotic_Arm`` pip package (``rm_algo_inverse_kinematics``).
+        It is a closed-form solver that returns the analytic solution
+        nearest to the seed joint vector, which preserves the
+        frame-to-frame continuity this teleop pipeline relies on.
+
+        The official library was validated against this MuJoCo model by
+        ``scripts/validate_rm_official_fk.py``: FK agreement <= 5 um /
+        0.022 deg across sampled configurations, joint limits within
+        0.2 deg, and an offline IK round trip <= 5.3 um. MuJoCo world
+        coordinates equal the official RM65 base frame, so no extra
+        SE(3) correction is needed.
+
+    Unit / convention bridge:
+        official library: joint angles in degrees, quaternions ordered
+        (w, x, y, z); this class keeps the project's radians +
+        rotation-matrix interface.
+
+    Diagnostics:
+        ``sigma_min`` / ``condition_number`` are computed from the
+        MuJoCo Jacobian at the returned configuration (position and
+        orientation rows unweighted). ``damping`` is kept for
+        ``IKResult`` compatibility and is always 0.0 because the
+        official solver is analytic, not iteratively damped.
 
     Important:
         Only RM65's six DoFs participate in IK.
@@ -86,49 +153,12 @@ class RM65IKSolver:
         model: mujoco.MjModel,
         tcp_body_name: str = "sg100_base_link",
         *,
-        orientation_weight: float = 0.20,
-        position_tolerance: float = 1e-4,
-        rotation_tolerance: float = 1e-3,
-        max_iterations: int = 200,
-        step_gain: float = 0.8,
-        max_joint_step: float = 0.08,
-        max_step_norm: float = 0.15,
         joint_limit_margin: float = 1e-4,
     ):
         self.model = model
         self.data = mujoco.MjData(model)
 
-        self.orientation_weight = float(
-            orientation_weight
-        )
-
-        self.position_tolerance = float(
-            position_tolerance
-        )
-
-        self.rotation_tolerance = float(
-            rotation_tolerance
-        )
-
-        self.max_iterations = int(
-            max_iterations
-        )
-
-        self.step_gain = float(
-            step_gain
-        )
-
-        self.max_joint_step = float(
-            max_joint_step
-        )
-
-        self.max_step_norm = float(
-            max_step_norm
-        )
-
-        self.joint_limit_margin = float(
-            joint_limit_margin
-        )
+        self.joint_limit_margin = float(joint_limit_margin)
 
         self.tcp_body_id = mujoco.mj_name2id(
             model,
@@ -162,24 +192,14 @@ class RM65IKSolver:
 
             self.joint_ids.append(jid)
 
-            qadr = int(
-                model.jnt_qposadr[jid]
-            )
-
-            dadr = int(
-                model.jnt_dofadr[jid]
-            )
+            qadr = int(model.jnt_qposadr[jid])
+            dadr = int(model.jnt_dofadr[jid])
 
             self.qpos_indices.append(qadr)
             self.dof_indices.append(dadr)
 
-            lower.append(
-                model.jnt_range[jid, 0]
-            )
-
-            upper.append(
-                model.jnt_range[jid, 1]
-            )
+            lower.append(model.jnt_range[jid, 0])
+            upper.append(model.jnt_range[jid, 1])
 
         self.qpos_indices = np.asarray(
             self.qpos_indices,
@@ -191,41 +211,64 @@ class RM65IKSolver:
             dtype=np.int64,
         )
 
-        self.lower = np.asarray(
-            lower,
-            dtype=np.float64,
-        )
+        self.lower = np.asarray(lower, dtype=np.float64)
+        self.upper = np.asarray(upper, dtype=np.float64)
 
-        self.upper = np.asarray(
-            upper,
-            dtype=np.float64,
-        )
+        self._init_official_algorithm()
 
     # ---------------------------------------------------------
-    # Kinematics
+    # Official RealMan algorithm library
+    # ---------------------------------------------------------
+
+    def _init_official_algorithm(self) -> None:
+        try:
+            from Robotic_Arm.rm_ctypes_wrap import (
+                rm_force_type_e,
+                rm_inverse_kinematics_params_t,
+                rm_robot_arm_model_e,
+            )
+            from Robotic_Arm.rm_robot_interface import Algo
+        except ImportError as exc:
+            raise RuntimeError(
+                "The RealMan official algorithm package is required "
+                "for RM65 IK. Install it with:  pip install Robotic_Arm"
+            ) from exc
+
+        # RM65-B = RM_MODEL_RM_65_E arm + RM_MODEL_RM_B_E standard
+        # (B-series) end-effector version.
+        self._params_type = rm_inverse_kinematics_params_t
+
+        self._algo = Algo(
+            rm_robot_arm_model_e.RM_MODEL_RM_65_E,
+            rm_force_type_e.RM_MODEL_RM_B_E,
+        )
+
+        if getattr(self._algo, "arm_dof", 6) != 6:
+            raise RuntimeError(
+                "Official algorithm library did not initialize as a "
+                f"6-DoF RM65 (arm_dof={self._algo.arm_dof})."
+            )
+
+    # ---------------------------------------------------------
+    # Kinematics (MuJoCo, used for FK cross-checks and Jacobian
+    # diagnostics; validated to match the official library)
     # ---------------------------------------------------------
 
     def _set_arm_q(
         self,
         q_arm: np.ndarray,
     ) -> None:
-        q_arm = np.asarray(
-            q_arm,
-            dtype=np.float64,
-        )
+        q_arm = np.asarray(q_arm, dtype=np.float64)
 
         if q_arm.shape != (6,):
             raise ValueError(
-                f"Expected q_arm shape (6,), "
-                f"got {q_arm.shape}"
+                f"Expected q_arm shape (6,), got {q_arm.shape}"
             )
 
         self.data.qpos[:] = 0.0
         self.data.qvel[:] = 0.0
 
-        self.data.qpos[
-            self.qpos_indices
-        ] = q_arm
+        self.data.qpos[self.qpos_indices] = q_arm
 
         mujoco.mj_forward(
             self.model,
@@ -236,18 +279,12 @@ class RM65IKSolver:
         self,
         q_arm: np.ndarray,
     ):
-        self._set_arm_q(
-            q_arm
-        )
+        self._set_arm_q(q_arm)
 
-        p = self.data.xpos[
-            self.tcp_body_id
-        ].copy()
+        p = self.data.xpos[self.tcp_body_id].copy()
 
         R = (
-            self.data.xmat[
-                self.tcp_body_id
-            ]
+            self.data.xmat[self.tcp_body_id]
             .reshape(3, 3)
             .copy()
         )
@@ -265,9 +302,7 @@ class RM65IKSolver:
             dtype=np.float64,
         )
 
-        point = self.data.xpos[
-            self.tcp_body_id
-        ].copy()
+        point = self.data.xpos[self.tcp_body_id].copy()
 
         mujoco.mj_jac(
             self.model,
@@ -280,14 +315,8 @@ class RM65IKSolver:
 
         J = np.vstack(
             [
-                jacp[
-                    :,
-                    self.dof_indices,
-                ],
-                jacr[
-                    :,
-                    self.dof_indices,
-                ],
+                jacp[:, self.dof_indices],
+                jacr[:, self.dof_indices],
             ]
         )
 
@@ -302,72 +331,42 @@ class RM65IKSolver:
         target_position,
         target_rotation,
     ):
-        p_current = self.data.xpos[
-            self.tcp_body_id
-        ]
+        p_current = self.data.xpos[self.tcp_body_id]
 
         R_current = (
-            self.data.xmat[
-                self.tcp_body_id
-            ]
+            self.data.xmat[self.tcp_body_id]
             .reshape(3, 3)
         )
 
-        position_error = (
-            target_position
-            - p_current
-        )
+        position_error = target_position - p_current
 
         # World-frame orientation error.
-        #
-        # This matches MuJoCo jacr, whose angular velocity
-        # components are represented in world coordinates.
-        R_error = (
-            target_rotation
-            @ R_current.T
-        )
+        R_error = target_rotation @ R_current.T
 
-        rotation_error = so3_log(
-            R_error
-        )
+        rotation_error = so3_log(R_error)
 
-        return (
-            position_error,
-            rotation_error,
-        )
+        return position_error, rotation_error
 
-    # ---------------------------------------------------------
-    # Adaptive damping
-    # ---------------------------------------------------------
-
-    @staticmethod
-    def _adaptive_damping(
-        sigma_min: float,
-    ) -> float:
+    def _singularity_diagnostics(self) -> tuple[float, float]:
         """
-        Increase damping close to singular configurations.
-
-        The Jacobian tests showed sigma_min roughly in the
-        0.015-0.03 range for several representative RM65
-        configurations, so we deliberately start damping
-        before sigma_min becomes extremely small.
+        sigma_min / condition number of the (unweighted) MuJoCo
+        Jacobian at the currently set configuration.
         """
-        base = 0.002
-        threshold = 0.05
-        maximum = 0.05
+        J = self._jacobian()
 
-        if sigma_min >= threshold:
-            return base
-
-        ratio = (
-            threshold - sigma_min
-        ) / threshold
-
-        return (
-            base
-            + (maximum - base)
-            * ratio * ratio
+        S = np.linalg.svd(
+            J,
+            compute_uv=False,
         )
+
+        sigma_min = float(S[-1])
+
+        if sigma_min > 1e-12:
+            condition = float(S[0] / sigma_min)
+        else:
+            condition = float("inf")
+
+        return sigma_min, condition
 
     # ---------------------------------------------------------
     # IK
@@ -379,10 +378,7 @@ class RM65IKSolver:
         target_position: np.ndarray,
         target_rotation: np.ndarray,
     ):
-        q = np.asarray(
-            q_seed,
-            dtype=np.float64,
-        ).copy()
+        q = np.asarray(q_seed, dtype=np.float64).copy()
 
         target_position = np.asarray(
             target_position,
@@ -395,236 +391,97 @@ class RM65IKSolver:
         )
 
         if q.shape != (6,):
-            raise ValueError(
-                "q_seed must have shape (6,)"
-            )
+            raise ValueError("q_seed must have shape (6,)")
 
         if target_position.shape != (3,):
-            raise ValueError(
-                "target_position must have shape (3,)"
-            )
+            raise ValueError("target_position must have shape (3,)")
 
         if target_rotation.shape != (3, 3):
-            raise ValueError(
-                "target_rotation must have shape (3,3)"
-            )
+            raise ValueError("target_rotation must have shape (3,3)")
 
-        lower = (
-            self.lower
-            + self.joint_limit_margin
+        lower = self.lower + self.joint_limit_margin
+        upper = self.upper - self.joint_limit_margin
+
+        q = np.clip(q, lower, upper)
+
+        # -----------------------------------------------------
+        # Official closed-form IK (degrees + wxyz quaternion)
+        # -----------------------------------------------------
+
+        quat = rotation_matrix_to_quat_wxyz(target_rotation)
+
+        params = self._params_type(
+            q_in=list(np.degrees(q)) + [0.0],
+            q_pose=[
+                float(target_position[0]),
+                float(target_position[1]),
+                float(target_position[2]),
+                float(quat[0]),
+                float(quat[1]),
+                float(quat[2]),
+                float(quat[3]),
+            ],
+            flag=0,
         )
 
-        upper = (
-            self.upper
-            - self.joint_limit_margin
-        )
+        ret, q_out_deg = self._algo.rm_algo_inverse_kinematics(params)
 
-        q = np.clip(
-            q,
-            lower,
-            upper,
-        )
+        # -----------------------------------------------------
+        # Accept only a clean, finite, in-limit solution.
+        # Otherwise return the seed unchanged (HOLD semantics).
+        # -----------------------------------------------------
 
-        last_sigma_min = float("nan")
-        last_condition = float("nan")
-        last_damping = float("nan")
+        solved = ret == 0
 
-        for iteration in range(
-            self.max_iterations
-        ):
-            self._set_arm_q(q)
-
-            (
-                e_pos,
-                e_rot,
-            ) = self._pose_error(
-                target_position,
-                target_rotation,
+        if solved:
+            q_solution = np.radians(
+                np.asarray(q_out_deg, dtype=np.float64)
             )
 
-            pos_norm = float(
-                np.linalg.norm(e_pos)
-            )
-
-            rot_norm = float(
-                np.linalg.norm(e_rot)
-            )
-
-            if (
-                pos_norm <= self.position_tolerance
-                and rot_norm <= self.rotation_tolerance
-            ):
-                # Compute diagnostics at the actual converged pose.
-                # This also handles zero-iteration convergence without
-                # returning NaN singularity metrics.
-                J = self._jacobian()
-
-                J_weighted = J.copy()
-                J_weighted[3:, :] *= self.orientation_weight
-
-                S = np.linalg.svd(
-                    J_weighted,
-                    compute_uv=False,
-                )
-
-                sigma_min = float(S[-1])
-
-                if sigma_min > 1e-12:
-                    condition = float(
-                        S[0] / sigma_min
-                    )
-                else:
-                    condition = float("inf")
-
-                damping = self._adaptive_damping(
-                    sigma_min
-                )
-
-                return q, IKResult(
-                    converged=True,
-                    iterations=iteration,
-                    position_error=pos_norm,
-                    rotation_error=rot_norm,
-                    sigma_min=sigma_min,
-                    condition_number=condition,
-                    damping=damping,
-                    reason="converged",
-                )
-
-            J = self._jacobian()
-
-            # ------------------------------------------------
-            # Mixed metric:
-            #
-            # translation [m]
-            # rotation    [rad]
-            #
-            # orientation_weight converts the rotational
-            # portion into a comparable optimization scale.
-            # ------------------------------------------------
-            J_weighted = J.copy()
-
-            J_weighted[
-                3:,
-                :,
-            ] *= self.orientation_weight
-
-            error = np.concatenate(
-                [
-                    e_pos,
-                    self.orientation_weight
-                    * e_rot,
-                ]
-            )
-
-            U, S, Vt = np.linalg.svd(
-                J_weighted,
-                full_matrices=False,
-            )
-
-            sigma_min = float(S[-1])
-
-            if sigma_min > 1e-12:
-                condition = float(
-                    S[0] / sigma_min
-                )
+            if not np.all(np.isfinite(q_solution)):
+                solved = False
             else:
-                condition = float("inf")
+                q_solution = np.clip(q_solution, lower, upper)
 
-            damping = (
-                self._adaptive_damping(
-                    sigma_min
-                )
-            )
-
-            # Damped pseudoinverse:
-            #
-            # J+_lambda =
-            # V diag(s / (s^2 + lambda^2)) U^T
-            factors = (
-                S
-                / (
-                    S * S
-                    + damping * damping
-                )
-            )
-
-            dq = (
-                Vt.T
-                @ (
-                    factors
-                    * (
-                        U.T
-                        @ error
-                    )
-                )
-            )
-
-            dq *= self.step_gain
-
-            # Per-joint step protection.
-            dq = np.clip(
-                dq,
-                -self.max_joint_step,
-                self.max_joint_step,
-            )
-
-            # Whole-vector step protection.
-            dq_norm = float(
-                np.linalg.norm(dq)
-            )
-
-            if dq_norm > self.max_step_norm:
-                dq *= (
-                    self.max_step_norm
-                    / dq_norm
-                )
-
-            q_next = np.clip(
-                q + dq,
-                lower,
-                upper,
-            )
-
-            last_sigma_min = sigma_min
-            last_condition = condition
-            last_damping = damping
-
-            # If clipping or singularity prevents any further
-            # movement, stop rather than loop indefinitely.
-            if np.max(
-                np.abs(q_next - q)
-            ) < 1e-10:
-                q = q_next
-                break
-
-            q = q_next
+        if not solved:
+            q_solution = q
 
         # -----------------------------------------------------
-        # Final evaluation
+        # Evaluate error and singularity diagnostics at the
+        # returned configuration through MuJoCo FK.
         # -----------------------------------------------------
-        self._set_arm_q(q)
+
+        self._set_arm_q(q_solution)
 
         e_pos, e_rot = self._pose_error(
             target_position,
             target_rotation,
         )
 
-        pos_norm = float(
-            np.linalg.norm(e_pos)
-        )
+        pos_norm = float(np.linalg.norm(e_pos))
+        rot_norm = float(np.linalg.norm(e_rot))
 
-        rot_norm = float(
-            np.linalg.norm(e_rot)
-        )
+        sigma_min, condition = self._singularity_diagnostics()
 
-        return q, IKResult(
+        if solved:
+            return q_solution, IKResult(
+                converged=True,
+                iterations=1,
+                position_error=pos_norm,
+                rotation_error=rot_norm,
+                sigma_min=sigma_min,
+                condition_number=condition,
+                damping=0.0,
+                reason="official_ik_success",
+            )
+
+        return q_solution, IKResult(
             converged=False,
-            iterations=self.max_iterations,
+            iterations=0,
             position_error=pos_norm,
             rotation_error=rot_norm,
-            sigma_min=last_sigma_min,
-            condition_number=last_condition,
-            damping=last_damping,
-            reason="max_iterations_or_stalled",
+            sigma_min=sigma_min,
+            condition_number=condition,
+            damping=0.0,
+            reason=f"official_ik_failed_ret_{ret}",
         )

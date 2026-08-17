@@ -109,7 +109,7 @@ sg100_teleop/                    ← 本子项目
     retargeting/
         sg100_retargeter.py      CanonicalHandState → SG100 q[11]
     kinematics/
-        rm65_ik.py               RM65 FK / Jacobian / DLS IK
+        rm65_ik.py               RM65 FK / Jacobian / RealMan 官方离线 IK
     control/
         joint_command_filter.py  低通 + velocity limit
     sim/
@@ -272,7 +272,7 @@ sg100_teleop/
 │   ├── canonical_hand.py            # CanonicalHandState
 │   └── hand_calibration.py          # raw → canonical normalization
 ├── kinematics/
-│   └── rm65_ik.py                   # RM65 FK / Jacobian / DLS IK
+│   └── rm65_ik.py                   # RM65 FK / Jacobian / RealMan 官方离线 IK
 ├── retargeting/
 │   └── sg100_retargeter.py          # CanonicalHandState → SG100 q[11]
 ├── sim/
@@ -560,36 +560,32 @@ RM65_ZERO_Q  ≠  RM65_TELEOP_READY_Q
 
 ## 9. RM65 FK / Jacobian / IK(`kinematics/rm65_ik.py`)
 
-`RM65IKSolver`:6D Cartesian IK。
+`RM65IKSolver`:6D Cartesian IK,**求解内核已替换为 RealMan 官方离线算法库**(2026-08)。
 
-- **TCP** = `sg100_base_link`
+- **TCP** = `sg100_base_link`(与 RM65 六轴法兰帧重合,即官方 T06)
 - **只使用 RM65 六个 DoF**(`joint_1..joint_6`)。SG100 11 个 joint **故意排除**——Jacobian 仅取 RM65 对应列。
-- 误差定义:**world-frame position error** + **world-frame orientation error**(后者用 SO(3) logarithm,与 MuJoCo `jacr` 的 world-frame 角速度表达一致)。
-- Jacobian:MuJoCo 解析 `mj_jac`(TCP body 原点)。
-- 求解:**adaptive Damped Least Squares (DLS)**,SVD 提供诊断(`sigma_min` / condition number)。
-- 保护:joint limit clipping + per-joint step protection + full-vector step protection。
+- 求解:`pip install Robotic_Arm` 的 `Algo.rm_algo_inverse_kinematics`(RM65-B = `RM_MODEL_RM_65_E` + `RM_MODEL_RM_B_E`)。闭式解析解,在 8 组全解中返回**离 seed 最近的一组**,保持逐帧连续性;**无需连接真机**。
+- 单位/约定桥接:官方库用**度** + **(w,x,y,z) 四元数**;本类对外保持项目的 rad + 旋转矩阵接口。
+- FK / Jacobian / 误差诊断仍走 MuJoCo(`fk`、`mj_jac`、SO(3) log world-frame 误差),与官方库已交叉验证一致。
+- 保护:seed 与输出都 clip 到 `jnt_range ± joint_limit_margin`(MuJoCo 限位比官方略紧 ≤0.2°,以 MuJoCo 为准);解非有限或 `ret != 0` 时返回 seed 原值(HOLD 语义)。
 - 种子:**previous valid solution 用作下一帧 seed**(由调用者维护 `q_arm_goal` 并传入)。
 
 **`IKResult` 字段:** `converged`, `iterations`, `position_error`, `rotation_error`, `sigma_min`, `condition_number`, `damping`, `reason`。
 
-**Adaptive damping 与 solver 参数(按代码实际值,勿改):**
+- `position_error` / `rotation_error`:返回解经 MuJoCo FK 复核的实际残差。
+- `sigma_min` / `condition_number`:返回构型处 **未加权** MuJoCo Jacobian 的 SVD 诊断。
+- `damping`:恒为 `0.0`(解析解,无迭代阻尼;字段保留以兼容旧接口)。
+- `reason`:`official_ik_success` / `official_ik_failed_ret_{code}`(`0` 成功;`1` 逆解失败;`-1` q_in 非法/超限;`-2` 四元数非法)。
+
+**Solver 参数:**
 
 ```text
-base damping        = 0.002
-sigma threshold     = 0.05
-maximum damping     = 0.05
-orientation weight  = 0.20
-
-position_tolerance  = 1e-4
-rotation_tolerance  = 1e-3
-max_iterations      = 200
-step_gain           = 0.8
-max_joint_step      = 0.08    # per-joint
-max_step_norm       = 0.15    # full-vector
 joint_limit_margin  = 1e-4
 ```
 
-> Adaptive damping 在 `sigma_min` 接近 0.05 阈值前就开始增大阻尼(因为多个代表位形的 `sigma_min` 落在 0.015–0.03),从而在奇异区附近维持数值稳定。
+**替换前的 DLS 版本**(adaptive DLS、orientation_weight 0.20、200 次迭代等)已移除,历史见 git(替换动机:DLS 在 +Z 奇异区/关节限位附近会不收敛并 HOLD,且无多解选择;官方闭式解无此问题)。
+
+**基线验证:** `scripts/validate_rm_official_fk.py`——官方 FK vs MuJoCo FK ≤5 μm / 0.022°,关节限位差 ≤0.2°,离线 IK 回环 ≤5.3 μm(27 位形全 PASS)。依赖:`pip install Robotic_Arm`。
 
 ---
 
@@ -623,6 +619,17 @@ IK failure → keep last valid q_arm_goal(HOLD)
 表现:`q3 → 0`、`sigma_min → 0`、condition number 急剧上升。
 
 > 结论:这是该 **legacy diagnostic pose branch** 在固定 orientation 条件下的局部 workspace/singularity 记录,不代表当前 authoritative `RM65_TELEOP_READY_Q`,也不作为 `RM65IKSolver` 实现错误。该脚本属于 [§20](#20-extended--experimental-validation)。
+
+**2026-08 换官方闭式解后的复核**(`scripts/probe_rm65_ik_z_boundary.py`):
+
+```text
+legacy seed  : -20 ~ +5 mm  single 可解(8 组闭式解, 2-3 组过限位)
+               +7.5 mm 起   single=1 且 all-solve num=0(8 组全解都不存在)
+               → 真实可达性边界(固定 orientation 约束), 非求解器保守, 无 fallback 可加
+teleop_ready : Z ±30 mm 全部可解(best |dq| ≤ 17.8°, 平滑连续)
+```
+
+因此 `test_rm65_ik.py` 的 `TRANSLATE_WORLD_Z`(+20 mm)在该 legacy seed 上**按设计 FAIL**(见上文"不要要求全部 PASS"),非回归。
 
 正式 regression 应优先使用 **guaranteed-reachable FK-generated targets**(见 `test_rm65_ik_reachable_targets.py`)。
 
