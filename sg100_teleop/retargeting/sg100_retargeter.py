@@ -117,6 +117,12 @@ class SG100Retargeter:
         # an explicit teleop_range keep the full mechanical range.
         self.joint_teleop_range = {}
 
+        # Nonlinear response exponents: canonical magnitude is raised to
+        # gamma before interpolation (q = zero + sign(c)*|c|**gamma *
+        # limit_span).  Default gamma 1.0 reproduces the linear mapping
+        # exactly, so joints without an explicit gamma are unaffected.
+        self.joint_gamma = {}
+
         for joint_name in self.joint_order:
             lower, upper = map(
                 float,
@@ -134,6 +140,18 @@ class SG100Retargeter:
                 )
 
             self.joint_zero[joint_name] = zero
+
+            gamma = float(
+                self.joints[joint_name].get("gamma", 1.0)
+            )
+
+            if not (gamma > 0.0):
+                raise RuntimeError(
+                    f"Response gamma for {joint_name} ({gamma}) must "
+                    f"be positive"
+                )
+
+            self.joint_gamma[joint_name] = gamma
 
             teleop = self.joints[joint_name].get("teleop_range")
 
@@ -249,6 +267,15 @@ class SG100Retargeter:
             )
 
             value = features[feature_name]
+
+            # Nonlinear response curve (identity when gamma == 1.0).
+            gamma = self.joint_gamma[joint_name]
+
+            if gamma != 1.0:
+                value = float(
+                    np.sign(value)
+                    * np.abs(value) ** gamma
+                )
 
             if mapping_type == "positive":
 

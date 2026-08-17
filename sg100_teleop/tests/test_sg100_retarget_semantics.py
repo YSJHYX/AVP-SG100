@@ -394,38 +394,139 @@ def test_thumb_opposition_small_input_produces_bounded_root_motion():
 
     t_lower, t_upper = r.joint_teleop_range["thumb_j1"]
     m_lower, m_upper = map(float, r.joints["thumb_j1"]["range"])
+    gamma = r.joint_gamma["thumb_j1"]
 
     # The teleop semantic limit must be a strict subset of mechanical ROM.
     assert m_lower <= t_lower < t_upper <= m_upper
 
-    # Explicit anchor points locked by the real AVP thumb_root probe
-    # (COMFORTABLE_OPPOSITION canonical 0.9126 -> ~54.8 deg at 60 deg
-    # teleop range; the earlier 90 deg range over-folded the MCP).
-    for canonical, expected_deg in ((0.0, 0.0), (0.5, 30.0), (1.0, 60.0)):
+    # Nonlinear response curve (pinch audit outcome):
+    #   c_eff = c ** gamma,  q = zero + c_eff * (teleop_max - zero)
+    # Keeps the 90 deg pinch reach while softening the low/mid gain that
+    # over-folded the MCP during normal grasp.
+    for canonical, expected_deg in (
+        (0.0, 0.0),
+        (0.1, 2.85),
+        (0.2, 8.05),
+        (0.3, 14.79),
+        (0.5, 31.82),
+        (0.7, 52.71),
+        (0.9126, 78.5),   # real probe COMFORTABLE_OPPOSITION ~ FK pinch optimum 79 deg
+        (1.0, 90.0),
+    ):
         q = h.q_for(thumb_opposition=canonical)
-        assert np.isclose(np.degrees(q[i1]), expected_deg, atol=1e-6), (
+        assert np.isclose(np.degrees(q[i1]), expected_deg, atol=0.05), (
             f"canonical thumb_opposition={canonical} must command "
             f"{expected_deg} deg, got {np.degrees(q[i1]):.2f} deg"
         )
-        expected = h.zero["thumb_j1"] + canonical * (
-            t_upper - h.zero["thumb_j1"]
-        )
+        expected = h.zero["thumb_j1"] + (
+            canonical ** gamma
+        ) * (t_upper - h.zero["thumb_j1"])
         assert np.isclose(q[i1], expected)
 
-    # Per-unit canonical gain equals the teleop span, not the mechanical
-    # span (60 deg, not 125 deg of root sweep).
+    # Full-scale reach still equals the teleop span.
     gain = abs(
         h.q_for(thumb_opposition=1.0)[i1]
         - h.q_for(thumb_opposition=0.0)[i1]
     )
-    assert np.isclose(gain, t_upper - t_lower), (
-        "thumb_j1 canonical gain must equal the teleop semantic span"
-    )
+    assert np.isclose(gain, t_upper - t_lower)
 
     # The mechanical clamp on thumb_j1 itself remains the original
     # 0-125.02 deg ROM (teleop limits only restrict interpolation).
     assert np.isclose(np.degrees(m_upper), 125.02, atol=0.01)
     assert np.isclose(np.degrees(m_lower), 0.0)
+
+
+def test_gamma_response_defaults_and_equivalence():
+    """gamma=1.0 must reproduce the old linear behaviour exactly."""
+    import tempfile
+
+    h = PalmFrameHarness()
+    r = h.retargeter
+
+    # Only thumb_j1 carries an explicit gamma; everything else defaults.
+    assert np.isclose(r.joint_gamma["thumb_j1"], 1.5)
+    for joint in r.joint_order:
+        if joint != "thumb_j1":
+            assert np.isclose(r.joint_gamma[joint], 1.0), joint
+
+    # A config without any gamma must be bit-for-bit the linear mapping.
+    with tempfile.TemporaryDirectory() as tmp:
+        linear_path = Path(tmp) / "linear_semantics.yaml"
+        with SEMANTICS_YAML.open("r") as f:
+            config = yaml.safe_load(f)
+        config["joints"]["thumb_j1"].pop("gamma", None)
+        with linear_path.open("w") as f:
+            yaml.safe_dump(config, f)
+
+        linear = SG100Retargeter(semantics_path=linear_path)
+        assert all(np.isclose(g, 1.0) for g in linear.joint_gamma.values())
+
+        for canonical in (0.0, 0.2, 0.5, 0.9126, 1.0):
+            q_lin = linear.retarget(
+                CanonicalHandState(thumb_opposition=canonical)
+            )
+            expected = np.deg2rad(canonical * 90.0)
+            assert np.isclose(q_lin[0], expected, atol=1e-12), (
+                f"gamma=1.0 must equal the linear mapping at {canonical}"
+            )
+
+
+def test_gamma_leaves_other_joints_unchanged():
+    """thumb_j2/j3 and index/middle/little outputs are numerically
+    identical to the gamma-free linear formula."""
+    h = PalmFrameHarness()
+    r = h.retargeter
+
+    sweep = (
+        CanonicalHandState(),
+        CanonicalHandState(
+            thumb_opposition=0.7, thumb_abduction=0.6, thumb_distal=0.5,
+            index_adduction=0.3, index_flexion=0.8, index_distal=0.4,
+            middle_flexion=0.7, middle_distal=0.3,
+            little_outward=0.5, little_flexion=0.9, little_distal=0.2,
+        ),
+        CanonicalHandState(thumb_opposition=-0.2, index_adduction=-0.5),
+        CanonicalHandState(
+            thumb_distal=-1.0, index_distal=1.0, little_outward=1.0,
+        ),
+    )
+
+    for hand in sweep:
+        q = r.retarget(hand)
+        for joint in r.joint_order:
+            if joint == "thumb_j1":
+                continue
+            i = r.joint_order.index(joint)
+            feature, mode = r.FEATURE_MAPPING[joint]
+            value = hand.clipped().as_dict()[feature]
+            lower, upper = r.joint_teleop_range[joint]
+            zero = r.joint_zero[joint]
+
+            if mode == "positive":
+                expected = zero + max(0.0, min(1.0, value)) * (upper - zero)
+            elif mode == "negative":
+                expected = zero + max(0.0, min(1.0, value)) * (lower - zero)
+            elif mode == "bidirectional":
+                c = max(-1.0, min(1.0, value))
+                expected = (
+                    zero + c * (upper - zero)
+                    if c >= 0 else
+                    zero + (-c) * (lower - zero)
+                )
+            else:  # bidirectional_inverted
+                c = max(-1.0, min(1.0, value))
+                expected = (
+                    zero + c * (lower - zero)
+                    if c >= 0 else
+                    zero + (-c) * (upper - zero)
+                )
+
+            m_lower, m_upper = map(float, r.joints[joint]["range"])
+            expected = min(max(expected, m_lower), m_upper)
+            assert np.isclose(q[i], expected, atol=1e-12), (
+                f"{joint} output changed under gamma config: {q[i]} vs "
+                f"{expected}"
+            )
 
 
 def test_thumb_abduction_small_input_produces_bounded_root_motion():
@@ -722,6 +823,10 @@ def main():
         test_thumb_abduction_small_input_produces_bounded_root_motion)
     run("thumb_root_motion_does_not_modify_thumb_j3_mapping",
         test_thumb_root_motion_does_not_modify_thumb_j3_mapping)
+    run("gamma_response_defaults_and_equivalence",
+        test_gamma_response_defaults_and_equivalence)
+    run("gamma_leaves_other_joints_unchanged",
+        test_gamma_leaves_other_joints_unchanged)
     run("finger_distal_straight_maps_to_robot_zero",
         test_finger_distal_straight_maps_to_robot_zero)
     run("finger_distal_negative_input_never_hits_mechanical_limit",

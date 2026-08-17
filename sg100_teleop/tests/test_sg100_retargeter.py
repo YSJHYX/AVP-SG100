@@ -47,16 +47,17 @@ def main():
         print(f"{name:12s}: {value:+.4f}")
 
     # Thumb root joints interpolate onto their TELEOP semantic ranges
-    # (not the full mechanical ROM): thumb_j1 0 -> +60 deg,
-    # thumb_j2 0 -> -60 deg.  All other joints keep the mechanical
-    # limits until a teleop_range is configured for them.
+    # (not the full mechanical ROM): thumb_j1 0 -> +90 deg through the
+    # gamma=1.5 response curve, thumb_j2 0 -> -60 deg.  All other
+    # joints keep the mechanical limits until a teleop_range is
+    # configured for them.
     #
     # index_adduction=+1 means TOWARD MIDDLE.  index_j1's numeric q+ is
     # physically toward thumb, so canonical +1 commands the q_min side:
     # q = zero + 1.0 * (q_min - zero) = 0.0 with the current semantics
     # zero (0.0 == q_min, the adducted extreme saturates at zero).
     expected = np.array([
-         1.0472,
+         1.5708,
         -1.0472,
          1.570,
 

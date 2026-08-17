@@ -19,13 +19,16 @@ joints:
     zero: 0.0
     positive_direction: rotate_toward_palm
     # Teleop semantic range: canonical [0, 1] maps onto this subset of
-    # the mechanical range, not the full ROM.  Real AVP thumb_root probe:
-    # COMFORTABLE_OPPOSITION gave canonical thumb_opposition = +0.9126
-    # and, with the earlier 0-90 deg range, thumb_j1 = +82.13 deg — a
-    # comfortable non-maximal human opposition already consumed ~91% of
-    # the teleop range, matching the observed over-folded MCP.  With the
-    # 0-60 deg range the same input commands ~54.8 deg.
-    teleop_range: [0.0, 1.0472]
+    # the mechanical range, not the full ROM.  The pinch reachability
+    # audit requires the full 90 deg (index pinch FK optimum ~79 deg;
+    # the 60 deg cap cut pinch reach by 17-91 mm).
+    teleop_range: [0.0, 1.5708]
+    # Nonlinear response curve: q = zero + (c ** gamma) * (max - zero).
+    # gamma 1.5 keeps the 90 deg pinch reach (c=0.9126 -> ~78.5 deg,
+    # matching the FK index-pinch optimum) while softening the low/mid
+    # canonical gain that over-folded the MCP during normal grasp
+    # (c=0.5 -> 31.8 deg instead of the linear 45 deg).
+    gamma: 1.5
 
   thumb_j2:
     range: [-2.61, 0.0]
