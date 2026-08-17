@@ -10,21 +10,31 @@ UNIDIRECTIONAL_FEATURES = (
     "thumb_opposition",
     "thumb_abduction",
 
-    "index_adduction",
     "index_flexion",
 
     "middle_flexion",
 
     "little_outward",
     "little_flexion",
+
+    # Finger distal flexion is unidirectional: human DIP joints are not
+    # operable in reverse (no hyperextension), so calibration captures
+    #   neutral = straight/open baseline
+    #   active  = distal flexed toward palm
+    "index_distal",
+    "middle_distal",
+    "little_distal",
 )
 
 
 BIDIRECTIONAL_FEATURES = (
     "thumb_distal",
-    "index_distal",
-    "middle_distal",
-    "little_distal",
+
+    # Human anatomy semantics:
+    #   negative endpoint = toward thumb
+    #   neutral           = relaxed lateral neutral
+    #   positive endpoint = toward middle
+    "index_adduction",
 )
 
 

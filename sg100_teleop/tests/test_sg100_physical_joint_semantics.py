@@ -72,11 +72,16 @@ SPECS = (
         "decreasing",
     ),
     SemanticSpec(
+        # ROBOT NUMERIC DIRECTION FACT: index_j1 q+ moves the index
+        # physically toward the thumb.  The HUMAN semantic mapping
+        # (canonical index_adduction -1 = toward thumb -> q+) is asserted
+        # separately in test_sg100_retarget_semantics.py; do not conflate
+        # the two.  Samples here therefore sweep 0 -> -1 canonical.
         "index_j1",
         "index_adduction",
-        "adduction toward thumb",
+        "lateral (robot q+ toward thumb; see dedicated tests)",
         "index_link3",
-        (0.0, 0.5, 1.0),
+        (0.0, -0.5, -1.0),
         "index_to_thumb_distance",
         "decreasing",
     ),
@@ -90,11 +95,13 @@ SPECS = (
         "decreasing",
     ),
     SemanticSpec(
+        # Unidirectional distal flexion: 0 = straight baseline,
+        # 1 = distal flexed toward palm.
         "index_j3",
         "index_distal",
-        "distal signed",
+        "distal flexion (unidirectional)",
         "index_link3",
-        (-1.0, 0.0, 1.0),
+        (0.0, 0.5, 1.0),
         "base_y",
         "decreasing",
     ),
@@ -110,9 +117,9 @@ SPECS = (
     SemanticSpec(
         "middle_j2",
         "middle_distal",
-        "distal signed",
+        "distal flexion (unidirectional)",
         "middle_link2",
-        (-1.0, 0.0, 1.0),
+        (0.0, 0.5, 1.0),
         "base_y",
         "decreasing",
     ),
@@ -137,9 +144,9 @@ SPECS = (
     SemanticSpec(
         "little_j3",
         "little_distal",
-        "distal signed",
+        "distal flexion (unidirectional)",
         "little_linik3",
-        (-1.0, 0.0, 1.0),
+        (0.0, 0.5, 1.0),
         "base_y",
         "decreasing",
     ),
@@ -319,10 +326,21 @@ def canonical_physical_results(harness: PhysicalSemanticHarness):
 
         assert_strict_monotonic(physical_metrics, spec.monotonic)
 
-        # Signed distal channels must traverse lower -> zero -> upper.
+        # Bidirectional distal (thumb) traverses lower -> zero -> upper;
+        # unidirectional finger distals traverse zero -> upper.
         if "distal" in spec.feature:
             lower, upper = harness.model.jnt_range[joint_id]
-            np.testing.assert_allclose(q_values, [lower, 0.0, upper])
+            mode = harness.retargeter.FEATURE_MAPPING[spec.joint][1]
+            if mode == "bidirectional":
+                np.testing.assert_allclose(
+                    q_values, [lower, 0.0, upper]
+                )
+            else:
+                zero = harness.retargeter.joint_zero[spec.joint]
+                np.testing.assert_allclose(
+                    q_values,
+                    [zero, 0.5 * (zero + upper), upper],
+                )
             assert_strict_monotonic(geometry_angles, "increasing")
 
         results[spec.joint] = {

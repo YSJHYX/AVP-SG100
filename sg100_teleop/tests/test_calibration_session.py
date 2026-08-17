@@ -58,8 +58,12 @@ POSE_VALUES = {
         "thumb_distal": 1.00,
     },
 
-    "index_adduction": {
+    "index_adduction_negative": {
         "index_adduction": -0.50,
+    },
+
+    "index_adduction_positive": {
+        "index_adduction": +0.50,
     },
 
     "finger_flexion": {
@@ -68,13 +72,7 @@ POSE_VALUES = {
         "little_flexion": 1.50,
     },
 
-    "finger_distal_negative": {
-        "index_distal": -1.00,
-        "middle_distal": -1.00,
-        "little_distal": -1.00,
-    },
-
-    "finger_distal_positive": {
+    "finger_distal_flexion": {
         "index_distal": 1.20,
         "middle_distal": 1.20,
         "little_distal": 1.20,
@@ -235,13 +233,13 @@ def main():
 
         before = calibration.normalize(
             make_raw(
-                "finger_distal_negative"
+                "finger_distal_flexion"
             )
         )
 
         after = loaded.normalize(
             make_raw(
-                "finger_distal_negative"
+                "finger_distal_flexion"
             )
         )
 
@@ -261,15 +259,17 @@ def main():
     populate_once(
         too_small_session,
         pose_noise={
-            "finger_distal_negative": {
-                "index_distal": 1.0 - (
+            "thumb_distal_negative": {
+                # Endpoint value becomes -0.80 + 0.79 = -0.01, i.e. a
+                # span of only MIN/2 from the neutral baseline.
+                "thumb_distal": 0.80 - (
                     MIN_BIDIRECTIONAL_SEPARATION_RAD / 2.0
                 ),
             },
         },
     )
     too_small = too_small_session.bidirectional_diagnostics()[
-        "index_distal"
+        "thumb_distal"
     ]
     assert not too_small.passed
     assert (
@@ -282,12 +282,12 @@ def main():
         same_side_session,
         pose_noise={
             "neutral": {
-                "index_distal": -2.0,
+                "thumb_distal": 2.0,
             },
         },
     )
     same_side = same_side_session.bidirectional_diagnostics()[
-        "index_distal"
+        "thumb_distal"
     ]
     assert not same_side.passed
     assert "endpoints_on_same_side" in same_side.failure_reasons
@@ -297,7 +297,7 @@ def main():
         same_side_session.build()
     except ValueError as exc:
         message = str(exc)
-        assert "index_distal" in message
+        assert "thumb_distal" in message
         assert "product=" in message
         assert "endpoints_on_same_side" in message
     else:
@@ -312,19 +312,19 @@ def main():
         "thumb_distal_negative",
         "thumb_distal_positive",
     )
-    assert retry_pose_names(("middle_distal",)) == (
+    assert retry_pose_names(("index_adduction",)) == (
         "neutral",
-        "finger_distal_negative",
-        "finger_distal_positive",
+        "index_adduction_negative",
+        "index_adduction_positive",
     )
     assert retry_pose_names(
-        ("thumb_distal", "little_distal")
+        ("thumb_distal", "index_adduction")
     ) == (
         "neutral",
         "thumb_distal_negative",
         "thumb_distal_positive",
-        "finger_distal_negative",
-        "finger_distal_positive",
+        "index_adduction_negative",
+        "index_adduction_positive",
     )
 
     replace_session = CalibrationSession()

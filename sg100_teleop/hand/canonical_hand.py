@@ -16,6 +16,11 @@ class CanonicalHandState:
         0.0 = neutral
         1.0 = maximum semantic motion
 
+    Bidirectional features (distal joints and index_adduction):
+       -1.0 = semantic negative direction
+        0.0 = neutral
+       +1.0 = semantic positive direction
+
     Bidirectional distal features:
        -1.0 = dorsal / outward extension
         0.0 = neutral
@@ -31,6 +36,10 @@ class CanonicalHandState:
     thumb_distal: float = 0.0
 
     # Index
+    # adduction sign follows HUMAN anatomy:
+    #   +1 = maximally toward middle
+    #    0 = neutral
+    #   -1 = maximally toward thumb
     index_adduction: float = 0.0
     index_flexion: float = 0.0
     index_distal: float = 0.0
@@ -44,22 +53,29 @@ class CanonicalHandState:
     little_flexion: float = 0.0
     little_distal: float = 0.0
 
+    # Finger distal contract (index/middle/little):
+    #   0.0 = straight/open baseline
+    #   1.0 = distal flexed toward palm
+    # Human DIP joints are not operable in reverse (no hyperextension),
+    # so these features are unidirectional.  thumb_distal stays
+    # bidirectional.
+
     def clipped(self) -> "CanonicalHandState":
         return CanonicalHandState(
             thumb_opposition=_clip(self.thumb_opposition, 0.0, 1.0),
             thumb_abduction=_clip(self.thumb_abduction, 0.0, 1.0),
             thumb_distal=_clip(self.thumb_distal, -1.0, 1.0),
 
-            index_adduction=_clip(self.index_adduction, 0.0, 1.0),
+            index_adduction=_clip(self.index_adduction, -1.0, 1.0),
             index_flexion=_clip(self.index_flexion, 0.0, 1.0),
-            index_distal=_clip(self.index_distal, -1.0, 1.0),
+            index_distal=_clip(self.index_distal, 0.0, 1.0),
 
             middle_flexion=_clip(self.middle_flexion, 0.0, 1.0),
-            middle_distal=_clip(self.middle_distal, -1.0, 1.0),
+            middle_distal=_clip(self.middle_distal, 0.0, 1.0),
 
             little_outward=_clip(self.little_outward, 0.0, 1.0),
             little_flexion=_clip(self.little_flexion, 0.0, 1.0),
-            little_distal=_clip(self.little_distal, -1.0, 1.0),
+            little_distal=_clip(self.little_distal, 0.0, 1.0),
         )
 
     def as_dict(self) -> dict[str, float]:

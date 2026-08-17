@@ -23,16 +23,30 @@ def build_calibration():
                     active=0.60,
                 ),
 
-            "index_adduction":
-                UnidirectionalCalibration(
-                    neutral=0.0,
-                    active=-0.5,
-                ),
-
             "index_flexion":
                 UnidirectionalCalibration(
                     neutral=0.0,
                     active=1.4,
+                ),
+
+            # Unidirectional distal flexion: 0 = straight baseline,
+            # 1 = distal flexed toward palm.
+            "index_distal":
+                UnidirectionalCalibration(
+                    neutral=0.0,
+                    active=1.2,
+                ),
+
+            "middle_distal":
+                UnidirectionalCalibration(
+                    neutral=0.0,
+                    active=1.2,
+                ),
+
+            "little_distal":
+                UnidirectionalCalibration(
+                    neutral=0.0,
+                    active=1.2,
                 ),
 
             "middle_flexion":
@@ -62,25 +76,12 @@ def build_calibration():
                     positive=1.0,
                 ),
 
-            "index_distal":
+            # negative endpoint = toward thumb, positive = toward middle
+            "index_adduction":
                 BidirectionalCalibration(
-                    negative=-1.0,
+                    negative=-0.5,
                     neutral=0.0,
-                    positive=1.2,
-                ),
-
-            "middle_distal":
-                BidirectionalCalibration(
-                    negative=-1.0,
-                    neutral=0.0,
-                    positive=1.2,
-                ),
-
-            "little_distal":
-                BidirectionalCalibration(
-                    negative=-1.0,
-                    neutral=0.0,
-                    positive=1.2,
+                    positive=0.5,
                 ),
         },
     )
@@ -153,6 +154,12 @@ def main():
         active.index_distal - 1.0
     ) < 1e-8
 
+    # active_raw carries index_adduction=-0.50, the TOWARD THUMB
+    # endpoint, so it must normalize to canonical -1 (not +1).
+    assert abs(
+        active.index_adduction + 1.0
+    ) < 1e-8
+
     negative_raw = AVPRawHandFeatures(
         thumb_opposition=1.40,
         thumb_abduction=-0.20,
@@ -182,8 +189,30 @@ def main():
         negative.thumb_distal + 1.0
     ) < 1e-8
 
+    # Distal features are unidirectional: raw below the straight
+    # baseline clips to canonical 0, never to a negative endpoint.
+    assert abs(negative.index_distal) < 1e-8
+    assert abs(negative.middle_distal) < 1e-8
+    assert abs(negative.little_distal) < 1e-8
+
+    # Toward-middle raw value normalizes to canonical +1.
+    toward_middle = calibration.normalize(
+        AVPRawHandFeatures(
+            thumb_opposition=1.40,
+            thumb_abduction=-0.20,
+            thumb_distal=0.0,
+            index_adduction=0.50,
+            index_flexion=0.0,
+            index_distal=0.0,
+            middle_flexion=0.0,
+            middle_distal=0.0,
+            little_outward=0.0,
+            little_flexion=0.0,
+            little_distal=0.0,
+        )
+    )
     assert abs(
-        negative.index_distal + 1.0
+        toward_middle.index_adduction - 1.0
     ) < 1e-8
 
     # Semantic negative/positive labels, rather than raw numerical

@@ -46,12 +46,16 @@ def main():
     for name, value in r.as_joint_dict(q).items():
         print(f"{name:12s}: {value:+.4f}")
 
+    # index_adduction=+1 means TOWARD MIDDLE.  index_j1's numeric q+ is
+    # physically toward thumb, so canonical +1 commands the q_min side:
+    # q = zero + 1.0 * (q_min - zero) = 0.0 with the current semantics
+    # zero (0.0 == q_min, the adducted extreme saturates at zero).
     expected = np.array([
          2.182,
         -2.610,
          1.570,
 
-         1.570,
+         0.0,
          2.180,
          1.570,
 
@@ -65,13 +69,10 @@ def main():
 
     assert np.allclose(q, expected)
 
-    print("\n===== DISTAL EXTENSION =====")
+    print("\n===== INDEX ADDUCTION NEGATIVE (TOWARD THUMB) =====")
 
     hand = CanonicalHandState(
-        thumb_distal=-1.0,
-        index_distal=-1.0,
-        middle_distal=-1.0,
-        little_distal=-1.0,
+        index_adduction=-1.0,
     )
 
     q = r.retarget(hand)
@@ -79,10 +80,36 @@ def main():
     for name, value in r.as_joint_dict(q).items():
         print(f"{name:12s}: {value:+.4f}")
 
+    # Canonical -1 (toward thumb) commands the numeric q_max side.
+    assert np.isclose(q[3], 1.570)
+    assert np.allclose(
+        np.delete(q, 3),
+        np.zeros(10),
+    )
+
+    print("\n===== DISTAL: THUMB EXTENSION / FINGER FLEXION =====")
+
+    # thumb_distal stays bidirectional (IP extension -> -1.048).
+    hand = CanonicalHandState(thumb_distal=-1.0)
+    q = r.retarget(hand)
     assert np.isclose(q[2], -1.048)
-    assert np.isclose(q[5], -1.05)
-    assert np.isclose(q[7], -1.05)
-    assert np.isclose(q[10], -1.05)
+
+    # Finger distals are unidirectional: straight (canonical 0) maps to
+    # semantics zero; flexion (canonical 1) maps to the flex limit.
+    # Negative canonical input clips to zero, never to -60 deg limits.
+    for feature, joint, upper in (
+        ("index_distal", "index_j3", 1.57),
+        ("middle_distal", "middle_j2", 1.57),
+        ("little_distal", "little_j3", 1.57),
+    ):
+        index = r.joint_order.index(joint)
+
+        q = r.retarget(CanonicalHandState(**{feature: 1.0}))
+        assert np.isclose(q[index], upper), (joint, q[index])
+
+        for value in (0.0, -1.0):
+            q = r.retarget(CanonicalHandState(**{feature: value}))
+            assert np.isclose(q[index], 0.0), (joint, value, q[index])
 
     print("\nPASS")
     print(

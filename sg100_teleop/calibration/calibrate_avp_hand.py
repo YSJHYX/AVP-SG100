@@ -11,6 +11,7 @@ from sg100_teleop.calibration.io import (
 )
 from sg100_teleop.calibration.session import (
     CalibrationSession,
+    MIN_SPAN_TO_NOISE_RATIO,
     REQUIRED_POSES,
 )
 from sg100_teleop.tracking.avp_hand_adapter import (
@@ -40,18 +41,26 @@ POSE_INSTRUCTIONS = (
     ),
     (
         "thumb_distal_negative",
-        "【拇指末端伸展】保持拇指根部位置尽量稳定。将拇指末端关节向伸展方向运动，"
-        "使末端比中立姿态更直；不要改变手腕姿态。保持姿势稳定。",
+        "【拇指末端伸展】只伸展拇指末端（IP）关节，保持拇指根部、对掌和外展"
+        "姿态尽量不动。做出一个清晰、舒适、与中立姿态明显不同的伸展姿势；"
+        "不要改变手腕姿态。保持姿势稳定。",
     ),
     (
         "thumb_distal_positive",
-        "【拇指末端弯曲】保持拇指根部位置尽量稳定。明显弯曲拇指末端关节，"
-        "使末端比中立姿态更弯曲。保持姿势稳定。",
+        "【拇指末端弯曲】只弯曲拇指末端（IP）关节使指尖朝掌心方向收拢，"
+        "保持拇指根部、对掌和外展姿态尽量不动，不要过度对掌。保持姿势稳定。",
     ),
     (
-        "index_adduction",
-        "【食指内收】保持手掌稳定。将食指向中指方向靠拢，"
-        "尽量减少食指弯曲，只做侧向内收动作。保持姿势稳定。",
+        "index_adduction_negative",
+        "【食指向拇指侧张开】保持食指伸直，只在根部关节做侧向运动。"
+        "将食指朝大拇指方向张开；不要弯曲 MCP/PIP/DIP 任一关节。"
+        "其他手指尽量保持中立。保持姿势稳定。",
+    ),
+    (
+        "index_adduction_positive",
+        "【食指向中指靠拢】保持食指伸直，只在根部关节做侧向运动。"
+        "将食指朝中指方向靠拢；不要弯曲 MCP/PIP/DIP 任一关节。"
+        "其他手指尽量保持中立。保持姿势稳定。",
     ),
     (
         "finger_flexion",
@@ -59,15 +68,11 @@ POSE_INSTRUCTIONS = (
         "做自然抓握方向的动作，但不要刻意强调最末端关节，也不要用力握到极限。",
     ),
     (
-        "finger_distal_negative",
-        "【手指末端伸展】保持手掌以及各手指近端姿态尽量稳定。将食指、中指和小指"
-        "的末端关节向伸展方向运动，使末端明显比中立姿态更直；"
-        "不要强行做不舒服的反向过伸。保持姿势稳定。",
-    ),
-    (
-        "finger_distal_positive",
-        "【手指末端弯曲】保持手掌以及各手指近端姿态尽量稳定。明显弯曲食指、中指和"
-        "小指的末端关节，使末端明显比中立姿态更弯曲。保持姿势稳定。",
+        "finger_distal_flexion",
+        "【手指末端屈曲】保持手掌稳定，MCP（根关节）尽量不动，主要弯曲食指、"
+        "中指和小指的末节关节使其朝掌心方向收拢；PIP（中节）允许少量自然联动，"
+        "但不要把整根手指一起握拳。做出清晰、舒适、与伸直基线明显不同的屈曲。"
+        "保持姿势稳定。",
     ),
     (
         "little_outward",
@@ -176,17 +181,11 @@ def retry_pose_names(
             }
         )
 
-    if failed.intersection(
-        {
-            "index_distal",
-            "middle_distal",
-            "little_distal",
-        }
-    ):
+    if "index_adduction" in failed:
         required.update(
             {
-                "finger_distal_negative",
-                "finger_distal_positive",
+                "index_adduction_negative",
+                "index_adduction_positive",
             }
         )
 
@@ -208,9 +207,15 @@ def print_bidirectional_diagnostics(
             f"negative={item.negative:+.6f} "
             f"neutral={item.neutral:+.6f} "
             f"positive={item.positive:+.6f} "
-            f"neg_delta={item.negative_delta:+.6f} "
-            f"pos_delta={item.positive_delta:+.6f} "
+            f"neg_span={item.negative_delta:+.6f} "
+            f"pos_span={item.positive_delta:+.6f} "
             f"product={item.product:+.6f}"
+        )
+        print(
+            f"        噪声 robust_sigma: "
+            f"neutral={item.neutral_sigma:.6f} "
+            f"negative={item.negative_sigma:.6f} "
+            f"positive={item.positive_sigma:.6f}"
         )
 
         if "negative_too_close_to_neutral" in item.failure_reasons:
@@ -218,6 +223,26 @@ def print_bidirectional_diagnostics(
 
         if "positive_too_close_to_neutral" in item.failure_reasons:
             print("  原因：positive 动作幅度过小，端点仍接近放松姿态。")
+
+        if "negative_span_below_noise_scale" in item.failure_reasons:
+            print(
+                f"  原因：negative 端点 span={abs(item.negative_delta):.4f} "
+                f"与采样抖动同量级（要求 >= "
+                f"{MIN_SPAN_TO_NOISE_RATIO * max(item.neutral_sigma, item.negative_sigma):.4f}，"
+                f"即 {MIN_SPAN_TO_NOISE_RATIO:.0f}×噪声）。"
+                "请做出与中立姿态明显不同、更清晰的端点动作，"
+                "并保持其他关节稳定后重采。"
+            )
+
+        if "positive_span_below_noise_scale" in item.failure_reasons:
+            print(
+                f"  原因：positive 端点 span={abs(item.positive_delta):.4f} "
+                f"与采样抖动同量级（要求 >= "
+                f"{MIN_SPAN_TO_NOISE_RATIO * max(item.neutral_sigma, item.positive_sigma):.4f}，"
+                f"即 {MIN_SPAN_TO_NOISE_RATIO:.0f}×噪声）。"
+                "请做出与中立姿态明显不同、更清晰的端点动作，"
+                "并保持其他关节稳定后重采。"
+            )
 
         if "endpoints_on_same_side" in item.failure_reasons:
             print("  原因：两个语义方向落在 neutral 的同一侧，请确认动作方向相反。")

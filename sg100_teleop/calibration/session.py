@@ -14,16 +14,20 @@ from sg100_teleop.hand.hand_calibration import (
 #
 # Each pose can contain many frames.
 # The median raw feature value becomes the calibration endpoint.
+#
+# index/middle/little distal calibration is UNIDIRECTIONAL: human DIP
+# joints are not operable in reverse, so only a straight/open baseline
+# (neutral) and a distal-flexion endpoint are captured.
 REQUIRED_POSES = (
     "neutral",
     "thumb_opposition",
     "thumb_abduction",
     "thumb_distal_negative",
     "thumb_distal_positive",
-    "index_adduction",
+    "index_adduction_negative",
+    "index_adduction_positive",
     "finger_flexion",
-    "finger_distal_negative",
-    "finger_distal_positive",
+    "finger_distal_flexion",
     "little_outward",
 )
 
@@ -34,23 +38,28 @@ REQUIRED_POSES = (
 # a limited comfortable range of motion.
 MIN_BIDIRECTIONAL_SEPARATION_RAD = 0.02
 
+# Robust noise scale: median absolute deviation converted to an
+# equivalent Gaussian sigma.
+ROBUST_SIGMA_MAD_SCALE = 1.4826
+
+# An endpoint median must separate from the neutral median by at least
+# this multiple of the larger robust sigma of the two poses.  This
+# rejects mathematically unstable endpoints such as a thumb_distal
+# negative span of ~0.07 rad recorded with comparable hand jitter.
+MIN_SPAN_TO_NOISE_RATIO = 5.0
+
 
 BIDIRECTIONAL_POSE_SOURCES = {
     "thumb_distal": (
         "thumb_distal_negative",
         "thumb_distal_positive",
     ),
-    "index_distal": (
-        "finger_distal_negative",
-        "finger_distal_positive",
-    ),
-    "middle_distal": (
-        "finger_distal_negative",
-        "finger_distal_positive",
-    ),
-    "little_distal": (
-        "finger_distal_negative",
-        "finger_distal_positive",
+    # Human anatomy semantics:
+    #   negative pose = index toward THUMB
+    #   positive pose = index toward MIDDLE
+    "index_adduction": (
+        "index_adduction_negative",
+        "index_adduction_positive",
     ),
 }
 
@@ -65,6 +74,9 @@ class BidirectionalEndpointDiagnostic:
     positive_delta: float
     product: float
     failure_reasons: tuple[str, ...]
+    neutral_sigma: float = 0.0
+    negative_sigma: float = 0.0
+    positive_sigma: float = 0.0
 
     @property
     def passed(self) -> bool:
@@ -179,17 +191,69 @@ class CalibrationSession:
 
         return result
 
+    def pose_robust_sigma(
+        self,
+        pose_name: str,
+        feature_name: str,
+    ) -> float:
+        """MAD-based robust noise scale for one pose/feature."""
+
+        samples = self._samples.get(
+            pose_name,
+            [],
+        )
+
+        if not samples:
+            raise ValueError(
+                f"No samples for pose: {pose_name}"
+            )
+
+        values = np.asarray(
+            [
+                sample[feature_name]
+                for sample in samples
+            ],
+            dtype=np.float64,
+        )
+
+        mad = float(
+            np.median(
+                np.abs(
+                    values
+                    - np.median(values)
+                )
+            )
+        )
+
+        return ROBUST_SIGMA_MAD_SCALE * mad
+
     def bidirectional_diagnostics(
         self,
         minimum_separation: float = (
             MIN_BIDIRECTIONAL_SEPARATION_RAD
         ),
+        min_span_to_noise_ratio: float = (
+            MIN_SPAN_TO_NOISE_RATIO
+        ),
     ) -> dict[str, BidirectionalEndpointDiagnostic]:
-        """Validate raw bidirectional endpoint geometry by feature."""
+        """Validate raw bidirectional endpoint geometry by feature.
+
+        An endpoint is rejected unless its span from neutral exceeds
+        BOTH the absolute minimum separation AND a conservative
+        multiple of the robust (MAD-derived) noise scale of the two
+        poses involved.  This rejects mathematically unstable
+        endpoints, e.g. a thumb_distal negative span of ~0.07 rad
+        recorded with comparable hand jitter.
+        """
 
         if minimum_separation <= 0.0:
             raise ValueError(
                 "minimum_separation must be positive"
+            )
+
+        if min_span_to_noise_ratio <= 0.0:
+            raise ValueError(
+                "min_span_to_noise_ratio must be positive"
             )
 
         missing = self.missing_poses()
@@ -214,6 +278,20 @@ class CalibrationSession:
             positive = self.pose_median(
                 positive_pose
             )[feature_name]
+
+            neutral_sigma = self.pose_robust_sigma(
+                "neutral",
+                feature_name,
+            )
+            negative_sigma = self.pose_robust_sigma(
+                negative_pose,
+                feature_name,
+            )
+            positive_sigma = self.pose_robust_sigma(
+                positive_pose,
+                feature_name,
+            )
+
             negative_delta = negative - neutral_value
             positive_delta = positive - neutral_value
             product = negative_delta * positive_delta
@@ -224,6 +302,32 @@ class CalibrationSession:
 
             if abs(positive_delta) < minimum_separation:
                 reasons.append("positive_too_close_to_neutral")
+
+            negative_noise = max(
+                neutral_sigma,
+                negative_sigma,
+            )
+
+            if abs(negative_delta) < (
+                min_span_to_noise_ratio
+                * negative_noise
+            ):
+                reasons.append(
+                    "negative_span_below_noise_scale"
+                )
+
+            positive_noise = max(
+                neutral_sigma,
+                positive_sigma,
+            )
+
+            if abs(positive_delta) < (
+                min_span_to_noise_ratio
+                * positive_noise
+            ):
+                reasons.append(
+                    "positive_span_below_noise_scale"
+                )
 
             if product >= 0.0:
                 reasons.append("endpoints_on_same_side")
@@ -238,6 +342,9 @@ class CalibrationSession:
                     positive_delta=positive_delta,
                     product=product,
                     failure_reasons=tuple(reasons),
+                    neutral_sigma=neutral_sigma,
+                    negative_sigma=negative_sigma,
+                    positive_sigma=positive_sigma,
                 )
             )
 
@@ -266,8 +373,15 @@ class CalibrationSession:
                     f"negative={item.negative:+.6f}, "
                     f"neutral={item.neutral:+.6f}, "
                     f"positive={item.positive:+.6f}, "
-                    f"neg_delta={item.negative_delta:+.6f}, "
-                    f"pos_delta={item.positive_delta:+.6f}, "
+                    f"neg_delta={item.negative_delta:+.6f} "
+                    f"(span), "
+                    f"pos_delta={item.positive_delta:+.6f} "
+                    f"(span), "
+                    f"neutral_sigma={item.neutral_sigma:.6f}, "
+                    f"negative_sigma={item.negative_sigma:.6f}, "
+                    f"positive_sigma={item.positive_sigma:.6f}, "
+                    f"required_span>=noise*"
+                    f"{MIN_SPAN_TO_NOISE_RATIO}, "
                     f"product={item.product:+.6f}, "
                     f"reasons={list(item.failure_reasons)}"
                 )
@@ -302,23 +416,25 @@ class CalibrationSession:
             )
         )
 
-        index_adduction = self.pose_median(
-            "index_adduction"
+        index_adduction_negative = (
+            self.pose_median(
+                "index_adduction_negative"
+            )
+        )
+
+        index_adduction_positive = (
+            self.pose_median(
+                "index_adduction_positive"
+            )
         )
 
         finger_flexion = self.pose_median(
             "finger_flexion"
         )
 
-        finger_distal_negative = (
+        finger_distal_flexion = (
             self.pose_median(
-                "finger_distal_negative"
-            )
-        )
-
-        finger_distal_positive = (
-            self.pose_median(
-                "finger_distal_positive"
+                "finger_distal_flexion"
             )
         )
 
@@ -345,16 +461,6 @@ class CalibrationSession:
                         ],
                         active=thumb_abduction[
                             "thumb_abduction"
-                        ],
-                    ),
-
-                "index_adduction":
-                    UnidirectionalCalibration(
-                        neutral=neutral[
-                            "index_adduction"
-                        ],
-                        active=index_adduction[
-                            "index_adduction"
                         ],
                     ),
 
@@ -397,6 +503,38 @@ class CalibrationSession:
                             "little_flexion"
                         ],
                     ),
+
+                # Unidirectional distal flexion: neutral = straight/open
+                # baseline, active = distal flexed toward palm.
+                "index_distal":
+                    UnidirectionalCalibration(
+                        neutral=neutral[
+                            "index_distal"
+                        ],
+                        active=finger_distal_flexion[
+                            "index_distal"
+                        ],
+                    ),
+
+                "middle_distal":
+                    UnidirectionalCalibration(
+                        neutral=neutral[
+                            "middle_distal"
+                        ],
+                        active=finger_distal_flexion[
+                            "middle_distal"
+                        ],
+                    ),
+
+                "little_distal":
+                    UnidirectionalCalibration(
+                        neutral=neutral[
+                            "little_distal"
+                        ],
+                        active=finger_distal_flexion[
+                            "little_distal"
+                        ],
+                    ),
             },
 
             bidirectional={
@@ -417,53 +555,21 @@ class CalibrationSession:
                         ),
                     ),
 
-                "index_distal":
+                # negative endpoint = index toward THUMB,
+                # positive endpoint = index toward MIDDLE.
+                "index_adduction":
                     BidirectionalCalibration(
                         negative=(
-                            finger_distal_negative[
-                                "index_distal"
+                            index_adduction_negative[
+                                "index_adduction"
                             ]
                         ),
                         neutral=neutral[
-                            "index_distal"
+                            "index_adduction"
                         ],
                         positive=(
-                            finger_distal_positive[
-                                "index_distal"
-                            ]
-                        ),
-                    ),
-
-                "middle_distal":
-                    BidirectionalCalibration(
-                        negative=(
-                            finger_distal_negative[
-                                "middle_distal"
-                            ]
-                        ),
-                        neutral=neutral[
-                            "middle_distal"
-                        ],
-                        positive=(
-                            finger_distal_positive[
-                                "middle_distal"
-                            ]
-                        ),
-                    ),
-
-                "little_distal":
-                    BidirectionalCalibration(
-                        negative=(
-                            finger_distal_negative[
-                                "little_distal"
-                            ]
-                        ),
-                        neutral=neutral[
-                            "little_distal"
-                        ],
-                        positive=(
-                            finger_distal_positive[
-                                "little_distal"
+                            index_adduction_positive[
+                                "index_adduction"
                             ]
                         ),
                     ),
