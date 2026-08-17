@@ -18,12 +18,25 @@ joints:
     semantic: thumb_opposition
     zero: 0.0
     positive_direction: rotate_toward_palm
+    # Teleop semantic range: canonical [0, 1] maps onto this subset of
+    # the mechanical range, not the full ROM.  Real AVP thumb_root probe:
+    # COMFORTABLE_OPPOSITION gave canonical thumb_opposition = +0.9126
+    # and, with the earlier 0-90 deg range, thumb_j1 = +82.13 deg — a
+    # comfortable non-maximal human opposition already consumed ~91% of
+    # the teleop range, matching the observed over-folded MCP.  With the
+    # 0-60 deg range the same input commands ~54.8 deg.
+    teleop_range: [0.0, 1.0472]
 
   thumb_j2:
     range: [-2.61, 0.0]
     semantic: thumb_abduction
     zero: 0.0
     negative_direction: rotate_outward_and_downward
+    # Teleop semantic range: FK basis: -60 deg fully extends the thumb
+    # outward from the palm plane (d_center 0.144 m, the sweep maximum);
+    # the full -149.5 deg over-rotates far beyond natural human thumb
+    # abduction and amplified small root motions.
+    teleop_range: [-1.0472, 0.0]
 
   thumb_j3:
     range: [-1.048, 1.57]

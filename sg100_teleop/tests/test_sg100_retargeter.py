@@ -46,13 +46,18 @@ def main():
     for name, value in r.as_joint_dict(q).items():
         print(f"{name:12s}: {value:+.4f}")
 
+    # Thumb root joints interpolate onto their TELEOP semantic ranges
+    # (not the full mechanical ROM): thumb_j1 0 -> +60 deg,
+    # thumb_j2 0 -> -60 deg.  All other joints keep the mechanical
+    # limits until a teleop_range is configured for them.
+    #
     # index_adduction=+1 means TOWARD MIDDLE.  index_j1's numeric q+ is
     # physically toward thumb, so canonical +1 commands the q_min side:
     # q = zero + 1.0 * (q_min - zero) = 0.0 with the current semantics
     # zero (0.0 == q_min, the adducted extreme saturates at zero).
     expected = np.array([
-         2.182,
-        -2.610,
+         1.0472,
+        -1.0472,
          1.570,
 
          0.0,
@@ -68,6 +73,14 @@ def main():
     ])
 
     assert np.allclose(q, expected)
+
+    # Teleop ranges must stay strict subsets of the mechanical ranges.
+    for joint in ("thumb_j1", "thumb_j2"):
+        m_lower, m_upper = map(
+            float, r.joints[joint]["range"]
+        )
+        t_lower, t_upper = r.joint_teleop_range[joint]
+        assert m_lower <= t_lower < t_upper <= m_upper, joint
 
     print("\n===== INDEX ADDUCTION NEGATIVE (TOWARD THUMB) =====")
 

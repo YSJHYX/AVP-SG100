@@ -34,13 +34,21 @@ class SG100Retargeter:
     mapped joint.  The zero comes from the SG100 semantics config (a robot
     morphology property), never from the per-user calibration YAML.
 
-    Mapping modes (all neutral-centered on semantics zero):
+    Two distinct "range" concepts (do not conflate them):
+
+        mechanical range -> [range] per joint (the robot's physical ROM)
+        teleop range     -> optional [teleop_range] per joint (the
+                            semantic subset used for teleoperation)
+
+    Mapping modes (all neutral-centered on semantics zero, interpolating
+    onto the TELEOP limits when configured, the mechanical limits
+    otherwise; output is always clipped to the mechanical range):
 
         positive:
-            canonical [0, 1] -> q from zero toward the numeric upper limit
+            canonical [0, 1] -> q from zero toward the upper limit
 
         negative:
-            canonical [0, 1] -> q from zero toward the numeric lower limit
+            canonical [0, 1] -> q from zero toward the lower limit
 
         bidirectional:
             canonical [-1, 1] -> q from zero toward upper (+) / lower (-)
@@ -104,6 +112,11 @@ class SG100Retargeter:
         # against each joint's mechanical range.
         self.joint_zero = {}
 
+        # Teleop semantic ranges: canonical full scale maps onto these
+        # subsets of the mechanical ROM when configured.  Joints without
+        # an explicit teleop_range keep the full mechanical range.
+        self.joint_teleop_range = {}
+
         for joint_name in self.joint_order:
             lower, upper = map(
                 float,
@@ -121,6 +134,31 @@ class SG100Retargeter:
                 )
 
             self.joint_zero[joint_name] = zero
+
+            teleop = self.joints[joint_name].get("teleop_range")
+
+            if teleop is None:
+                t_lower, t_upper = lower, upper
+            else:
+                t_lower, t_upper = map(float, teleop)
+
+            if not (
+                lower <= t_lower <= t_upper <= upper
+            ):
+                raise RuntimeError(
+                    f"Teleop range for {joint_name} "
+                    f"[{t_lower}, {t_upper}] is not a valid subset of "
+                    f"its mechanical range [{lower}, {upper}]"
+                )
+
+            if not (t_lower <= zero <= t_upper):
+                raise RuntimeError(
+                    f"Semantics zero for {joint_name} ({zero}) is "
+                    f"outside its teleop range "
+                    f"[{t_lower}, {t_upper}]"
+                )
+
+            self.joint_teleop_range[joint_name] = (t_lower, t_upper)
 
     @staticmethod
     def _positive(value: float, zero: float, upper: float) -> float:
@@ -201,6 +239,11 @@ class SG100Retargeter:
 
             zero = self.joint_zero[joint_name]
 
+            # Interpolation limits: teleop semantic range when
+            # configured, mechanical range otherwise.  The final clip
+            # below always enforces the mechanical range.
+            t_lower, t_upper = self.joint_teleop_range[joint_name]
+
             feature_name, mapping_type = (
                 self.FEATURE_MAPPING[joint_name]
             )
@@ -212,7 +255,7 @@ class SG100Retargeter:
                 q = self._positive(
                     value=value,
                     zero=zero,
-                    upper=upper,
+                    upper=t_upper,
                 )
 
             elif mapping_type == "negative":
@@ -220,7 +263,7 @@ class SG100Retargeter:
                 q = self._negative(
                     value=value,
                     zero=zero,
-                    lower=lower,
+                    lower=t_lower,
                 )
 
             elif mapping_type == "bidirectional":
@@ -228,8 +271,8 @@ class SG100Retargeter:
                 q = self._bidirectional(
                     value=value,
                     zero=zero,
-                    lower=lower,
-                    upper=upper,
+                    lower=t_lower,
+                    upper=t_upper,
                 )
 
             elif mapping_type == "bidirectional_inverted":
@@ -237,8 +280,8 @@ class SG100Retargeter:
                 q = self._bidirectional_inverted(
                     value=value,
                     zero=zero,
-                    lower=lower,
-                    upper=upper,
+                    lower=t_lower,
+                    upper=t_upper,
                 )
 
             else:

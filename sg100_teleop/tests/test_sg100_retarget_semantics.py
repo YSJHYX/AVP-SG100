@@ -370,6 +370,109 @@ def test_finger_distal_flexion_moves_toward_palm():
 
 
 # ----------------------------------------------------------------------
+# Thumb root gain — teleop semantic range contract
+#
+# Canonical [0, 1] maps onto the TELEOP semantic range from the SG100
+# semantics config (a subset of the mechanical range), NOT onto the full
+# mechanical range.  A small human root motion must not consume the
+# robot's entire mechanical ROM.
+# ----------------------------------------------------------------------
+
+def test_thumb_neutral_maps_to_robot_neutral():
+    h = PalmFrameHarness()
+    q = h.q_for()
+    i1 = h.retargeter.joint_order.index("thumb_j1")
+    i2 = h.retargeter.joint_order.index("thumb_j2")
+    assert np.isclose(q[i1], h.zero["thumb_j1"])
+    assert np.isclose(q[i2], h.zero["thumb_j2"])
+
+
+def test_thumb_opposition_small_input_produces_bounded_root_motion():
+    h = PalmFrameHarness()
+    r = h.retargeter
+    i1 = r.joint_order.index("thumb_j1")
+
+    t_lower, t_upper = r.joint_teleop_range["thumb_j1"]
+    m_lower, m_upper = map(float, r.joints["thumb_j1"]["range"])
+
+    # The teleop semantic limit must be a strict subset of mechanical ROM.
+    assert m_lower <= t_lower < t_upper <= m_upper
+
+    # Explicit anchor points locked by the real AVP thumb_root probe
+    # (COMFORTABLE_OPPOSITION canonical 0.9126 -> ~54.8 deg at 60 deg
+    # teleop range; the earlier 90 deg range over-folded the MCP).
+    for canonical, expected_deg in ((0.0, 0.0), (0.5, 30.0), (1.0, 60.0)):
+        q = h.q_for(thumb_opposition=canonical)
+        assert np.isclose(np.degrees(q[i1]), expected_deg, atol=1e-6), (
+            f"canonical thumb_opposition={canonical} must command "
+            f"{expected_deg} deg, got {np.degrees(q[i1]):.2f} deg"
+        )
+        expected = h.zero["thumb_j1"] + canonical * (
+            t_upper - h.zero["thumb_j1"]
+        )
+        assert np.isclose(q[i1], expected)
+
+    # Per-unit canonical gain equals the teleop span, not the mechanical
+    # span (60 deg, not 125 deg of root sweep).
+    gain = abs(
+        h.q_for(thumb_opposition=1.0)[i1]
+        - h.q_for(thumb_opposition=0.0)[i1]
+    )
+    assert np.isclose(gain, t_upper - t_lower), (
+        "thumb_j1 canonical gain must equal the teleop semantic span"
+    )
+
+    # The mechanical clamp on thumb_j1 itself remains the original
+    # 0-125.02 deg ROM (teleop limits only restrict interpolation).
+    assert np.isclose(np.degrees(m_upper), 125.02, atol=0.01)
+    assert np.isclose(np.degrees(m_lower), 0.0)
+
+
+def test_thumb_abduction_small_input_produces_bounded_root_motion():
+    h = PalmFrameHarness()
+    r = h.retargeter
+    i2 = r.joint_order.index("thumb_j2")
+
+    t_lower, t_upper = r.joint_teleop_range["thumb_j2"]
+    m_lower, m_upper = map(float, r.joints["thumb_j2"]["range"])
+
+    assert m_lower <= t_lower < t_upper <= m_upper
+
+    for canonical in (0.2, 0.5, 1.0):
+        q = h.q_for(thumb_abduction=canonical)
+        expected = h.zero["thumb_j2"] + canonical * (
+            t_lower - h.zero["thumb_j2"]
+        )
+        assert np.isclose(q[i2], expected), (
+            f"canonical thumb_abduction={canonical} must command "
+            f"{np.degrees(expected):.1f} deg (teleop), got "
+            f"{np.degrees(q[i2]):.1f} deg"
+        )
+
+    gain = abs(
+        h.q_for(thumb_abduction=1.0)[i2]
+        - h.q_for(thumb_abduction=0.0)[i2]
+    )
+    assert np.isclose(gain, t_upper - t_lower)
+
+
+def test_thumb_root_motion_does_not_modify_thumb_j3_mapping():
+    h = PalmFrameHarness()
+    r = h.retargeter
+    i3 = r.joint_order.index("thumb_j3")
+
+    for canonical in (0.0, 0.2, 0.5, 1.0):
+        q_opp = h.q_for(thumb_opposition=canonical)
+        q_abd = h.q_for(thumb_abduction=canonical)
+        assert np.isclose(q_opp[i3], h.zero["thumb_j3"]), (
+            "thumb_opposition input must not move thumb_j3"
+        )
+        assert np.isclose(q_abd[i3], h.zero["thumb_j3"]), (
+            "thumb_abduction input must not move thumb_j3"
+        )
+
+
+# ----------------------------------------------------------------------
 # TEST 6 — bidirectional index_adduction calibration endpoints
 # ----------------------------------------------------------------------
 
@@ -611,6 +714,14 @@ def main():
         test_thumb_neutral_uses_semantics_zero)
     run("thumb_distal_positive_flexes_toward_palm",
         test_thumb_distal_positive_flexes_toward_palm)
+    run("thumb_neutral_maps_to_robot_neutral",
+        test_thumb_neutral_maps_to_robot_neutral)
+    run("thumb_opposition_small_input_produces_bounded_root_motion",
+        test_thumb_opposition_small_input_produces_bounded_root_motion)
+    run("thumb_abduction_small_input_produces_bounded_root_motion",
+        test_thumb_abduction_small_input_produces_bounded_root_motion)
+    run("thumb_root_motion_does_not_modify_thumb_j3_mapping",
+        test_thumb_root_motion_does_not_modify_thumb_j3_mapping)
     run("finger_distal_straight_maps_to_robot_zero",
         test_finger_distal_straight_maps_to_robot_zero)
     run("finger_distal_negative_input_never_hits_mechanical_limit",
