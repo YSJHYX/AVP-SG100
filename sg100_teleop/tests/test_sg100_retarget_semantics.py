@@ -574,6 +574,204 @@ def test_thumb_root_motion_does_not_modify_thumb_j3_mapping():
 
 
 # ----------------------------------------------------------------------
+# Pinch-conditioned thumb coordination (gated blend)
+#
+# gate = smoothstep(score), score = opp * abd * (1 - clamp(dst, 0, 1))
+# q1 = (1-g)*q1_base(gamma curve)  + g*q1_pinch(monotonic anchors)
+# q2 = (1-g)*q2_base               + g*q2_pinch (configured 0 deg)
+# gate == 0 must reproduce the base branch EXACTLY.
+# ----------------------------------------------------------------------
+
+# Real AVP operating points, INCLUDING the non-thumb finger flexions
+# the grasp-context pinch gate depends on (thumb_distal is no longer a
+# gate input).
+MEASURED_POINTS = {
+    "NEUTRAL": dict(thumb_opposition=0.0000, thumb_abduction=0.0000,
+                    index_flexion=0.0, middle_flexion=0.0,
+                    little_flexion=0.0),
+    "NORMAL_GRASP": dict(thumb_opposition=0.7595, thumb_abduction=0.8610,
+                         index_flexion=0.9795, middle_flexion=1.0000,
+                         little_flexion=1.0000),
+    "INDEX_PINCH": dict(thumb_opposition=0.5724, thumb_abduction=1.0000,
+                        index_flexion=0.3892, middle_flexion=0.0000,
+                        little_flexion=0.0000),
+    "MIDDLE_PINCH": dict(thumb_opposition=0.7420, thumb_abduction=1.0000,
+                         index_flexion=0.0000, middle_flexion=0.1568,
+                         little_flexion=0.0000),
+    "LITTLE_PINCH": dict(thumb_opposition=0.9264, thumb_abduction=0.9190,
+                         index_flexion=0.0000, middle_flexion=0.0000,
+                         little_flexion=0.1596),
+}
+
+
+def _thumb_q(h, point):
+    return h.q_for(**point)
+
+
+def test_pinch_gate_preserves_neutral_and_grasp():
+    """(A) NORMAL GRASP — global context high, signal ~0, gate == 0,
+    q1/q2 exactly equal to the old grasp branch."""
+    h = PalmFrameHarness()
+    r = h.retargeter
+    i1 = r.joint_order.index("thumb_j1")
+    i2 = r.joint_order.index("thumb_j2")
+
+    g_neutral = r.pinch_gate(MEASURED_POINTS["NEUTRAL"])
+    assert g_neutral == 0.0
+    q = _thumb_q(h, MEASURED_POINTS["NEUTRAL"])
+    assert np.isclose(q[i1], 0.0) and np.isclose(q[i2], 0.0)
+
+    grasp = MEASURED_POINTS["NORMAL_GRASP"]
+    ctx = r.global_grasp_context(grasp)
+    sig = r.pinch_signal(grasp)
+    g = r.pinch_gate(grasp)
+
+    assert ctx > 0.97, f"grasp context {ctx:.4f}"
+    assert sig < 0.02, f"grasp pinch_signal {sig:.4f}"
+    assert g == 0.0 or g < 1e-12
+
+    # Exact base-branch values: 90 * 0.7595^1.5 and -60 * 0.861.
+    q = _thumb_q(h, grasp)
+    assert np.isclose(np.degrees(q[i1]), 59.58, atol=0.05)
+    assert np.isclose(np.degrees(q[i2]), -51.66, atol=0.05)
+
+
+def test_pinch_gate_activates_on_pinch_points():
+    """(B/C/D) INDEX / MIDDLE / LITTLE pinches — context ~0, signal high,
+    gate ~1."""
+    h = PalmFrameHarness()
+    r = h.retargeter
+    i1 = r.joint_order.index("thumb_j1")
+    i2 = r.joint_order.index("thumb_j2")
+
+    for name in ("INDEX_PINCH", "MIDDLE_PINCH", "LITTLE_PINCH"):
+        point = MEASURED_POINTS[name]
+        assert r.global_grasp_context(point) < 0.01, name
+        expected_sig = (
+            point["thumb_opposition"]
+            * point["thumb_abduction"]
+        )
+        assert np.isclose(r.pinch_signal(point), expected_sig,
+                          atol=1e-9), name
+        g = r.pinch_gate(point)
+        assert g >= 0.99, f"{name} gate too low: {g:.4f}"
+
+        q = _thumb_q(h, point)
+        q1_base = np.deg2rad(90.0) * point["thumb_opposition"] ** 1.5
+        anchors = r.pinch_coordination["joints"]["thumb_j1"]["anchors"]
+        q1_pinch = float(np.interp(
+            point["thumb_opposition"],
+            [a[0] for a in anchors],
+            [a[1] for a in anchors],
+        ))
+        expected_q1 = (1.0 - g) * q1_base + g * q1_pinch
+        assert np.isclose(q[i1], expected_q1, atol=1e-12), name
+
+        # q2 blends toward the configured pinch target (0 deg).
+        q2_base = np.deg2rad(-60.0) * point["thumb_abduction"]
+        expected_q2 = (1.0 - g) * q2_base
+        assert np.isclose(q[i2], expected_q2, atol=1e-12), name
+
+    # Middle pinch: gate saturates -> q1 lands exactly on the pinch
+    # anchor (frozen anchors: interp at opp=0.742 -> 100.7 deg) and
+    # q2 exactly on the configured pinch target 0.
+    q = _thumb_q(h, MEASURED_POINTS["MIDDLE_PINCH"])
+    anchors = r.pinch_coordination["joints"]["thumb_j1"]["anchors"]
+    expected_middle = float(np.interp(
+        0.7420,
+        [a[0] for a in anchors],
+        [a[1] for a in anchors],
+    ))
+    assert np.isclose(q[i1], expected_middle, atol=1e-12)
+    assert np.isclose(np.degrees(q[i1]), 100.7, atol=0.1)
+    assert np.isclose(q[i2], 0.0, atol=1e-12)
+    assert np.degrees(q[i1]) > 79.0  # exceeds index despite larger reach need
+
+    # Index pinch: q1 must exceed the grasp value even though the
+    # opposition canonical (0.5724) is LOWER than grasp (0.7595).
+    q_idx = _thumb_q(h, MEASURED_POINTS["INDEX_PINCH"])
+    q_grasp = _thumb_q(h, MEASURED_POINTS["NORMAL_GRASP"])
+    assert np.degrees(q_idx[i1]) > np.degrees(q_grasp[i1]) + 10.0
+
+
+def test_pinch_gate_continuity():
+    """(E) gate must be monotonic, continuous, in [0, 1] across the
+    smoothstep transition (sweep pinch_signal 0.15 -> 0.55 via
+    opposition with abduction=1 and zero grasp context)."""
+    h = PalmFrameHarness()
+    r = h.retargeter
+
+    prev_g, prev_q = None, None
+    for opp in (0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55):
+        point = dict(thumb_opposition=opp, thumb_abduction=1.0,
+                     index_flexion=0.0, middle_flexion=0.0,
+                     little_flexion=0.0)
+        g = r.pinch_gate(point)
+        assert 0.0 <= g <= 1.0
+        if prev_g is not None:
+            assert g >= prev_g, "gate must be monotonic"
+        a = _thumb_q(h, point)
+        b = _thumb_q(h, dict(point, thumb_opposition=opp + 1e-9))
+        assert np.allclose(a, b, atol=1e-6), (
+            f"discontinuity at pinch_signal~{opp:.2f}"
+        )
+        if prev_q is not None:
+            step = float(np.abs(a[:2] - prev_q[:2]).max())
+            # Bound derived from the max gate slope: |dq1/dsignal| <=
+            # (anchor span ~1.4 rad) * smoothstep'(1.5) / (0.30 band)
+            # ~ 7 rad/unit -> per 0.05 sample <= 0.36 rad.
+            assert step < 0.40, f"q jump at signal~{opp:.2f}: {step}"
+        prev_g, prev_q = g, a
+
+    # True continuity: epsilon-pair check across the whole transition.
+    for opp in np.arange(0.10, 0.65, 0.01):
+        point = dict(thumb_opposition=float(opp), thumb_abduction=1.0,
+                     index_flexion=0.0, middle_flexion=0.0,
+                     little_flexion=0.0)
+        a = _thumb_q(h, point)
+        b = _thumb_q(h, dict(point, thumb_opposition=float(opp) + 1e-7))
+        assert np.allclose(a, b, atol=1e-5), (
+            f"discontinuity at pinch_signal~{opp:.2f}"
+        )
+
+
+def test_pinch_coordination_backward_compatibility():
+    """Without the pinch_coordination config, every joint output must
+    match the previous (single power curve) implementation exactly —
+    including at pinch-like points, where no gating may occur."""
+    import copy
+    import tempfile
+
+    with SEMANTICS_YAML.open("r") as f:
+        config = yaml.safe_load(f)
+    assert "pinch_coordination" in config
+
+    stripped = copy.deepcopy(config)
+    stripped.pop("pinch_coordination")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "no_coord.yaml"
+        with path.open("w") as f:
+            yaml.safe_dump(stripped, f)
+        old = SG100Retargeter(semantics_path=path)
+
+    new = SG100Retargeter()
+
+    # Gate==0 operating points (neutral, grasp): bitwise identical.
+    for name in ("NEUTRAL", "NORMAL_GRASP"):
+        hand = CanonicalHandState(**MEASURED_POINTS[name])
+        assert np.array_equal(new.retarget(hand), old.retarget(hand)), name
+
+    # Stripped config must ignore pinch-like geometry entirely.
+    for name in ("INDEX_PINCH", "MIDDLE_PINCH", "LITTLE_PINCH"):
+        hand = CanonicalHandState(**MEASURED_POINTS[name])
+        q = old.retarget(hand)
+        expected = np.deg2rad(
+            90.0 * MEASURED_POINTS[name]["thumb_opposition"] ** 1.5
+        )
+        assert np.isclose(q[0], expected, atol=1e-12), name
+
+
+# ----------------------------------------------------------------------
 # TEST 6 — bidirectional index_adduction calibration endpoints
 # ----------------------------------------------------------------------
 
@@ -827,6 +1025,14 @@ def main():
         test_gamma_response_defaults_and_equivalence)
     run("gamma_leaves_other_joints_unchanged",
         test_gamma_leaves_other_joints_unchanged)
+    run("pinch_gate_preserves_neutral_and_grasp",
+        test_pinch_gate_preserves_neutral_and_grasp)
+    run("pinch_gate_activates_on_pinch_points",
+        test_pinch_gate_activates_on_pinch_points)
+    run("pinch_gate_continuity",
+        test_pinch_gate_continuity)
+    run("pinch_coordination_backward_compatibility",
+        test_pinch_coordination_backward_compatibility)
     run("finger_distal_straight_maps_to_robot_zero",
         test_finger_distal_straight_maps_to_robot_zero)
     run("finger_distal_negative_input_never_hits_mechanical_limit",

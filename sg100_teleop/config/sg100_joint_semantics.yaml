@@ -98,3 +98,57 @@ joints:
     zero: 0.0
     positive_direction: flexion_toward_palm
     negative_direction: extension_toward_dorsal_side
+
+# Pinch-conditioned thumb coordination (generic, config-driven).
+#
+# Continuous pinch score from existing canonical features only — no
+# explicit pinch label:
+#     score = thumb_opposition * thumb_abduction * (1 - clamp(thumb_distal, 0, 1))
+# gate  = smoothstep(score, lower, upper)
+#
+# Real AVP operating points:
+#   NORMAL_GRASP  opp=.709 abd=.973 dst=.918 -> score .057 -> gate 0
+#     (grasp branch preserved EXACTLY: 90*0.709^1.5 = 53.7 deg,
+#      -60*0.973 = -58.4 deg)
+#   INDEX_PINCH   opp=.540 abd=1.000 dst=.134 -> score .468 -> gate .75
+#   MIDDLE_PINCH  opp=.773 abd=1.000 dst=.113 -> score .686 -> gate 1
+#   LITTLE_PINCH  opp=.910 abd=1.000 dst=.134 -> score .788 -> gate 1
+#
+# Blending: q = (1-gate)*q_base + gate*q_pinch.
+#   thumb_j1 pinch branch: monotonic interpolation over opposition
+#     canonical between the anchors below (interim FK values at q2=0;
+#     INDEX/MIDDLE to be re-validated with the live probe diagnostic,
+#     LITTLE provisional).
+#   thumb_j2 pinch branch: constant pinch target 0 deg (real q2 sweep:
+#     q2 -60 -> 0 improves surface distance by 26.9/41.6/38.7 mm for
+#     index/middle/little).
+# Without this section the retargeter keeps the previous behaviour.
+pinch_coordination:
+  gate:
+    # pinch_signal = clamp(opp,0,1) * clamp(abd,0,1) * (1 - context)
+    # global_grasp_context = geometric mean of the clamped non-thumb
+    #   finger FLEXION features (index/middle/little_flexion) — NOT
+    #   distal features.  Real AVP separation:
+    #     NORMAL_GRASP context 0.993 (all fingers closed)  -> signal .005 -> gate 0
+    #     INDEX/MIDDLE/LITTLE pinch context 0 (open hand)  -> signal .57/.74/.85 -> gate 1
+    #   thumb_distal is no longer a gate input (NOT ROBUST across
+    #   pinch targets: grasp .912 vs pinch .526-.664).
+    pinch_terms:
+      thumb_opposition: direct
+      thumb_abduction: direct
+    context_features:
+      - index_flexion
+      - middle_flexion
+      - little_flexion
+    context_combiner: geometric_mean
+    signal_low: 0.20
+    signal_high: 0.50
+  joints:
+    thumb_j1:
+      anchors:   # [opposition canonical, q1 deg] — monotonic
+        - [0.540, 79.0]
+        - [0.773, 104.0]
+        - [0.910, 120.0]
+        - [1.000, 125.0]
+    thumb_j2:
+      pinch_target_deg: 0.0

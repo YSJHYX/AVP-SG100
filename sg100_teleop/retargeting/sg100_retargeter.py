@@ -108,6 +108,10 @@ class SG100Retargeter:
                 f"Missing retarget mapping for joints: {missing}"
             )
 
+        # Optional pinch-conditioned coordination (generic, fully
+        # config-driven; absent section = previous behaviour).
+        self.pinch_coordination = self._load_coordination(config)
+
         # Robot joint neutral offsets (q at canonical 0), validated
         # against each joint's mechanical range.
         self.joint_zero = {}
@@ -177,6 +181,197 @@ class SG100Retargeter:
                 )
 
             self.joint_teleop_range[joint_name] = (t_lower, t_upper)
+
+    _CANONICAL_FEATURE_NAMES = frozenset({
+        "thumb_opposition", "thumb_abduction", "thumb_distal",
+        "index_adduction", "index_flexion", "index_distal",
+        "middle_flexion", "middle_distal",
+        "little_outward", "little_flexion", "little_distal",
+    })
+
+    def _load_coordination(self, config: dict):
+        """Validate the optional pinch_coordination section."""
+
+        section = config.get("pinch_coordination")
+
+        if section is None:
+            return None
+
+        gate_cfg = section["gate"]
+        pinch_terms = gate_cfg["pinch_terms"]
+        context_features = list(gate_cfg["context_features"])
+        context_combiner = gate_cfg["context_combiner"]
+        signal_low = float(gate_cfg["signal_low"])
+        signal_high = float(gate_cfg["signal_high"])
+
+        if not (0.0 <= signal_low < signal_high <= 1.0):
+            raise RuntimeError(
+                "pinch_coordination gate thresholds must satisfy "
+                f"0 <= signal_low < signal_high <= 1, got "
+                f"[{signal_low}, {signal_high}]"
+            )
+
+        for feature in pinch_terms:
+            if feature not in self._CANONICAL_FEATURE_NAMES:
+                raise RuntimeError(
+                    f"pinch_coordination references unknown feature "
+                    f"{feature!r}"
+                )
+            if pinch_terms[feature] not in ("direct", "inverted"):
+                raise RuntimeError(
+                    f"pinch term {feature!r} must be 'direct' or "
+                    f"'inverted', got {pinch_terms[feature]!r}"
+                )
+
+        for feature in context_features:
+            if feature not in self._CANONICAL_FEATURE_NAMES:
+                raise RuntimeError(
+                    f"pinch_coordination references unknown context "
+                    f"feature {feature!r}"
+                )
+
+        if context_combiner != "geometric_mean":
+            raise RuntimeError(
+                "pinch_coordination context_combiner must be "
+                f"'geometric_mean', got {context_combiner!r}"
+            )
+
+        joints_cfg = {}
+
+        for joint_name, joint_cfg in section["joints"].items():
+            if joint_name not in self.joints:
+                raise RuntimeError(
+                    f"pinch_coordination references unknown joint "
+                    f"{joint_name!r}"
+                )
+
+            m_lower, m_upper = map(
+                float, self.joints[joint_name]["range"]
+            )
+
+            parsed = {}
+
+            if "anchors" in joint_cfg:
+                # Anchor q values are configured in degrees.
+                anchors = [
+                    (float(c), np.deg2rad(float(q)))
+                    for c, q in joint_cfg["anchors"]
+                ]
+                anchors.sort(key=lambda item: item[0])
+
+                cs = [c for c, _ in anchors]
+                qs = [q for _, q in anchors]
+
+                if any(
+                    later <= earlier
+                    for earlier, later in zip(cs, cs[1:])
+                ):
+                    raise RuntimeError(
+                        f"pinch_coordination anchors for {joint_name} "
+                        "must have strictly increasing canonical values"
+                    )
+                if any(
+                    later < earlier
+                    for earlier, later in zip(qs, qs[1:])
+                ):
+                    raise RuntimeError(
+                        f"pinch_coordination anchors for {joint_name} "
+                        "must be monotonic non-decreasing in q"
+                    )
+                if any(
+                    not (m_lower <= q <= m_upper) for _, q in anchors
+                ):
+                    raise RuntimeError(
+                        f"pinch_coordination anchors for {joint_name} "
+                        f"exceed the mechanical range [{m_lower}, {m_upper}]"
+                    )
+                parsed["anchors"] = anchors
+
+            if "pinch_target_deg" in joint_cfg:
+                target = float(
+                    np.deg2rad(joint_cfg["pinch_target_deg"])
+                )
+                if not (m_lower <= target <= m_upper):
+                    raise RuntimeError(
+                        f"pinch_coordination target for {joint_name} "
+                        f"({target}) is outside the mechanical range"
+                    )
+                parsed["pinch_target_deg"] = target
+
+            joints_cfg[joint_name] = parsed
+
+        return {
+            "pinch_terms": pinch_terms,
+            "context_features": context_features,
+            "signal_low": signal_low,
+            "signal_high": signal_high,
+            "joints": joints_cfg,
+        }
+
+    @staticmethod
+    def _smoothstep(x: float) -> float:
+        return float(x * x * (3.0 - 2.0 * x))
+
+    def global_grasp_context(self, features: dict) -> float:
+        """Geometric mean of the clamped non-thumb finger flexions.
+
+        ~1 when all fingers close together (normal grasp), ~0 when at
+        least two fingers stay open (pinch).  Never uses distal
+        features.
+        """
+
+        if self.pinch_coordination is None:
+            return 0.0
+
+        product = 1.0
+
+        for feature in self.pinch_coordination["context_features"]:
+            product *= float(np.clip(features[feature], 0.0, 1.0))
+
+        return product ** (
+            1.0 / len(self.pinch_coordination["context_features"])
+        )
+
+    def pinch_signal(self, features: dict) -> float:
+        """thumb_opposition * thumb_abduction * (1 - grasp context)."""
+
+        if self.pinch_coordination is None:
+            return 0.0
+
+        signal = 1.0
+
+        for feature, mode in self.pinch_coordination[
+            "pinch_terms"
+        ].items():
+            value = features[feature]
+            term = (
+                float(np.clip(value, 0.0, 1.0))
+                if mode == "direct"
+                else 1.0 - float(np.clip(value, 0.0, 1.0))
+            )
+            signal *= term
+
+        return signal * (
+            1.0 - self.global_grasp_context(features)
+        )
+
+    def pinch_gate(self, features: dict) -> float:
+        """Smoothstep gate in [0, 1]; exactly 0 below signal_low."""
+
+        if self.pinch_coordination is None:
+            return 0.0
+
+        signal = self.pinch_signal(features)
+
+        low = self.pinch_coordination["signal_low"]
+        high = self.pinch_coordination["signal_high"]
+
+        if signal <= low:
+            return 0.0
+
+        t = min(1.0, (signal - low) / (high - low))
+
+        return self._smoothstep(t)
 
     @staticmethod
     def _positive(value: float, zero: float, upper: float) -> float:
@@ -321,6 +516,44 @@ class SG100Retargeter:
                 lower,
                 upper,
             )
+
+        # Optional pinch-conditioned coordination: blend the base
+        # branch toward pinch-specific targets using the continuous
+        # pinch gate.  gate == 0 leaves the base output exactly as-is.
+        if self.pinch_coordination is not None:
+            gate = self.pinch_gate(features)
+
+            if gate > 0.0:
+                for joint_name, joint_cfg in self.pinch_coordination[
+                    "joints"
+                ].items():
+                    i = self.joint_order.index(joint_name)
+
+                    if "anchors" in joint_cfg:
+                        anchors = joint_cfg["anchors"]
+                        feature_name = self.FEATURE_MAPPING[joint_name][0]
+                        c = float(
+                            np.clip(features[feature_name], 0.0, 1.0)
+                        )
+                        q_pinch = float(np.interp(
+                            c,
+                            [a[0] for a in anchors],
+                            [a[1] for a in anchors],
+                        ))
+                    else:
+                        q_pinch = joint_cfg["pinch_target_deg"]
+
+                    q_target[i] = (
+                        (1.0 - gate) * q_target[i]
+                        + gate * q_pinch
+                    )
+
+                    m_lower, m_upper = map(
+                        float, self.joints[joint_name]["range"]
+                    )
+                    q_target[i] = np.clip(
+                        q_target[i], m_lower, m_upper
+                    )
 
         return q_target
 
