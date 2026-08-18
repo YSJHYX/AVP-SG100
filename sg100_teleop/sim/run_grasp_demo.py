@@ -43,7 +43,7 @@ DT = 0.002  # 500 Hz
 # ---- tuned defaults ----------------------------------------------------
 Q_READY = np.array([0.32488, -0.76769, 0.97621, 0.22463, -1.80649, -0.12430])
 BOTTLE_DR = 0.15
-BOTTLE_Z = 0.64030
+BOTTLE_Z = 0.11000
 HAND_DX, HAND_DY, HAND_DZ = -0.08, -0.13, 0.0     # hand offset from bottle center (world)
 HAND_ROLL = 0.0                                     # wrist roll [deg]
 THUMB_J2_OPEN = -0.6                                # initial (open) thumb_j2 [rad]; 0=neutral, range [-2.61,0]
@@ -198,6 +198,9 @@ def main() -> None:
     print("RM65 + SG100  grasp demo")
     print("=" * 56)
     print(f"bottle = {np.round(bottle, 3)}   hand = {np.round(palm_target, 3)}")
+    p_ach, _ = solver.fk(q_grasp)
+    ik_err_mm = float(np.linalg.norm(p_ach - palm_target)) * 1000.0
+    print(f"IK achieved TCP = {np.round(p_ach, 3)}   (target err {ik_err_mm:.1f} mm)")
     if args.inspect:
         print("INSPECT mode: hand held static (no close/lift).")
 
@@ -226,7 +229,10 @@ def main() -> None:
             data.ctrl[ARM_DOF:] = (1 - t) * h0 + t * hand_goal
             step()
             z = float(data.xpos[bottle_id][2])
-            if not np.isfinite(z) or z < 0.2 or z > 1.5:
+            # Stability guard for the tabletop at z = 0: below 0.02 means the
+            # bottle fell through/off the table.  A bottle merely knocked
+            # over still rests at z ~ 0.03 and is judged by the lift check.
+            if not np.isfinite(z) or z < 0.02 or z > 1.5:
                 return False
             if viewer is not None:
                 viewer.sync()
@@ -275,7 +281,7 @@ def main() -> None:
         viewer.cam.distance = 1.1
         viewer.cam.azimuth = 130
         viewer.cam.elevation = -25
-        viewer.cam.lookat[:] = [bottle[0] * 0.7, bottle[1] * 0.7, 0.6]
+        viewer.cam.lookat[:] = [bottle[0] * 0.7, bottle[1] * 0.7, 0.18]
         run(viewer)
         if not args.inspect:
             print("\nclose the viewer to exit.")

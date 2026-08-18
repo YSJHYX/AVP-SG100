@@ -210,7 +210,7 @@ def check_dynamics_stability(model: mujoco.MjModel) -> None:
 
     z1 = float(data.xpos[bottle_id][2])
     assert np.isfinite(z1), f"bottle z is non-finite: {z1}"
-    assert 0.62 < z1 < 0.66, (
+    assert 0.09 < z1 < 0.13, (
         f"bottle did not rest on the table: z0={z0:.4f} z1={z1:.4f} "
         f"(max_ncon={max_ncon})"
     )
