@@ -85,11 +85,7 @@ RM65_TELEOP_READY_Q = np.array(
     dtype=np.float64
 )
 
-def main():
-    # ========================================================
-    # Command-line arguments
-    # ========================================================
-
+def build_arg_parser():
     parser = argparse.ArgumentParser(
         description=(
             "Apple Vision Pro -> "
@@ -179,6 +175,31 @@ def main():
         ),
     )
 
+    # Teleop arm-IK mode: exactly one of these may be selected.
+    mode_group = parser.add_mutually_exclusive_group()
+
+    mode_group.add_argument(
+        "--lock-tcp-rotation",
+        action="store_true",
+        help=(
+            "Lock the TCP target orientation to the rotation "
+            "captured at neutral calibration; only wrist "
+            "translation (xyz) drives the arm. IK still solves "
+            "the full 6D pose against the fixed orientation."
+        ),
+    )
+
+    mode_group.add_argument(
+        "--position-only-ik",
+        action="store_true",
+        help=(
+            "True 3D position-only IK: the wrist controls TCP "
+            "xyz only and orientation is NOT an IK task "
+            "constraint at all, freeing arm posture and "
+            "enlarging the reachable position range."
+        ),
+    )
+
     parser.add_argument(
         "--attach",
         nargs=4,
@@ -196,6 +217,16 @@ def main():
         action="store_true",
         help="Print low-rate runtime diagnostics",
     )
+
+    return parser
+
+
+def main():
+    # ========================================================
+    # Command-line arguments
+    # ========================================================
+
+    parser = build_arg_parser()
 
     args = parser.parse_args()
 
@@ -310,6 +341,19 @@ def main():
     print(
         "AVP/TCP config    :",
         avp_to_tcp_config_path,
+    )
+
+    print(
+        "arm IK mode       :",
+        (
+            "position-only (orientation free)"
+            if args.position_only_ik
+            else (
+                "fixed-orientation (calibration anchor)"
+                if args.lock_tcp_rotation
+                else "6-DoF pose (follows wrist)"
+            )
+        ),
     )
 
     print(
@@ -739,6 +783,7 @@ def main():
 
     T_avp_wrist_0 = None
     T_tcp_runtime_0 = None
+    R_tcp_rotation_lock = None
     q_hand0_runtime = None
     has_completed_calibration = False
 
@@ -1210,6 +1255,16 @@ def main():
                                 T_tcp_runtime_0 = (
                                     T_tcp_anchor.copy()
                                 )
+                                # Orientation anchor for
+                                # --lock-tcp-rotation: the TCP rotation
+                                # at the moment the neutral anchor is
+                                # captured.
+                                R_tcp_rotation_lock = (
+                                    T_tcp_anchor[
+                                        :3,
+                                        :3,
+                                    ].copy()
+                                )
                                 q_hand0_runtime = (
                                     q_hand_candidate.copy()
                                 )
@@ -1274,35 +1329,70 @@ def main():
                                     ]
                                 )
 
-                                R_target = (
-                                    T_tcp_target[
-                                        :3,
-                                        :3,
-                                    ]
-                                )
-
 
                                 # ---------------------------------
                                 # Solve RM65 IK using the previous
                                 # valid solution as the next seed.
+                                #
+                                # position-only: true 3D translation
+                                #   task, orientation not constrained.
+                                # lock-rotation: full 6D pose IK
+                                #   against the calibration anchor.
+                                # default: full 6D pose IK against
+                                #   the mapped wrist orientation.
                                 # ---------------------------------
 
-                                (
-                                    q_arm_candidate,
-                                    ik_result,
-                                ) = (
-                                    ik_solver.solve(
-                                        q_seed=(
-                                            q_arm_goal
-                                        ),
-                                        target_position=(
-                                            p_target
-                                        ),
-                                        target_rotation=(
-                                            R_target
-                                        ),
+                                if args.position_only_ik:
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = (
+                                        ik_solver.solve(
+                                            q_seed=(
+                                                q_arm_goal
+                                            ),
+                                            target_position=(
+                                                p_target
+                                            ),
+                                            target_rotation=(
+                                                None
+                                            ),
+                                            position_only=(
+                                                True
+                                            ),
+                                        )
                                     )
-                                )
+
+                                else:
+                                    if args.lock_tcp_rotation:
+                                        R_target = (
+                                            R_tcp_rotation_lock
+                                            .copy()
+                                        )
+                                    else:
+                                        R_target = (
+                                            T_tcp_target[
+                                                :3,
+                                                :3,
+                                            ]
+                                        )
+
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = (
+                                        ik_solver.solve(
+                                            q_seed=(
+                                                q_arm_goal
+                                            ),
+                                            target_position=(
+                                                p_target
+                                            ),
+                                            target_rotation=(
+                                                R_target
+                                            ),
+                                        )
+                                    )
 
                                 last_ik_result = (
                                     ik_result
@@ -1455,6 +1545,7 @@ def main():
                         wrist_calibrated = False
                         T_avp_wrist_0 = None
                         T_tcp_runtime_0 = None
+                        R_tcp_rotation_lock = None
                         q_hand0_runtime = None
                         print_teleop_state(
                             "Tracking timeout invalidated the wrist anchor. "

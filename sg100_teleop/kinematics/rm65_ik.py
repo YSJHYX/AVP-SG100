@@ -16,6 +16,13 @@ RM65_JOINT_NAMES = (
     "joint_6",
 )
 
+# Position-only IK tuning (3D translation task, orientation free).
+POSITION_ONLY_TOLERANCE_M = 1e-4
+POSITION_ONLY_MAX_ITERATIONS = 60
+POSITION_ONLY_DAMPING = 0.05
+POSITION_ONLY_POSTURE_GAIN = 0.02
+POSITION_ONLY_MAX_STEP_RAD = 0.2
+
 
 @dataclass
 class IKResult:
@@ -322,6 +329,32 @@ class RM65IKSolver:
 
         return J
 
+    def _position_jacobian(self):
+        """3D position-task Jacobian, shape (3, 6)."""
+
+        jacp = np.zeros(
+            (3, self.model.nv),
+            dtype=np.float64,
+        )
+
+        jacr = np.zeros(
+            (3, self.model.nv),
+            dtype=np.float64,
+        )
+
+        point = self.data.xpos[self.tcp_body_id].copy()
+
+        mujoco.mj_jac(
+            self.model,
+            self.data,
+            jacp,
+            jacr,
+            point,
+            self.tcp_body_id,
+        )
+
+        return jacp[:, self.dof_indices]
+
     # ---------------------------------------------------------
     # Error
     # ---------------------------------------------------------
@@ -372,21 +405,153 @@ class RM65IKSolver:
     # IK
     # ---------------------------------------------------------
 
+    def _solve_position_only(
+        self,
+        q_seed: np.ndarray,
+        target_position: np.ndarray,
+    ):
+        """Damped-least-squares 3D position task with null-space
+        posture regularization toward the seed.
+
+        Task residual:  e = p_target - p_tcp(q)      shape (3,)
+        Task Jacobian:  J = dp_tcp/dq                 shape (3, 6)
+
+        The orientation never enters the residual, the Jacobian, or
+        the convergence criterion.
+        """
+
+        lower = self.lower + self.joint_limit_margin
+        upper = self.upper - self.joint_limit_margin
+
+        q_seed = np.clip(
+            np.asarray(q_seed, dtype=np.float64),
+            lower,
+            upper,
+        )
+
+        q = q_seed.copy()
+
+        # Adaptive (Levenberg-Marquardt style) damping: strong damping
+        # keeps large steps stable; once the error decreases steadily
+        # the damping decays so the tail converges quickly instead of
+        # crawling at the fixed-damping floor.
+        damping = POSITION_ONLY_DAMPING
+        prev_error = float("inf")
+
+        iteration = 0
+        converged = False
+
+        for iteration in range(1, POSITION_ONLY_MAX_ITERATIONS + 1):
+            self._set_arm_q(q)
+
+            e = target_position - self.data.xpos[
+                self.tcp_body_id
+            ]
+
+            error_norm = float(np.linalg.norm(e))
+
+            if error_norm <= POSITION_ONLY_TOLERANCE_M:
+                converged = True
+                break
+
+            J = self._position_jacobian()  # (3, 6)
+
+            A = J @ J.T + (damping ** 2) * np.eye(3)
+
+            dq_task = J.T @ np.linalg.solve(A, e)
+
+            # Weak null-space posture preference toward the seed:
+            # resolves the 6-DoF redundancy for continuity without
+            # competing with the position task.
+            J_pinv = J.T @ np.linalg.inv(A)
+
+            N = np.eye(6) - J_pinv @ J
+
+            dq_null = POSITION_ONLY_POSTURE_GAIN * (q_seed - q)
+
+            dq = dq_task + N @ dq_null
+
+            dq = np.clip(
+                dq,
+                -POSITION_ONLY_MAX_STEP_RAD,
+                POSITION_ONLY_MAX_STEP_RAD,
+            )
+
+            q = np.clip(q + dq, lower, upper)
+
+            if error_norm < prev_error:
+                damping = max(1e-3, damping * 0.7)
+            else:
+                damping = POSITION_ONLY_DAMPING
+
+            prev_error = error_norm
+
+        self._set_arm_q(q)
+
+        pos_error = float(np.linalg.norm(
+            target_position - self.data.xpos[self.tcp_body_id]
+        ))
+
+        sigma_min, condition = self._singularity_diagnostics()
+
+        if converged:
+            return q, IKResult(
+                converged=True,
+                iterations=iteration,
+                position_error=pos_error,
+                rotation_error=0.0,
+                sigma_min=sigma_min,
+                condition_number=condition,
+                damping=POSITION_ONLY_DAMPING,
+                reason="position_only_success",
+            )
+
+        # HOLD semantics: return the seed unchanged and report the
+        # error of the configuration actually returned.
+        self._set_arm_q(q_seed)
+
+        pos_error = float(np.linalg.norm(
+            target_position - self.data.xpos[self.tcp_body_id]
+        ))
+
+        return q_seed.copy(), IKResult(
+            converged=False,
+            iterations=iteration,
+            position_error=pos_error,
+            rotation_error=0.0,
+            sigma_min=sigma_min,
+            condition_number=condition,
+            damping=POSITION_ONLY_DAMPING,
+            reason="position_only_max_iterations",
+        )
+
     def solve(
         self,
         q_seed: np.ndarray,
         target_position: np.ndarray,
-        target_rotation: np.ndarray,
+        target_rotation: np.ndarray | None,
+        position_only: bool = False,
     ):
+        """
+        position_only=False (default):
+            full 6D pose IK via the official closed-form solver
+            (target_rotation required, shape (3, 3)).
+
+        position_only=True:
+            TRUE 3D translation task IK.  The orientation is NOT a
+            task residual — target_rotation is ignored entirely
+            (may be None) and no rotation Jacobian rows participate.
+            A damped-least-squares position step plus a weak
+            null-space posture term toward the seed keeps the
+            redundant solution continuous frame to frame.  On
+            non-convergence the seed is returned unchanged (HOLD),
+            matching the official path's failure semantics.
+        """
+
         q = np.asarray(q_seed, dtype=np.float64).copy()
 
         target_position = np.asarray(
             target_position,
-            dtype=np.float64,
-        )
-
-        target_rotation = np.asarray(
-            target_rotation,
             dtype=np.float64,
         )
 
@@ -395,6 +560,22 @@ class RM65IKSolver:
 
         if target_position.shape != (3,):
             raise ValueError("target_position must have shape (3,)")
+
+        if position_only:
+            return self._solve_position_only(
+                q,
+                target_position,
+            )
+
+        if target_rotation is None:
+            raise ValueError(
+                "target_rotation is required unless position_only=True"
+            )
+
+        target_rotation = np.asarray(
+            target_rotation,
+            dtype=np.float64,
+        )
 
         if target_rotation.shape != (3, 3):
             raise ValueError("target_rotation must have shape (3,3)")
