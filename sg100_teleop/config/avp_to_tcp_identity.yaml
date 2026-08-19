@@ -2,7 +2,10 @@
 # Do not treat this file as a measured Apple Vision Pro axis calibration.
 schema_version: 1
 source: identity uncalibrated development default
-translation_scale: 0.5
+# Translation gain wrist->TCP.  2.0 maps a comfortable wrist sphere
+# (~0.3 m) onto most of the RM65 workspace (~0.6 m reach); rotation is
+# unaffected (always 1:1).
+translation_scale: 2.0
 
 # Vector convention:
 #   p_robot_tcp_local = A @ p_avp_wrist_local

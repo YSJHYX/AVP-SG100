@@ -90,6 +90,15 @@
                     Palm backstop (baked from run_grasp_demo.py PALM_* defaults).
                     Same collision class as the finger capsules so it presses
                     the bottle into the closing fingers.
+
+                    Friction pads: the real SG100 carries rubber/silicone
+                    friction tape on the palm and finger contact faces.
+                    All hand grip geoms use sliding mu = 1.2 (rubber pad on
+                    dry PET/aluminum, typical 1.0-1.4) with priority = 1 so
+                    the pad value wins contact mixing against every
+                    counterpart regardless of the other geom's friction.
+                    Torsional/rolling coefficients document intent for a
+                    future condim >= 4 (unused at condim 3).
                   -->
                   <geom
                     name="palm_collision"
@@ -99,6 +108,8 @@
                     quat="0.5 0.5 0.5 -0.5"
                     contype="1"
                     conaffinity="2"
+                    friction="1.2 0.01 0.001"
+                    priority="1"
                     group="3"
                     rgba="0 1 0 0.45"
                   />
@@ -118,6 +129,8 @@
                         size="0.010"
                         contype="1"
                         conaffinity="2"
+                        friction="1.2 0.01 0.001"
+                        priority="1"
                         group="3"
                         rgba="0 1 1 0.35"
                       />
@@ -157,6 +170,8 @@
                         size="0.010"
                         contype="1"
                         conaffinity="2"
+                        friction="1.2 0.01 0.001"
+                        priority="1"
                         group="3"
                         rgba="0 1 1 0.35"
                       />
@@ -198,6 +213,8 @@
                         size="0.010"
                         contype="1"
                         conaffinity="2"
+                        friction="1.2 0.01 0.001"
+                        priority="1"
                         group="3"
                         rgba="0 1 1 0.35"
                       />
@@ -219,6 +236,8 @@
                         size="0.010"
                         contype="1"
                         conaffinity="2"
+                        friction="1.2 0.01 0.001"
+                        priority="1"
                         group="3"
                         rgba="0 1 1 0.35"
                       />
