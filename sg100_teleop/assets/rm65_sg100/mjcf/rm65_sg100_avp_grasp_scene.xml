@@ -19,7 +19,12 @@
     Main-file option wins over the included robot's option, so this sets
     gravity for the whole model.
   -->
-  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81" />
+  <option
+    timestep="0.002"
+    integrator="implicitfast"
+    gravity="0 0 -9.81"
+    noslip_iterations="3"
+  />
   <compiler angle="radian" />
 
   <include file="rm65_sg100_avp_grasp_robot.xml"/>
@@ -109,6 +114,7 @@
         contype="4"
         conaffinity="3"
         friction="0.8 0.005 0.0001"
+        solref="0.005 1"
       />
     </body>
 
@@ -116,7 +122,7 @@
          Upright primitive water bottle
 
          Height   = 220 mm
-         Diameter = 60 mm
+         Diameter = 40 mm
 
          Initial placement:
            105 mm OUTWARD from READY grasp reference.
@@ -141,12 +147,14 @@
       <geom
         name="water_bottle_collision"
         type="cylinder"
-        size="0.030 0.110"
+        size="0.020 0.110"
         mass="0.500"
         rgba="0.2 0.6 1.0 0.75"
         contype="2"
         conaffinity="1"
-        friction="0.8 0.005 0.0001"
+        friction="1.5 0.01 0.0001"
+        condim="4"
+        solref="0.005 1"
       />
 
       <!--

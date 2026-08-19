@@ -92,16 +92,20 @@ RM65_TELEOP_READY_Q = np.array(
 # run_grasp_demo.py starts with the open hand wrapped around the
 # bottle.  That exact pose presses the link-2 capsules a few mm into
 # the bottle, which would nudge it on the first physics step, so the
-# teleop startup instead hovers PRE_GRASP_BACKOFF_M short of the same
-# palm target.  Solved by IK at runtime so it tracks the bottle
-# placement in the scene XML; if IK fails the teleop-ready pose above
-# is used unchanged.
+# teleop startup instead holds the palm a set distance from the
+# bottle.  Solved by IK at runtime so it tracks the bottle placement
+# in the scene XML; if IK fails the teleop-ready pose above is used
+# unchanged.
 
 GRASP_PALM_OFFSET = np.array(
     [-0.08, -0.13, 0.0]
-)  # palm target from bottle center (world); mirrors run_grasp_demo.py
+)  # grasp palm target from bottle center (world); mirrors run_grasp_demo.py
 
-PRE_GRASP_BACKOFF_M = 0.06
+# Startup stance: same lateral offset and approach orientation as the
+# grasp pose, but the palm center (TCP) held this far from the bottle
+# center along the approach direction.  The grasp pose itself sits at
+# 0.128 m; 0.25 m leaves a clear pre-grasp standoff.
+STARTUP_PALM_TO_BOTTLE_M = 0.25
 
 _IK_SEED_OFFSETS = (
     (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
@@ -155,10 +159,16 @@ def compute_startup_arm_q(model, data, ik_solver):
     radial = np.array([p_ready[0], p_ready[1], 0.0])
     radial /= np.linalg.norm(radial)
 
+    # Slide the grasp palm target out along the approach direction so
+    # the palm sits STARTUP_PALM_TO_BOTTLE_M from the bottle center
+    # (the grasp pose itself is 0.128 m = -GRASP_PALM_OFFSET . radial).
+    grasp_radial_pull = float(
+        np.dot(GRASP_PALM_OFFSET, radial)
+    )
     palm_target = (
         bottle
         + GRASP_PALM_OFFSET
-        - PRE_GRASP_BACKOFF_M * radial
+        - (STARTUP_PALM_TO_BOTTLE_M + grasp_radial_pull) * radial
     )
     R_grasp = _approach_rotation(radial)
 
