@@ -28,6 +28,7 @@
   <compiler angle="radian" />
 
   <include file="rm65_sg100_avp_grasp_robot.xml"/>
+  <include file="rm65_sg100_avp_grasp_objects.xml"/>
 
   <!--
     Scene-level workspace reference markers.

@@ -5,7 +5,7 @@ source: identity uncalibrated development default
 # Translation gain wrist->TCP.  2.0 maps a comfortable wrist sphere
 # (~0.3 m) onto most of the RM65 workspace (~0.6 m reach); rotation is
 # unaffected (always 1:1).
-translation_scale: 2.0
+translation_scale: 1.5
 
 # Vector convention:
 #   p_robot_tcp_local = A @ p_avp_wrist_local
