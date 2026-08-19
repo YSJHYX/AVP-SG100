@@ -85,6 +85,109 @@ RM65_TELEOP_READY_Q = np.array(
     dtype=np.float64
 )
 
+# ============================================================
+# Startup pose: pre-grasp stance near the bottle
+# ============================================================
+#
+# run_grasp_demo.py starts with the open hand wrapped around the
+# bottle.  That exact pose presses the link-2 capsules a few mm into
+# the bottle, which would nudge it on the first physics step, so the
+# teleop startup instead hovers PRE_GRASP_BACKOFF_M short of the same
+# palm target.  Solved by IK at runtime so it tracks the bottle
+# placement in the scene XML; if IK fails the teleop-ready pose above
+# is used unchanged.
+
+GRASP_PALM_OFFSET = np.array(
+    [-0.08, -0.13, 0.0]
+)  # palm target from bottle center (world); mirrors run_grasp_demo.py
+
+PRE_GRASP_BACKOFF_M = 0.06
+
+_IK_SEED_OFFSETS = (
+    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (0.0, 0.0, 0.0, 0.0, 0.0, np.pi),
+    (0.0, 0.0, 0.0, 0.0, np.pi / 2, 0.0),
+    (0.0, 0.0, 0.0, 0.0, -np.pi / 2, 0.0),
+)
+
+
+def _approach_rotation(approach):
+    """Rotation whose z-axis points along a horizontal `approach`.
+
+    Compact copy of run_grasp_demo._approach_R with roll = 0.
+    """
+
+    z = np.asarray(approach, dtype=np.float64)
+    z = z / np.linalg.norm(z)
+
+    ref = np.array([0.0, 0.0, 1.0])
+    x = ref - np.dot(ref, z) * z
+    x = x / np.linalg.norm(x)
+    y = np.cross(z, x)
+
+    return np.column_stack([x, y, z])
+
+
+def compute_startup_arm_q(model, data, ik_solver):
+    """Pre-grasp startup pose near the scene's water bottle.
+
+    Returns the best-margin converged IK solution, or None when the
+    bottle body is missing or no seed converges.
+    """
+
+    bottle_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "water_bottle",
+    )
+
+    if bottle_id < 0:
+        return None
+
+    # A fresh MjData still holds the XML initial state, so this reads
+    # the bottle's authored placement.
+    mujoco.mj_forward(model, data)
+    bottle = data.xpos[bottle_id].copy()
+
+    # Approach direction: base -> teleop-ready TCP (horizontal), the
+    # same convention as run_grasp_demo.py.
+    p_ready, _ = ik_solver.fk(RM65_TELEOP_READY_Q)
+    radial = np.array([p_ready[0], p_ready[1], 0.0])
+    radial /= np.linalg.norm(radial)
+
+    palm_target = (
+        bottle
+        + GRASP_PALM_OFFSET
+        - PRE_GRASP_BACKOFF_M * radial
+    )
+    R_grasp = _approach_rotation(radial)
+
+    best = None
+    for off in _IK_SEED_OFFSETS:
+        seed = np.clip(
+            RM65_TELEOP_READY_Q + np.asarray(off),
+            ik_solver.lower,
+            ik_solver.upper,
+        )
+        q, res = ik_solver.solve(
+            q_seed=seed,
+            target_position=palm_target,
+            target_rotation=R_grasp,
+        )
+        if res.converged and np.all(np.isfinite(q)):
+            margin = float(
+                np.min(
+                    np.minimum(
+                        q - ik_solver.lower,
+                        ik_solver.upper - q,
+                    )
+                )
+            )
+            if best is None or margin > best[1]:
+                best = (q, margin)
+
+    return best[0] if best is not None else None
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -467,6 +570,35 @@ def main():
 
 
     # ========================================================
+    # Startup arm pose: pre-grasp near the bottle
+    # ========================================================
+
+    ik_solver = RM65IKSolver(
+        model,
+        tcp_body_name=TCP_BODY,
+    )
+
+    startup_arm_q = compute_startup_arm_q(
+        model,
+        data,
+        ik_solver,
+    )
+
+    if startup_arm_q is None:
+        startup_arm_q = (
+            RM65_TELEOP_READY_Q.copy()
+        )
+        print(
+            "startup pose      : pre-grasp IK "
+            "unreachable, using teleop-ready"
+        )
+    else:
+        print(
+            "startup pose      : pre-grasp, "
+            f"q = {np.round(startup_arm_q, 5).tolist()}"
+        )
+
+    # ========================================================
     # Initialize simulation state
     # ========================================================
 
@@ -474,7 +606,7 @@ def main():
         model,
         data,
         robot_layout,
-        RM65_TELEOP_READY_Q,
+        startup_arm_q,
         np.zeros(HAND_DOF, dtype=np.float64),
     )
 
@@ -684,17 +816,14 @@ def main():
     # RM65 Cartesian teleoperation pipeline
     # ========================================================
 
-    ik_solver = RM65IKSolver(
-        model,
-        tcp_body_name=TCP_BODY,
-    )
+    # ik_solver was created together with the startup pose above.
 
     # ========================================================
     # Initial RM65 joint target
     # ========================================================
 
     q_arm_goal = (
-        RM65_TELEOP_READY_Q.copy()
+        startup_arm_q.copy()
     )
 
     # ========================================================
@@ -1232,7 +1361,7 @@ def main():
                             if calibration_frame:
                                 if not has_completed_calibration:
                                     # Startup calibration anchors the arm at
-                                    # its verified teleop-ready TCP pose.
+                                    # its startup (pre-grasp) TCP pose.
                                     T_tcp_anchor = T_tcp0.copy()
                                 else:
                                     # Recalibration holds the current robot
