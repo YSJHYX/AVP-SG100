@@ -68,6 +68,80 @@ DEFAULT_AVP_TO_TCP_CONFIG = (
 )
 
 TCP_BODY = "sg100_base_link"
+TCP_FOREARM_AXIS_LOCAL = np.array(
+    [0.0, 0.0, 1.0],
+    dtype=np.float64,
+)
+FOREARM_DIRECTION_EPSILON_M = 1e-6
+
+
+def extract_forearm_axis(
+    hand: np.ndarray,
+    *,
+    epsilon_m: float = FOREARM_DIRECTION_EPSILON_M,
+) -> np.ndarray | None:
+    """Return normalized AVP forearmArm -> forearmWrist direction.
+
+    Legacy 25-joint frames and malformed/degenerate 27-joint samples are
+    deliberately reported as unavailable so forearm-axis mode can fall back
+    to position-only IK without indexing invalid data.
+    """
+
+    joints = np.asarray(hand, dtype=np.float64)
+    if joints.ndim != 3 or joints.shape[0] < 27:
+        return None
+    if joints.shape[1:] != (4, 4):
+        return None
+    if not np.isfinite(epsilon_m) or epsilon_m <= 0.0:
+        raise ValueError("epsilon_m must be finite and > 0")
+
+    p_forearm_wrist = joints[25, :3, 3]
+    p_forearm_arm = joints[26, :3, 3]
+    if (
+        not np.all(np.isfinite(p_forearm_wrist))
+        or not np.all(np.isfinite(p_forearm_arm))
+    ):
+        return None
+
+    direction = p_forearm_wrist - p_forearm_arm
+    norm = float(np.linalg.norm(direction))
+    if not np.isfinite(norm) or norm <= epsilon_m:
+        return None
+    return direction / norm
+
+
+def solve_forearm_axis_or_position(
+    ik_solver,
+    wrist_mapper: AVPWristRelativeMapper,
+    q_seed: np.ndarray,
+    target_position: np.ndarray,
+    n_forearm_avp: np.ndarray | None,
+    forearm_axis_calibrated: bool,
+):
+    """Run the 5-DoF task, or its required position-only fallback."""
+
+    a_target = (
+        wrist_mapper.map_forearm_direction(
+            n_forearm_avp,
+            TCP_FOREARM_AXIS_LOCAL,
+        )
+        if forearm_axis_calibrated and n_forearm_avp is not None
+        else None
+    )
+    if a_target is None:
+        return ik_solver.solve(
+            q_seed=q_seed,
+            target_position=target_position,
+            target_rotation=None,
+            position_only=True,
+        )
+    return ik_solver.solve(
+        q_seed=q_seed,
+        target_position=target_position,
+        target_rotation=None,
+        target_axis=a_target,
+        tcp_axis_local=TCP_FOREARM_AXIS_LOCAL,
+    )
 
 # ============================================================
 # RM65 teleoperation start configuration
@@ -313,6 +387,17 @@ def build_arg_parser():
         ),
     )
 
+    mode_group.add_argument(
+        "--forearm-axis-ik",
+        action="store_true",
+        help=(
+            "5-DoF IK: wrist translation controls TCP xyz and the "
+            "AVP forearm axis controls TCP local +Z; roll about +Z "
+            "remains unconstrained. Invalid/legacy forearm tracking "
+            "falls back to position-only IK."
+        ),
+    )
+
     parser.add_argument(
         "--attach",
         nargs=4,
@@ -459,12 +544,16 @@ def main():
     print(
         "arm IK mode       :",
         (
-            "position-only (orientation free)"
-            if args.position_only_ik
+            "forearm-axis (5-DoF, TCP +Z / roll free)"
+            if args.forearm_axis_ik
             else (
-                "fixed-orientation (calibration anchor)"
-                if args.lock_tcp_rotation
-                else "6-DoF pose (follows wrist)"
+                "position-only (orientation free)"
+                if args.position_only_ik
+                else (
+                    "fixed-orientation (calibration anchor)"
+                    if args.lock_tcp_rotation
+                    else "6-DoF pose (follows wrist)"
+                )
             )
         ),
     )
@@ -923,6 +1012,8 @@ def main():
     T_avp_wrist_0 = None
     T_tcp_runtime_0 = None
     R_tcp_rotation_lock = None
+    n_forearm0_avp = None
+    forearm_axis_calibrated = False
     q_hand0_runtime = None
     has_completed_calibration = False
 
@@ -1259,7 +1350,12 @@ def main():
 
                             canonical = (
                                 avp_adapter.convert(
-                                    hand
+                                    # Hand articulation is defined by the
+                                    # legacy-compatible first 25 joints.  Keep
+                                    # optional forearm[25:27] validity isolated
+                                    # so a bad cue can fall back to position-only
+                                    # without disrupting SG100 retargeting.
+                                    hand[:25]
                                 )
                             )
 
@@ -1333,6 +1429,12 @@ def main():
                                     "contains non-finite values."
                                 )
 
+                            n_forearm_avp = (
+                                extract_forearm_axis(hand)
+                                if args.forearm_axis_ik
+                                else None
+                            )
+
 
                             frame_sequence = int(
                                 tracking.frame_sequence
@@ -1387,6 +1489,27 @@ def main():
                                     T_avp_wrist,
                                     T_tcp_anchor,
                                 )
+
+                                # A valid 27-joint sample establishes the
+                                # human forearm direction at this same neutral
+                                # frame.  Invalid/legacy data clears the old
+                                # anchor and keeps this session position-only.
+                                if args.forearm_axis_ik:
+                                    forearm_axis_calibrated = (
+                                        n_forearm_avp is not None
+                                        and wrist_mapper
+                                        .calibrate_forearm_axis(
+                                            n_forearm_avp
+                                        )
+                                    )
+                                    n_forearm0_avp = (
+                                        n_forearm_avp.copy()
+                                        if forearm_axis_calibrated
+                                        else None
+                                    )
+                                else:
+                                    forearm_axis_calibrated = False
+                                    n_forearm0_avp = None
 
                                 T_avp_wrist_0 = (
                                     T_avp_wrist.copy()
@@ -1473,6 +1596,9 @@ def main():
                                 # Solve RM65 IK using the previous
                                 # valid solution as the next seed.
                                 #
+                                # forearm-axis: 3D translation plus TCP +Z
+                                #   direction; local-Z roll is free. Missing
+                                #   forearm data falls back to position-only.
                                 # position-only: true 3D translation
                                 #   task, orientation not constrained.
                                 # lock-rotation: full 6D pose IK
@@ -1481,7 +1607,20 @@ def main():
                                 #   the mapped wrist orientation.
                                 # ---------------------------------
 
-                                if args.position_only_ik:
+                                if args.forearm_axis_ik:
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = solve_forearm_axis_or_position(
+                                        ik_solver,
+                                        wrist_mapper,
+                                        q_arm_goal,
+                                        p_target,
+                                        n_forearm_avp,
+                                        forearm_axis_calibrated,
+                                    )
+
+                                elif args.position_only_ik:
                                     (
                                         q_arm_candidate,
                                         ik_result,
@@ -1685,6 +1824,8 @@ def main():
                         T_avp_wrist_0 = None
                         T_tcp_runtime_0 = None
                         R_tcp_rotation_lock = None
+                        n_forearm0_avp = None
+                        forearm_axis_calibrated = False
                         q_hand0_runtime = None
                         print_teleop_state(
                             "Tracking timeout invalidated the wrist anchor. "

@@ -23,6 +23,57 @@ POSITION_ONLY_DAMPING = 0.05
 POSITION_ONLY_POSTURE_GAIN = 0.02
 POSITION_ONLY_MAX_STEP_RAD = 0.2
 
+# Forearm-axis IK uses the same DLS safety envelope as position-only IK.
+# The axis weight converts the angular residual/Jacobian into a conservative
+# position-equivalent scale without changing its two-dimensional rank.
+AXIS_IK_TOLERANCE_RAD = 1e-3
+AXIS_IK_MAX_ITERATIONS = 80
+AXIS_IK_DAMPING = POSITION_ONLY_DAMPING
+AXIS_IK_POSTURE_GAIN = POSITION_ONLY_POSTURE_GAIN
+AXIS_IK_MAX_STEP_RAD = POSITION_ONLY_MAX_STEP_RAD
+AXIS_IK_WEIGHT = 0.2
+
+
+def _normalized_axis(value: np.ndarray, name: str) -> np.ndarray:
+    axis = np.asarray(value, dtype=np.float64)
+    if axis.shape != (3,):
+        raise ValueError(f"{name} must have shape (3,)")
+    if not np.all(np.isfinite(axis)):
+        raise ValueError(f"{name} must be finite")
+    norm = float(np.linalg.norm(axis))
+    if norm <= 1e-12:
+        raise ValueError(f"{name} must have non-zero norm")
+    return axis / norm
+
+
+def axis_alignment_residual(
+    current_axis: np.ndarray,
+    target_axis: np.ndarray,
+) -> np.ndarray:
+    """Minimal world-frame rotation vector aligning two directions.
+
+    Rotation about ``current_axis`` is absent by construction.  The
+    anti-parallel case uses a deterministic perpendicular axis instead of
+    dividing by a near-zero cross product.
+    """
+
+    current = _normalized_axis(current_axis, "current_axis")
+    target = _normalized_axis(target_axis, "target_axis")
+    cross = np.cross(current, target)
+    sine = float(np.linalg.norm(cross))
+    cosine = float(np.clip(np.dot(current, target), -1.0, 1.0))
+
+    if sine > 1e-12:
+        angle = math.atan2(sine, cosine)
+        return (cross / sine) * angle
+    if cosine >= 0.0:
+        return np.zeros(3, dtype=np.float64)
+
+    basis = np.eye(3, dtype=np.float64)[int(np.argmin(np.abs(current)))]
+    perpendicular = basis - np.dot(basis, current) * current
+    perpendicular /= np.linalg.norm(perpendicular)
+    return perpendicular * math.pi
+
 
 @dataclass
 class IKResult:
@@ -355,6 +406,38 @@ class RM65IKSolver:
 
         return jacp[:, self.dof_indices]
 
+    def _axis_task_jacobian(
+        self,
+        tcp_axis_local: np.ndarray,
+        *,
+        axis_weight: float = 1.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return the rank-5 position + one-axis task Jacobian.
+
+        The returned matrix has six rows for a convenient DLS layout, but
+        the projected angular block has rank at most two.  The second return
+        value is the selected TCP axis expressed in world coordinates.
+        """
+
+        tcp_axis = _normalized_axis(tcp_axis_local, "tcp_axis_local")
+        if not np.isfinite(axis_weight) or axis_weight <= 0.0:
+            raise ValueError("axis_weight must be finite and > 0")
+
+        R_current = self.data.xmat[self.tcp_body_id].reshape(3, 3)
+        current_axis = _normalized_axis(
+            R_current @ tcp_axis,
+            "current_axis",
+        )
+        J_full = self._jacobian()
+        J_position = J_full[:3, :]
+        J_rotation = J_full[3:, :]
+        projector = np.eye(3) - np.outer(current_axis, current_axis)
+        J_axis = projector @ J_rotation
+        return (
+            np.vstack([J_position, axis_weight * J_axis]),
+            current_axis,
+        )
+
     # ---------------------------------------------------------
     # Error
     # ---------------------------------------------------------
@@ -525,12 +608,151 @@ class RM65IKSolver:
             reason="position_only_max_iterations",
         )
 
+    def _solve_axis_constrained(
+        self,
+        q_seed: np.ndarray,
+        target_position: np.ndarray,
+        target_axis: np.ndarray,
+        tcp_axis_local: np.ndarray,
+        *,
+        axis_weight: float,
+        axis_tolerance_rad: float,
+    ):
+        """DLS position + TCP-axis IK with roll left unconstrained."""
+
+        target_axis = _normalized_axis(target_axis, "target_axis")
+        tcp_axis_local = _normalized_axis(
+            tcp_axis_local,
+            "tcp_axis_local",
+        )
+        if not np.isfinite(axis_weight) or axis_weight <= 0.0:
+            raise ValueError("axis_weight must be finite and > 0")
+        if (
+            not np.isfinite(axis_tolerance_rad)
+            or axis_tolerance_rad <= 0.0
+        ):
+            raise ValueError("axis_tolerance_rad must be finite and > 0")
+
+        lower = self.lower + self.joint_limit_margin
+        upper = self.upper - self.joint_limit_margin
+        q_seed = np.clip(
+            np.asarray(q_seed, dtype=np.float64),
+            lower,
+            upper,
+        )
+        q = q_seed.copy()
+        damping = AXIS_IK_DAMPING
+        previous_cost = float("inf")
+        iteration = 0
+        converged = False
+
+        for iteration in range(1, AXIS_IK_MAX_ITERATIONS + 1):
+            self._set_arm_q(q)
+            position_error = (
+                target_position - self.data.xpos[self.tcp_body_id]
+            )
+            J_task, current_axis = self._axis_task_jacobian(
+                tcp_axis_local,
+                axis_weight=axis_weight,
+            )
+            axis_error = axis_alignment_residual(
+                current_axis,
+                target_axis,
+            )
+            position_norm = float(np.linalg.norm(position_error))
+            axis_angle = float(np.linalg.norm(axis_error))
+
+            if (
+                position_norm <= POSITION_ONLY_TOLERANCE_M
+                and axis_angle <= axis_tolerance_rad
+            ):
+                converged = True
+                break
+
+            task_error = np.concatenate(
+                [position_error, axis_weight * axis_error]
+            )
+            regularized = (
+                J_task @ J_task.T
+                + (damping ** 2) * np.eye(J_task.shape[0])
+            )
+            J_pinv = J_task.T @ np.linalg.inv(regularized)
+            dq_task = J_pinv @ task_error
+            null_projector = np.eye(6) - J_pinv @ J_task
+            dq_null = AXIS_IK_POSTURE_GAIN * (q_seed - q)
+            dq = dq_task + null_projector @ dq_null
+            dq = np.clip(
+                dq,
+                -AXIS_IK_MAX_STEP_RAD,
+                AXIS_IK_MAX_STEP_RAD,
+            )
+            q = np.clip(q + dq, lower, upper)
+
+            cost = math.hypot(position_norm, axis_weight * axis_angle)
+            if cost < previous_cost:
+                damping = max(1e-3, damping * 0.7)
+            else:
+                damping = AXIS_IK_DAMPING
+            previous_cost = cost
+
+        self._set_arm_q(q)
+        final_position_error = float(np.linalg.norm(
+            target_position - self.data.xpos[self.tcp_body_id]
+        ))
+        R_final = self.data.xmat[self.tcp_body_id].reshape(3, 3)
+        final_axis = _normalized_axis(
+            R_final @ tcp_axis_local,
+            "current_axis",
+        )
+        final_axis_error = float(np.linalg.norm(
+            axis_alignment_residual(final_axis, target_axis)
+        ))
+        sigma_min, condition = self._singularity_diagnostics()
+
+        if converged:
+            return q, IKResult(
+                converged=True,
+                iterations=iteration,
+                position_error=final_position_error,
+                rotation_error=final_axis_error,
+                sigma_min=sigma_min,
+                condition_number=condition,
+                damping=AXIS_IK_DAMPING,
+                reason="axis_constrained_success",
+            )
+
+        # Preserve the existing HOLD-on-failure contract.
+        self._set_arm_q(q_seed)
+        held_position_error = float(np.linalg.norm(
+            target_position - self.data.xpos[self.tcp_body_id]
+        ))
+        held_rotation = self.data.xmat[self.tcp_body_id].reshape(3, 3)
+        held_axis = held_rotation @ tcp_axis_local
+        held_axis_error = float(np.linalg.norm(
+            axis_alignment_residual(held_axis, target_axis)
+        ))
+        return q_seed.copy(), IKResult(
+            converged=False,
+            iterations=iteration,
+            position_error=held_position_error,
+            rotation_error=held_axis_error,
+            sigma_min=sigma_min,
+            condition_number=condition,
+            damping=AXIS_IK_DAMPING,
+            reason="axis_constrained_max_iterations",
+        )
+
     def solve(
         self,
         q_seed: np.ndarray,
         target_position: np.ndarray,
         target_rotation: np.ndarray | None,
         position_only: bool = False,
+        *,
+        target_axis: np.ndarray | None = None,
+        tcp_axis_local: np.ndarray | None = None,
+        axis_weight: float = AXIS_IK_WEIGHT,
+        axis_tolerance_rad: float = AXIS_IK_TOLERANCE_RAD,
     ):
         """
         position_only=False (default):
@@ -546,6 +768,11 @@ class RM65IKSolver:
             redundant solution continuous frame to frame.  On
             non-convergence the seed is returned unchanged (HOLD),
             matching the official path's failure semantics.
+
+        target_axis is not None:
+            rank-5 position + selected TCP-axis DLS task.  Rotation about
+            the selected TCP axis is unconstrained.  ``target_rotation`` is
+            ignored, while ``tcp_axis_local`` defaults to local +Z.
         """
 
         q = np.asarray(q_seed, dtype=np.float64).copy()
@@ -565,6 +792,18 @@ class RM65IKSolver:
             return self._solve_position_only(
                 q,
                 target_position,
+            )
+
+        if target_axis is not None:
+            if tcp_axis_local is None:
+                tcp_axis_local = np.array([0.0, 0.0, 1.0])
+            return self._solve_axis_constrained(
+                q,
+                target_position,
+                target_axis,
+                tcp_axis_local,
+                axis_weight=axis_weight,
+                axis_tolerance_rad=axis_tolerance_rad,
             )
 
         if target_rotation is None:

@@ -84,6 +84,78 @@ def rotation_angle(
     return math.acos(value)
 
 
+def rotation_from_two_unit_vectors(
+    a: np.ndarray,
+    b: np.ndarray,
+) -> np.ndarray:
+    """
+    Minimal (shortest) rotation taking unit vector ``a`` onto unit
+    vector ``b``.
+
+    Robust Rodrigues construction:
+      * parallel (a ~ +b)  -> identity
+      * anti-parallel      -> 180 deg about a canonical axis chosen
+                              as the least-parallel basis vector
+    Never produces NaN for unit-norm inputs.
+    """
+
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+
+    if a.shape != (3,) or b.shape != (3,):
+        raise ValueError("direction vectors must have shape (3,)")
+    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(b)):
+        raise ValueError("direction vectors must be finite")
+
+    a_norm = float(np.linalg.norm(a))
+    b_norm = float(np.linalg.norm(b))
+    if a_norm <= 1e-12 or b_norm <= 1e-12:
+        raise ValueError("direction vectors must have non-zero norm")
+
+    a = a / a_norm
+    b = b / b_norm
+
+    cross = np.cross(a, b)
+    dot = float(np.clip(np.dot(a, b), -1.0, 1.0))
+
+    cross_norm = float(np.linalg.norm(cross))
+
+    if dot > 1.0 - 1e-12:
+        return np.eye(3, dtype=np.float64)
+
+    if cross_norm < 1e-12:
+        # anti-parallel: pick the canonical basis least aligned with a
+        basis = np.eye(3)
+        projections = np.abs(a)
+        axis = basis[int(np.argmin(projections))]
+        axis = axis - np.dot(axis, a) * a
+        axis /= np.linalg.norm(axis)
+
+        K = np.array(
+            [[0.0, -axis[2], axis[1]],
+             [axis[2], 0.0, -axis[0]],
+             [-axis[1], axis[0], 0.0]],
+            dtype=np.float64,
+        )
+        return np.eye(3) + 2.0 * (K @ K)
+
+    axis = cross / cross_norm
+    angle = float(np.arctan2(cross_norm, dot))
+
+    K = np.array(
+        [[0.0, -axis[2], axis[1]],
+         [axis[2], 0.0, -axis[0]],
+         [-axis[1], axis[0], 0.0]],
+        dtype=np.float64,
+    )
+
+    return (
+        np.eye(3)
+        + np.sin(angle) * K
+        + (1.0 - np.cos(angle)) * (K @ K)
+    )
+
+
 class AVPWristRelativeMapper:
     """
     Maps relative AVP wrist SE(3) motion to a robot TCP target.
@@ -151,6 +223,7 @@ class AVPWristRelativeMapper:
 
         self._T_avp0 = None
         self._T_tcp0 = None
+        self._n_forearm0_avp = None
 
     @property
     def calibrated(self) -> bool:
@@ -197,6 +270,95 @@ class AVPWristRelativeMapper:
         self._T_tcp0 = (
             T_tcp_world.copy()
         )
+
+        # A wrist recalibration starts a new session.  Never let a
+        # forearm anchor from the previous session survive until a new,
+        # valid 27-joint forearm sample is explicitly captured.
+        self._n_forearm0_avp = None
+
+    @property
+    def forearm_axis_calibrated(self) -> bool:
+        return self._n_forearm0_avp is not None
+
+    @staticmethod
+    def _normalized_direction(value: np.ndarray) -> np.ndarray | None:
+        direction = np.asarray(value, dtype=np.float64)
+        if direction.shape != (3,) or not np.all(np.isfinite(direction)):
+            return None
+        norm = float(np.linalg.norm(direction))
+        if norm <= 1e-12:
+            return None
+        return direction / norm
+
+    def calibrate_forearm_axis(
+        self,
+        n_forearm_avp_world: np.ndarray,
+    ) -> bool:
+        """Bind the current human forearm direction to TCP local +Z.
+
+        Invalid input clears the session anchor and returns ``False`` so
+        callers can safely fall back to position-only IK.
+        """
+
+        self._n_forearm0_avp = None
+        if not self.calibrated:
+            return False
+
+        direction = self._normalized_direction(n_forearm_avp_world)
+        if direction is None:
+            return False
+
+        self._n_forearm0_avp = direction
+        return True
+
+    def map_forearm_direction(
+        self,
+        n_forearm_avp_world: np.ndarray,
+        tcp_axis_local: np.ndarray | None = None,
+    ) -> np.ndarray | None:
+        """Map relative forearm direction change onto a robot TCP axis.
+
+        Both human directions are expressed in the calibration wrist
+        frame.  Their shortest relative rotation is basis-mapped into
+        the calibration TCP frame, then applied to ``tcp_axis_local``.
+        Consequently the calibration sample always maps exactly to the
+        current TCP axis, independent of the human wrist/forearm angle.
+        """
+
+        if not self.calibrated or not self.forearm_axis_calibrated:
+            return None
+
+        current_world = self._normalized_direction(n_forearm_avp_world)
+        if current_world is None:
+            return None
+
+        if tcp_axis_local is None:
+            tcp_axis_local = np.array([0.0, 0.0, 1.0])
+        tcp_axis = self._normalized_direction(tcp_axis_local)
+        if tcp_axis is None:
+            return None
+
+        R_avp0 = self._T_avp0[:3, :3]
+        n0_local = R_avp0.T @ self._n_forearm0_avp
+        n_local = R_avp0.T @ current_world
+        n0_local = self._normalized_direction(n0_local)
+        n_local = self._normalized_direction(n_local)
+        if n0_local is None or n_local is None:
+            return None
+
+        R_delta_avp = rotation_from_two_unit_vectors(
+            n0_local,
+            n_local,
+        )
+        A = self.R_tcp_from_avp_local
+        R_delta_tcp = A @ R_delta_avp @ A.T
+
+        target_world = (
+            self._T_tcp0[:3, :3]
+            @ R_delta_tcp
+            @ tcp_axis
+        )
+        return self._normalized_direction(target_world)
 
     def relative_avp_motion(
         self,
