@@ -281,7 +281,7 @@ def build_arg_parser():
     parser.add_argument(
         "--tracking-timeout",
         type=float,
-        default=0.5,
+        default=2.0,
         help=(
             "Seconds without valid right-hand trackiing "
             "before reporting tracking loss"

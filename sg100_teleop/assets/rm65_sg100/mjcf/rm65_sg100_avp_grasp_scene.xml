@@ -152,7 +152,7 @@
         mass="0.500"
         rgba="0.2 0.6 1.0 0.75"
         contype="2"
-        conaffinity="3"
+        conaffinity="1"
         friction="1.5 0.01 0.0001"
         condim="4"
         solref="0.005 1"
