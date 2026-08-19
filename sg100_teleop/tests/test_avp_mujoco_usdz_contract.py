@@ -52,7 +52,7 @@ Q_HAND_READY = np.zeros(11, dtype=np.float64)
 # freejoints).  Rotations are xmat row-major values from MuJoCo after
 # mj_forward at the teleop ready pose.
 PRE_BASE_DIMS = (66, 61, 17)
-PRE_BASE_NBODY = 27
+PRE_BASE_NBODY = 28
 PRE_BASE_QPOS_ADDRESSES = tuple(range(17))
 PRE_BASE_READY_POSES = {
     "link_1": (
@@ -188,7 +188,7 @@ def _run_usd_contract_checks(
     temp_dir: Path,
     *,
     xml_path: Path = SCENE_XML,
-    expected_bodies: int = 27,
+    expected_bodies: int = 28,
     expect_guides: bool = True,
     expect_table_bottle: bool = True,
 ) -> None:
