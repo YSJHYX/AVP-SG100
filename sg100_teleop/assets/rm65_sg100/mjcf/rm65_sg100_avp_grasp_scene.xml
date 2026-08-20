@@ -27,6 +27,11 @@
   />
   <compiler angle="radian" />
 
+  <!-- Allow the recording renderer's default 1280x720 offscreen target. -->
+  <visual>
+    <global offwidth="1280" offheight="720" />
+  </visual>
+
   <include file="rm65_sg100_avp_grasp_robot.xml"/>
   <include file="rm65_sg100_avp_grasp_objects.xml"/>
 
@@ -37,6 +42,36 @@
     They do not participate in collision or dynamics.
   -->
   <worldbody>
+
+    <!--
+      Fixed VLA-style head camera centered on the table's front (+X) edge.
+      The front edge midpoint is [0.75, 0.15, 0], so the camera retains
+      y=0.15 and its image X axis is exactly parallel to that edge (world Y).
+      It sits 0.80 m beyond that edge at a 1.10 m head-camera height and
+      looks toward the manipulation-volume center [0.32, 0.15, 0.45].
+      The xyaxes values are computed from that camera-to-target vector with
+      world +Z as the preferred image-up direction; they are not hand-tuned
+      Euler angles.  This camera is world-fixed and has no physical effect.
+    -->
+    <camera
+      name="workstation_front"
+      mode="fixed"
+      pos="1.55 0.15 1.10"
+      xyaxes="0 1 0 -0.467227055 0 0.884137356"
+      fovy="55"
+    />
+
+    <!-- Single soft key light for deterministic offscreen recording. -->
+    <light
+      name="workstation_key"
+      directional="true"
+      pos="-0.20 -0.50 2.20"
+      dir="0.26372844 0.33980396 -0.90276275"
+      ambient="0.25 0.25 0.25"
+      diffuse="0.75 0.75 0.75"
+      specular="0.20 0.20 0.20"
+      castshadow="true"
+    />
 
     <!-- Q_TELEOP_READY TCP position -->
     <site

@@ -63,7 +63,7 @@ python sg100_teleop/sim/run_avp_arm_hand_sim.py \
 - 实体 SG100 驱动与电流/力矩闭环；
 - 实体机械臂碰撞规划、安全 PLC 或急停集成；
 - 自动抓取规划、物体识别或自主策略；
-- 自动将 tracking/video recording 持久化为 MP4。
+- AVP 相机/麦克风媒体采集；本项目只记录 MuJoCo visual state，并离线渲染无声 MP4。
 
 系统没有把 AVP pose 直接当作 robot world pose。当前控制语义是“按 `C` 建立 controller-relative anchor，之后分别计算相对平移和相对旋转”，并在进入 IK 前过滤目标。
 
@@ -373,12 +373,11 @@ python sg100_teleop/sim/run_avp_arm_hand_sim.py \
 VisionProStreamer(ip=args.ip, record=True)
 ```
 
-这里的 `record=True` 只把已处理 tracking samples 追加到 Python 进程内存列表，供 `get_recording()` 读取。当前 runner：
+这里的 `record=True` 仍只把已处理 tracking samples 追加到 Python 进程内存列表，供 `get_recording()` 读取。它与新增的本机 MuJoCo visual-state recorder 是两套独立机制。当前 runner：
 
 - 没有调用 `configure_video()`；
 - 没有配置 video track；
 - 没有把 `get_recording()` 写入 JSON/JSONL；
-- 没有在本机写 `.mp4`；
 - 不会仅凭 `record=True` 要求 AVP 生成 `video.mp4`。
 
 因此 AVP metadata 中 `hasRecording=false` 时，下面目录只有 tracking、metadata JSON 和 scene XML、没有视频，是符合当前路径的：
@@ -390,7 +389,20 @@ On My Vision Pro/
         └── recording_日期_时间_UUID/
 ```
 
-结论：当前主程序既没有把 MP4 保存在本机，也没有启用 AVP 侧视频录制。需要 MP4 时必须显式增加 video configuration 与对应 AVP recording 功能。
+与此同时，主 runner 默认按 MuJoCo simulation time 以 30 FPS 将 `timestamps/qpos/mocap` 保存到：
+
+```text
+recording/YYYYMMDD_HHMMSS/mujoco_recording.npz
+```
+
+运行时不渲染 RGB，也不编码 MP4。退出后离线生成本机无声 H.264 视频：
+
+```bash
+python -m sg100_teleop.recording.render_mujoco_video \
+  --input recording/<session>/mujoco_recording.npz
+```
+
+默认输出为同一 session 下的 `mujoco_view.mp4`，相机为 `workstation_front`，分辨率 `1280×720`，FPS 使用 recording metadata。AVP 目录中没有 `video.mp4` 与本机这条离线 pipeline 并不矛盾。
 
 ## 11. 安装与运行
 
@@ -415,6 +427,8 @@ python -m pip install -e .
 | `--tracking-hz` | `60` | tracking query rate |
 | `--stream-hz` | `60` | state stream rate |
 | `--tracking-timeout` | `2.0 s` | tracking loss/disarm threshold |
+| `--recording-dir` | `recording` | 本机 MuJoCo state recording 根目录 |
+| `--video-fps` | `30` | simulation-time state sampling rate |
 | `--filter-tau` | `0.06 s` | SG100 joint filter tau |
 | `--max-hand-velocity` | `4.0 rad/s` | SG100 command limit |
 | `--attach` | `0 0 0.8 90` | AVP visual placement |
@@ -445,6 +459,7 @@ python -m sg100_teleop.tests.test_rm65_tcp_jacobian
 python -m sg100_teleop.tests.test_rm65_ik_position_only
 python -m sg100_teleop.tests.test_forearm_axis_ik
 python -m sg100_teleop.tests.test_raw_avp_to_combined_mujoco
+MUJOCO_GL=egl python -m sg100_teleop.tests.test_mujoco_state_recording
 ```
 
 重点覆盖 frame freshness、arming、translation/rotation 解耦、recalibration、rotation lock 隔离、TCP filter、SG100 semantics、RM65 IK 与 raw AVP→combined integration。
@@ -521,7 +536,7 @@ python -m sg100_teleop.tests.test_prebuilt_usdz
 - 当前 contact 调试不等价于完整 self-collision planning 或实体安全保证。
 - USDZ visual scene 与 MuJoCo physics model 是两个文件，修改任一侧都需检查 naming、层级、材质与几何一致性。
 - USDZ contract regression 当前有一处旧 scene dimension 基准尚待更新，不能把该脚本列为全绿状态。
-- 当前 runner 不落盘 tracking，也不生成 MP4。
+- AVP tracking samples 仍不自动落盘；本机 MP4 必须在 session 结束后由 offline renderer 生成。
 - 实体 RM65/SG100、实体抓取和实体安全链尚未实现。
 
 ## 15. Troubleshooting
@@ -552,7 +567,7 @@ python -m sg100_teleop.tests.test_prebuilt_usdz
 
 ### AVP 有 XML/JSON 但无 `video.mp4`
 
-若 metadata `hasRecording=false`，当前 simulation-only WebRTC 配置不会产生视频；`record=True` 只是 Python 内存 tracking 记录开关。
+若 metadata `hasRecording=false`，当前 simulation-only WebRTC 配置不会在 AVP 目录产生视频；`record=True` 只是 Python 内存 tracking 开关。本机录像请使用 `recording/<session>/mujoco_recording.npz` 运行 offline renderer。
 
 ### AVP 中物体没有外观
 
@@ -594,6 +609,9 @@ sg100_teleop/
 ├── hand/canonical_hand.py
 ├── kinematics/rm65_ik.py
 ├── retargeting/sg100_retargeter.py
+├── recording/
+│   ├── mujoco_state_recorder.py
+│   └── render_mujoco_video.py
 ├── tracking/
 │   ├── avp_hand_adapter.py
 │   ├── avp_source.py

@@ -26,6 +26,10 @@ from sg100_teleop.kinematics.rm65_ik import RM65IKSolver
 
 from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
 
+from sg100_teleop.recording.mujoco_state_recorder import (
+    MujocoStateRecorder,
+)
+
 from sg100_teleop.sim.combined_robot_layout import (
     ARM_DOF,
     HAND_DOF,
@@ -401,6 +405,22 @@ def build_arg_parser():
         ),
     )
 
+    parser.add_argument(
+        "--recording-dir",
+        default="recording",
+        help=(
+            "Session root for lightweight MuJoCo visual-state recordings "
+            "(default: recording)"
+        ),
+    )
+
+    parser.add_argument(
+        "--video-fps",
+        type=float,
+        default=30.0,
+        help="Simulation-time visual-state sampling frequency (default: 30 Hz)",
+    )
+
     # Teleop arm-IK mode: exactly one of these may be selected.
     mode_group = parser.add_mutually_exclusive_group()
 
@@ -494,6 +514,11 @@ def main():
     if args.tracking_timeout <= 0.0:
         raise ValueError(
             "--tracking-timeout must be > 0"
+        )
+
+    if not np.isfinite(args.video_fps) or args.video_fps <= 0.0:
+        raise ValueError(
+            "--video-fps must be finite and > 0"
         )
 
     # ========================================================
@@ -1221,6 +1246,33 @@ def main():
     valid_tracking_count = 0
 
     rejected_tracking_count = 0
+
+
+    # ========================================================
+    # Lightweight MuJoCo visual-state recording
+    #
+    # This performs no rendering or video encoding. Sampling is
+    # driven by data.time and finalized once when the session ends.
+    # ========================================================
+
+    state_recorder = MujocoStateRecorder(
+        model,
+        scene_path=model_path,
+        recording_dir=args.recording_dir,
+        record_fps=args.video_fps,
+        camera_name="workstation_front",
+    )
+    recording_session_dir = state_recorder.start(data)
+
+    print(
+        "recording session :",
+        recording_session_dir,
+    )
+    print(
+        "recording rate    :",
+        args.video_fps,
+        "FPS (simulation time)",
+    )
 
 
     # ========================================================
@@ -2050,6 +2102,10 @@ def main():
                         data,
                     )
 
+                    state_recorder.maybe_record(
+                        data
+                    )
+
                     physics_accumulator -= (
                         physics_dt
                     )
@@ -2246,9 +2302,19 @@ def main():
 
 
     except KeyboardInterrupt:
-        pass
-
         print()
+
+    finally:
+        recording_path = state_recorder.stop()
+        print(
+            "MuJoCo recording :",
+            recording_path,
+        )
+        print(
+            "recorded frames  :",
+            state_recorder.frame_count,
+        )
+
     print(
         "========================================"
     )
