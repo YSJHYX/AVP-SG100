@@ -1,0 +1,22 @@
+{
+  "audio": false,
+  "camera_name": "workstation_front",
+  "frame_count": 3129,
+  "mocap_count": 0,
+  "mujoco_timestep": 0.002,
+  "qpos_dimension": 66,
+  "record_fps": 30.0,
+  "recorded_time_span": 104.2679999999384,
+  "scene_path": "sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_avp_grasp_scene.xml",
+  "schema_version": 1,
+  "simulation_end_time": 104.2679999999384,
+  "simulation_start_time": 0.0,
+  "state_fields": [
+    "timestamps",
+    "qpos",
+    "mocap_pos",
+    "mocap_quat"
+  ],
+  "video_duration": 104.3,
+  "wall_start_time": "2026-08-20T18:10:24.700894+08:00"
+}
