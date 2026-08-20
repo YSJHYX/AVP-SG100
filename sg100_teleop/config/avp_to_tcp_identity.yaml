@@ -7,10 +7,9 @@ source: identity uncalibrated development default
 # unaffected (always 1:1).
 translation_scale: 1.5
 
-# Vector convention:
-#   p_robot_tcp_local = A @ p_avp_wrist_local
-# Rotation convention:
-#   R_robot_tcp_local = A @ R_avp_wrist_local @ A.T
+# Fixed world-axis controller convention (the historical key name is kept):
+#   delta_p_robot_world = A @ delta_p_avp_world
+#   delta_R_robot_world = A @ delta_R_avp_world @ A.T
 avp_to_tcp_local_rotation:
   - [1.0, 0.0, 0.0]
   - [0.0, 1.0, 0.0]

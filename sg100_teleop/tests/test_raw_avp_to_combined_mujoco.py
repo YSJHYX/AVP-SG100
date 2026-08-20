@@ -368,12 +368,13 @@ def run_raw_pipeline(model_path: Path, *, full_regression: bool):
         harness.assert_command_valid(result)
         assert not np.allclose(result.q_arm, previous_arm, atol=1e-8)
         np.testing.assert_allclose(result.q_hand, harness.q_hand0_runtime, atol=1e-12)
-        expected_local = TRANSLATION_SCALE * (NONIDENTITY_BASIS @ (0.010 * axis))
-        actual_local = (
-            harness.tcp_anchor[:3, :3].T
-            @ (result.tcp_target[:3, 3] - harness.tcp_anchor[:3, 3])
+        expected_world = TRANSLATION_SCALE * (
+            NONIDENTITY_BASIS @ (0.010 * axis)
         )
-        np.testing.assert_allclose(actual_local, expected_local, atol=1e-12)
+        actual_world = (
+            result.tcp_target[:3, 3] - harness.tcp_anchor[:3, 3]
+        )
+        np.testing.assert_allclose(actual_world, expected_world, atol=1e-12)
         assert_pose_matches_target(harness, result)
         translations[sequence] = result
 
@@ -402,10 +403,10 @@ def run_raw_pipeline(model_path: Path, *, full_regression: bool):
         assert not np.allclose(result.q_arm, previous_arm, atol=1e-8)
         np.testing.assert_allclose(result.q_hand, harness.q_hand0_runtime, atol=1e-12)
         expected_rotation = (
-            harness.tcp_anchor[:3, :3]
-            @ NONIDENTITY_BASIS
+            NONIDENTITY_BASIS
             @ delta_rotation
             @ NONIDENTITY_BASIS.T
+            @ harness.tcp_anchor[:3, :3]
         )
         np.testing.assert_allclose(result.tcp_target[:3, :3], expected_rotation, atol=1e-12)
         assert_pose_matches_target(harness, result)

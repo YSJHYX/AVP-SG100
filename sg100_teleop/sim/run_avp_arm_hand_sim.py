@@ -135,6 +135,7 @@ def solve_forearm_axis_or_position(
             target_rotation=None,
             position_only=True,
         )
+
     return ik_solver.solve(
         q_seed=q_seed,
         target_position=target_position,
@@ -142,6 +143,31 @@ def solve_forearm_axis_or_position(
         target_axis=a_target,
         tcp_axis_local=TCP_FOREARM_AXIS_LOCAL,
     )
+
+
+def select_full_pose_target_rotation(
+    T_tcp_target: np.ndarray,
+    *,
+    lock_tcp_rotation: bool,
+    R_tcp_rotation_lock: np.ndarray | None,
+) -> np.ndarray:
+    """Select mapped relative rotation unless the A/B lock is requested."""
+
+    target = np.asarray(T_tcp_target, dtype=np.float64)
+    if target.shape != (4, 4):
+        raise ValueError("T_tcp_target must have shape (4,4)")
+
+    if not lock_tcp_rotation:
+        return target[:3, :3].copy()
+
+    if R_tcp_rotation_lock is None:
+        raise RuntimeError(
+            "--lock-tcp-rotation requires a calibrated TCP rotation anchor"
+        )
+    rotation_lock = np.asarray(R_tcp_rotation_lock, dtype=np.float64)
+    if rotation_lock.shape != (3, 3):
+        raise ValueError("R_tcp_rotation_lock must have shape (3,3)")
+    return rotation_lock.copy()
 
 # ============================================================
 # RM65 teleoperation start configuration
@@ -334,7 +360,7 @@ def build_arg_parser():
         default=DEFAULT_AVP_TO_TCP_CONFIG,
         help=(
             "YAML containing translation_scale and the proper "
-            "AVP wrist-local to robot TCP-local rotation basis"
+            "fixed AVP-world to robot-world controller-axis basis"
         ),
     )
 
@@ -588,7 +614,7 @@ def main():
     )
 
     print(
-        "AVP -> TCP local basis:\n",
+        "AVP -> TCP fixed-axis basis:\n",
         avp_to_tcp_config.avp_to_tcp_local_rotation,
     )
 
@@ -1642,18 +1668,17 @@ def main():
                                     )
 
                                 else:
-                                    if args.lock_tcp_rotation:
-                                        R_target = (
-                                            R_tcp_rotation_lock
-                                            .copy()
+                                    R_target = (
+                                        select_full_pose_target_rotation(
+                                            T_tcp_target,
+                                            lock_tcp_rotation=(
+                                                args.lock_tcp_rotation
+                                            ),
+                                            R_tcp_rotation_lock=(
+                                                R_tcp_rotation_lock
+                                            ),
                                         )
-                                    else:
-                                        R_target = (
-                                            T_tcp_target[
-                                                :3,
-                                                :3,
-                                            ]
-                                        )
+                                    )
 
                                     (
                                         q_arm_candidate,

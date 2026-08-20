@@ -649,17 +649,14 @@ initial robot TCP  : T_tcp0
 之后每帧:
 
 ```text
-T_avp(t)
-   ↓
-relative ΔT_avp  = inverse(T_avp0) @ T_avp(t)
-   ↓
-axis mapping (R_tcp_from_avp_local)
-   ↓
-translation scale
-   ↓
-relative ΔT_tcp
-   ↓
-T_tcp_target = T_tcp0 @ ΔT_tcp        (world frame)
+translation: Δp_avp_world = p_avp(t) - p_avp0
+             p_tcp_target = p_tcp0 + scale * A @ Δp_avp_world
+
+rotation:    ΔR_avp_world = R_avp(t) @ R_avp0.T
+             ΔR_tcp_world = A @ ΔR_avp_world @ A.T
+             R_tcp_target = ΔR_tcp_world @ R_tcp0
+
+最后才将 p_tcp_target 与 R_tcp_target 组装成 T_tcp_target。
 ```
 
 该类 **故意独立于 `VisionProStreamer`**,只接受普通 4×4 homogeneous transform。
@@ -667,10 +664,10 @@ T_tcp_target = T_tcp0 @ ΔT_tcp        (world frame)
 **当前默认:**
 
 ```text
-translation_scale = 0.5        # 见下方说明
+translation_scale = 1.5        # 见下方说明
 ```
 
-> `translation_scale = 0.5` 是 checked-in `avp_to_tcp_identity.yaml` 的 validation 默认值;real runner 通过 `--avp-to-tcp-config` 加载,basis 与 scale 不再是分散的 CLI 数值。含义:`10 cm` 人手运动 → `5 cm` 机器人运动。**这不代表** 真实 AVP 标定后的唯一正确 scale。`AVPWristRelativeMapper.__init__` 的类默认 `1.0` 仅是通用回退。
+> `translation_scale = 1.5` 是 checked-in `avp_to_tcp_identity.yaml` 的 development 默认值;real runner 通过 `--avp-to-tcp-config` 加载,basis 与 scale 不再是分散的 CLI 数值。含义:`10 cm` 人手运动 → `15 cm` 机器人运动。**这不代表** 真实 AVP 标定后的唯一正确 scale。`AVPWristRelativeMapper.__init__` 的类默认 `1.0` 仅是通用回退。
 
 辅助函数:`make_transform`、`invert_transform`、`rotation_angle`。
 
@@ -679,16 +676,17 @@ translation_scale = 0.5        # 见下方说明
 必须区分两个坐标转换:
 
 1. `YUP2ZUP`:VisionProStreamer 对 AVP/ARKit **world representation** 的转换。
-2. `avp_to_tcp_local_rotation = A`:初始 AVP wrist-local relative motion 到 robot TCP-local control motion 的 basis change。
+2. `avp_to_tcp_local_rotation = A`:保留的历史配置键名；当前语义是固定 AVP-world controller axes 到固定 robot-world controller axes 的 basis change。
 
-二者作用域不同,不能用 `YUP2ZUP` 代替 wrist-local control calibration。mapper 数学为:
+二者作用域不同,不能用 `YUP2ZUP` 代替 controller-axis calibration。mapper 数学为:
 
 ```text
-p_robot_local = A @ p_avp_local
-R_robot_local = A @ R_avp_local @ A.T
+delta_p_avp_world = p_current - p_anchor
+p_tcp_target = p_tcp_anchor + translation_scale * A @ delta_p_avp_world
 
-delta_p_tcp = translation_scale * A @ delta_p_avp
-T_tcp_target = T_tcp_runtime_0 @ delta_T_tcp
+delta_R_avp_world = R_current @ R_anchor.T
+delta_R_tcp_world = A @ delta_R_avp_world @ A.T
+R_tcp_target = delta_R_tcp_world @ R_tcp_anchor
 ```
 
 `config/avp_to_tcp_identity.yaml` 明确标记为:
@@ -1280,7 +1278,7 @@ Acceptance motions:`OPEN`,`FIST`,`INDEX FLEX`,`THUMB OPPOSITION`,`PINCH`,`SPREAD
 ## 24. Known Limitations
 
 - 真实 AVP 端到端验证尚未执行(synthetic / fake / sim 已通过)。
-- checked-in identity basis/`translation_scale=0.5` 是 **UNCALIBRATED DEVELOPMENT DEFAULT**;真实 AVP wrist-local axis/scale 尚未完成 hardware six-axis calibration。
+- checked-in identity basis/`translation_scale=1.5` 是 **UNCALIBRATED DEVELOPMENT DEFAULT**;真实 AVP controller axis/scale 尚未完成 hardware six-axis calibration。
 - thumb opposition / abduction 由 palm-local geometric projection 建模,真实 thumb 3D coupling 可能在真机数据中显现。
 - robot/tabletop validation scene 已有明确 collision proxies,但尚无真实 AVP contact、pickup 或 grasp-quality acceptance。
 - 只做 right SG100 hand(`--hand` 仅 `choices=["right"]`)。

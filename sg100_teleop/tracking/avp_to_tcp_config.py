@@ -10,7 +10,7 @@ ROTATION_ATOL = 1e-6
 
 
 def validate_avp_to_tcp_local_rotation(value) -> np.ndarray:
-    """Validate the proper rotation mapping AVP-local vectors to TCP-local."""
+    """Validate the proper rotation mapping fixed AVP axes to robot axes."""
     try:
         basis = np.asarray(value, dtype=np.float64)
     except (TypeError, ValueError) as exc:
@@ -47,7 +47,7 @@ def validate_avp_to_tcp_local_rotation(value) -> np.ndarray:
 
 @dataclass(frozen=True)
 class AVPToTCPConfig:
-    """Resolved session config for AVP wrist-local to robot TCP-local motion."""
+    """Resolved fixed-axis AVP-world to robot-world controller mapping."""
 
     translation_scale: float
     avp_to_tcp_local_rotation: np.ndarray

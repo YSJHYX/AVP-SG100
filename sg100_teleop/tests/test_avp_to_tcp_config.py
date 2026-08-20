@@ -52,7 +52,7 @@ def test_matrix_validation():
 def test_default_identity_config_is_explicitly_uncalibrated():
     config = load_avp_to_tcp_config(DEFAULT_CONFIG)
     np.testing.assert_allclose(config.avp_to_tcp_local_rotation, np.eye(3))
-    assert config.translation_scale == 0.5
+    assert config.translation_scale == 1.5
     assert "uncalibrated development default" in config.source
 
 

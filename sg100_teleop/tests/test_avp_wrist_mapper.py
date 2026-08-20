@@ -153,10 +153,8 @@ def main():
 
     # --------------------------------------------------------
     # Test 2:
-    # +5 cm along initial AVP-wrist local X.
-    #
-    # With identity axis alignment, this must become +5 cm
-    # along initial TCP local X.
+    # +5 cm along fixed AVP-world X.  Controller translation axes
+    # are independent of both calibration rotations.
     # --------------------------------------------------------
     delta = make_transform(
         np.array([
@@ -167,14 +165,14 @@ def main():
         np.eye(3),
     )
 
-    T_avp = (
-        T_avp0
-        @ delta
+    T_avp = make_transform(
+        T_avp0[:3, 3] + delta[:3, 3],
+        T_avp0[:3, :3],
     )
 
-    expected = (
-        T_tcp0
-        @ delta
+    expected = make_transform(
+        T_tcp0[:3, 3] + delta[:3, 3],
+        T_tcp0[:3, :3],
     )
 
     actual = mapper.map(
@@ -182,14 +180,14 @@ def main():
     )
 
     assert_pose_close(
-        "LOCAL_X_TRANSLATION",
+        "WORLD_X_TRANSLATION",
         actual,
         expected,
     )
 
     # --------------------------------------------------------
     # Test 3:
-    # Relative local wrist rotation.
+    # Relative AVP-world wrist rotation, left-applied to the TCP anchor.
     # --------------------------------------------------------
     delta = make_transform(
         np.zeros(3),
@@ -198,14 +196,14 @@ def main():
         ),
     )
 
-    T_avp = (
-        T_avp0
-        @ delta
+    T_avp = make_transform(
+        T_avp0[:3, 3],
+        delta[:3, :3] @ T_avp0[:3, :3],
     )
 
-    expected = (
-        T_tcp0
-        @ delta
+    expected = make_transform(
+        T_tcp0[:3, 3],
+        delta[:3, :3] @ T_tcp0[:3, :3],
     )
 
     actual = mapper.map(
@@ -213,7 +211,7 @@ def main():
     )
 
     assert_pose_close(
-        "LOCAL_Z_ROTATION",
+        "WORLD_Z_ROTATION",
         actual,
         expected,
     )
@@ -240,9 +238,9 @@ def main():
         np.eye(3),
     )
 
-    T_avp = (
-        T_avp0
-        @ delta_avp
+    T_avp = make_transform(
+        T_avp0[:3, 3] + delta_avp[:3, 3],
+        T_avp0[:3, :3],
     )
 
     delta_expected = make_transform(
@@ -254,9 +252,9 @@ def main():
         np.eye(3),
     )
 
-    expected = (
-        T_tcp0
-        @ delta_expected
+    expected = make_transform(
+        T_tcp0[:3, 3] + delta_expected[:3, 3],
+        T_tcp0[:3, :3],
     )
 
     actual = half_mapper.map(
@@ -271,7 +269,7 @@ def main():
 
     # --------------------------------------------------------
     # Test 5:
-    # Explicit AVP->TCP local-axis alignment.
+    # Explicit fixed AVP-world -> robot-world axis alignment.
     #
     # A = +90 deg around local Z:
     #
@@ -304,9 +302,9 @@ def main():
         ),
     )
 
-    T_avp = (
-        T_avp0
-        @ delta_avp
+    T_avp = make_transform(
+        T_avp0[:3, 3] + delta_avp[:3, 3],
+        delta_avp[:3, :3] @ T_avp0[:3, :3],
     )
 
     mapped_translation = (
@@ -320,14 +318,9 @@ def main():
         @ A.T
     )
 
-    delta_expected = make_transform(
-        mapped_translation,
-        mapped_rotation,
-    )
-
-    expected = (
-        T_tcp0
-        @ delta_expected
+    expected = make_transform(
+        T_tcp0[:3, 3] + mapped_translation,
+        mapped_rotation @ T_tcp0[:3, :3],
     )
 
     actual = aligned_mapper.map(

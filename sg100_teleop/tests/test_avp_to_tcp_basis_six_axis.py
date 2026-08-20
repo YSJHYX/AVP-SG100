@@ -4,7 +4,6 @@ import numpy as np
 
 from sg100_teleop.tracking.avp_wrist_mapper import (
     AVPWristRelativeMapper,
-    invert_transform,
     make_transform,
     rotation_angle,
 )
@@ -54,14 +53,17 @@ def test_positive_and_negative_xyz_translation():
         for sign in (-1.0, 1.0):
             delta = np.zeros(3)
             delta[axis_index] = sign * distance
-            T_avp = T_avp0 @ make_transform(delta, np.eye(3))
+            T_avp = make_transform(
+                T_avp0[:3, 3] + delta,
+                T_avp0[:3, :3],
+            )
             T_target = mapper.map(T_avp)
-            delta_tcp = invert_transform(T_tcp0) @ T_target
+            delta_tcp_world = T_target[:3, 3] - T_tcp0[:3, 3]
             expected = SCALE * (A @ delta)
-            np.testing.assert_allclose(delta_tcp[:3, 3], expected, atol=1e-12)
+            np.testing.assert_allclose(delta_tcp_world, expected, atol=1e-12)
             print(
-                f"AVP {sign:+.0f}{axis_name} -> TCP local",
-                np.round(delta_tcp[:3, 3], 6),
+                f"AVP world {sign:+.0f}{axis_name} -> TCP world",
+                np.round(delta_tcp_world, 6),
             )
 
 
@@ -72,17 +74,20 @@ def test_positive_and_negative_xyz_rotation():
     for axis_index, axis_name in enumerate("XYZ"):
         for sign in (-1.0, 1.0):
             R_avp = axis_rotation(axes[axis_index], sign * angle)
-            T_avp = T_avp0 @ make_transform(np.zeros(3), R_avp)
+            T_avp = make_transform(
+                T_avp0[:3, 3],
+                R_avp @ T_avp0[:3, :3],
+            )
             T_target = mapper.map(T_avp)
-            R_actual = (invert_transform(T_tcp0) @ T_target)[:3, :3]
+            R_actual = T_target[:3, :3] @ T_tcp0[:3, :3].T
             R_expected = A @ R_avp @ A.T
             error = rotation_angle(R_expected @ R_actual.T)
             if error > 1e-10:
                 raise RuntimeError(
-                    f"Local {axis_name} rotation basis error: {error} rad"
+                    f"World {axis_name} rotation basis error: {error} rad"
                 )
             print(
-                f"AVP {sign:+.0f}R{axis_name} -> TCP axis",
+                f"AVP world {sign:+.0f}R{axis_name} -> TCP world axis",
                 np.round(A @ axes[axis_index] * sign, 3),
             )
 

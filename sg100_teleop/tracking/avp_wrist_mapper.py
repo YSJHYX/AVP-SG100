@@ -158,7 +158,8 @@ def rotation_from_two_unit_vectors(
 
 class AVPWristRelativeMapper:
     """
-    Maps relative AVP wrist SE(3) motion to a robot TCP target.
+    Maps independent relative AVP wrist translation and rotation to a
+    robot TCP target.
 
     This class is deliberately independent of VisionProStreamer.
     It accepts ordinary 4x4 homogeneous transforms.
@@ -172,9 +173,10 @@ class AVPWristRelativeMapper:
         Robot teleop TCP pose in MuJoCo/world coordinates.
 
     R_tcp_from_avp_local:
-        Static rotation mapping coordinates expressed in the
-        initial AVP wrist frame into coordinates expressed in
-        the initial robot TCP frame.
+        Historical public name for the static proper-rotation basis ``A``.
+        For controller-relative teleoperation it maps fixed AVP-world motion
+        axes to fixed robot-world motion axes.  The name is retained for
+        configuration compatibility.
 
         For synthetic validation:
             identity
@@ -377,6 +379,65 @@ class AVPWristRelativeMapper:
             )
         )
 
+    def map_translation(
+        self,
+        T_avp_world_wrist: np.ndarray,
+    ) -> np.ndarray:
+        """Map the world-axis wrist position delta onto robot world axes.
+
+        Translation deliberately does not use ``inv(T_avp0) @ T_current``:
+        rotating the wrist at calibration must not rotate the controller's
+        translation axes.
+        """
+        if not self.calibrated:
+            raise RuntimeError(
+                "AVPWristRelativeMapper is not calibrated"
+            )
+
+        current = np.asarray(T_avp_world_wrist, dtype=np.float64)
+        if current.shape != (4, 4):
+            raise ValueError(
+                "T_avp_world_wrist must have shape (4,4)"
+            )
+
+        delta_p_avp_world = current[:3, 3] - self._T_avp0[:3, 3]
+        delta_p_tcp_world = (
+            self.translation_scale
+            * (self.R_tcp_from_avp_local @ delta_p_avp_world)
+        )
+        return self._T_tcp0[:3, 3] + delta_p_tcp_world
+
+    def map_rotation(
+        self,
+        T_avp_world_wrist: np.ndarray,
+    ) -> np.ndarray:
+        """Apply calibration-relative wrist rotation to the TCP anchor.
+
+        Pose rotations are active local-to-world matrices.  Therefore
+        ``R_current @ R_anchor.T`` is the AVP-world rotation increment that
+        takes the calibration orientation to the current orientation.  The
+        fixed basis ``A`` changes that increment into robot-world axes, and
+        the mapped world increment is left-applied to the TCP anchor.
+        """
+        if not self.calibrated:
+            raise RuntimeError(
+                "AVPWristRelativeMapper is not calibrated"
+            )
+
+        current = np.asarray(T_avp_world_wrist, dtype=np.float64)
+        if current.shape != (4, 4):
+            raise ValueError(
+                "T_avp_world_wrist must have shape (4,4)"
+            )
+
+        R_avp_anchor = self._T_avp0[:3, :3]
+        R_avp_current = current[:3, :3]
+        R_rel_avp_world = R_avp_current @ R_avp_anchor.T
+
+        A = self.R_tcp_from_avp_local
+        R_rel_tcp_world = A @ R_rel_avp_world @ A.T
+        return R_rel_tcp_world @ self._T_tcp0[:3, :3]
+
     def map(
         self,
         T_avp_world_wrist: np.ndarray,
@@ -384,34 +445,10 @@ class AVPWristRelativeMapper:
         """
         Return target TCP pose in robot/MuJoCo world frame.
         """
-        delta_avp = self.relative_avp_motion(
-            T_avp_world_wrist
-        )
-
-        p_avp = delta_avp[:3, 3]
-        R_avp = delta_avp[:3, :3]
-
-        A = self.R_tcp_from_avp_local
-
-        # Express relative AVP translation in initial TCP axes.
-        p_tcp_local = (
-            self.translation_scale
-            * (A @ p_avp)
-        )
-
-        # Change basis for the relative wrist rotation.
-        R_tcp_local = (
-            A
-            @ R_avp
-            @ A.T
-        )
-
-        delta_tcp = make_transform(
-            p_tcp_local,
-            R_tcp_local,
-        )
-
-        return (
-            self._T_tcp0
-            @ delta_tcp
+        # Keep controller translation and wrist rotation as independent
+        # chains.  Only assemble the homogeneous target after both have been
+        # mapped relative to their calibration anchors.
+        return make_transform(
+            self.map_translation(T_avp_world_wrist),
+            self.map_rotation(T_avp_world_wrist),
         )
