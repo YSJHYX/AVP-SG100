@@ -4,6 +4,7 @@ import tempfile
 import numpy as np
 import yaml
 
+from sg100_teleop.control.tcp_target_filter import TcpTargetFilterConfig
 from sg100_teleop.tracking.avp_to_tcp_config import (
     load_avp_to_tcp_config,
     validate_avp_to_tcp_local_rotation,
@@ -52,8 +53,12 @@ def test_matrix_validation():
 def test_default_identity_config_is_explicitly_uncalibrated():
     config = load_avp_to_tcp_config(DEFAULT_CONFIG)
     np.testing.assert_allclose(config.avp_to_tcp_local_rotation, np.eye(3))
-    assert config.translation_scale == 1.5
+    assert config.translation_scale == 1.0
     assert "uncalibrated development default" in config.source
+    assert config.filter.position_tau == 0.06
+    assert config.filter.rotation_tau == 0.06
+    assert config.filter.max_linear_velocity == 0.25
+    assert config.filter.max_angular_velocity == 1.5
 
 
 def test_yaml_loads_nonidentity_proper_basis():
@@ -69,6 +74,7 @@ def test_yaml_loads_nonidentity_proper_basis():
             yaml.safe_dump(data, stream)
         config = load_avp_to_tcp_config(path)
     assert config.translation_scale == 0.25
+    assert config.filter == TcpTargetFilterConfig()
     np.testing.assert_allclose(
         config.avp_to_tcp_local_rotation,
         SIGNED_PERMUTATION,
