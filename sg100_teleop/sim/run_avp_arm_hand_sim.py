@@ -16,6 +16,8 @@ from sg100_teleop.hand.canonical_hand import CanonicalHandState
 
 from sg100_teleop.control.joint_command_filter import JointCommandFilter
 
+from sg100_teleop.control.tcp_target_filter import TcpTargetFilter
+
 from sg100_teleop.control.teleop_arming import (
     TeleopArmingController,
 )
@@ -618,6 +620,11 @@ def main():
         avp_to_tcp_config.avp_to_tcp_local_rotation,
     )
 
+    print(
+        "TCP filter         :",
+        avp_to_tcp_config.filter,
+    )
+
         # ========================================================
     # MuJoCo combined model
     # ========================================================
@@ -1027,6 +1034,12 @@ def main():
         )
     )
 
+    # RM65 Cartesian filtering belongs after wrist mapping and before IK.
+    # Its timestamp advances only when a new valid tracking frame is used.
+    tcp_target_filter = TcpTargetFilter(
+        avp_to_tcp_config.filter
+    )
+
     # ========================================================
     # Wrist calibration state
     # ========================================================
@@ -1041,7 +1054,6 @@ def main():
     n_forearm0_avp = None
     forearm_axis_calibrated = False
     q_hand0_runtime = None
-    has_completed_calibration = False
 
     # ========================================================
     # IK diagnostics
@@ -1497,23 +1509,25 @@ def main():
                             # =====================================
 
                             if calibration_frame:
-                                if not has_completed_calibration:
-                                    # Startup calibration anchors the arm at
-                                    # its startup (pre-grasp) TCP pose.
-                                    T_tcp_anchor = T_tcp0.copy()
-                                else:
-                                    # Recalibration holds the current robot
-                                    # pose instead of returning to startup.
-                                    T_tcp_anchor = make_transform(
-                                        data.xpos[tcp_body_id].copy(),
-                                        data.xmat[tcp_body_id]
-                                        .reshape(3, 3)
-                                        .copy(),
-                                    )
+                                # Every calibration anchors both the mapper
+                                # and filter to the current actual TCP pose.
+                                T_tcp_anchor = make_transform(
+                                    data.xpos[tcp_body_id].copy(),
+                                    data.xmat[tcp_body_id]
+                                    .reshape(3, 3)
+                                    .copy(),
+                                )
 
                                 wrist_mapper.calibrate(
                                     T_avp_wrist,
                                     T_tcp_anchor,
+                                )
+                                tcp_target_filter.reset(
+                                    T_tcp_anchor,
+                                    timestamp=(
+                                        received_monotonic_ns
+                                        * 1e-9
+                                    ),
                                 )
 
                                 # A valid 27-joint sample establishes the
@@ -1568,7 +1582,6 @@ def main():
                                 )
 
                                 wrist_calibrated = True
-                                has_completed_calibration = True
                                 teleop_arming.complete_calibration()
 
                                 print_teleop_state(
@@ -1606,8 +1619,17 @@ def main():
                             # =====================================
 
                             elif teleop_arming.active:
-                                T_tcp_target = wrist_mapper.map(
+                                T_tcp_raw = wrist_mapper.map(
                                     T_avp_wrist
+                                )
+                                T_tcp_target = (
+                                    tcp_target_filter.update(
+                                        T_tcp_raw,
+                                        timestamp=(
+                                            received_monotonic_ns
+                                            * 1e-9
+                                        ),
+                                    )
                                 )
 
                                 p_target = (
@@ -1845,6 +1867,7 @@ def main():
                                 .avp_to_tcp_local_rotation
                             ),
                         )
+                        tcp_target_filter.clear()
                         wrist_calibrated = False
                         T_avp_wrist_0 = None
                         T_tcp_runtime_0 = None

@@ -5,7 +5,7 @@ source: identity uncalibrated development default
 # Translation gain wrist->TCP.  2.0 maps a comfortable wrist sphere
 # (~0.3 m) onto most of the RM65 workspace (~0.6 m reach); rotation is
 # unaffected (always 1:1).
-translation_scale: 1.5
+translation_scale: 1.0
 
 # Fixed world-axis controller convention (the historical key name is kept):
 #   delta_p_robot_world = A @ delta_p_avp_world
@@ -14,3 +14,10 @@ avp_to_tcp_local_rotation:
   - [1.0, 0.0, 0.0]
   - [0.0, 1.0, 0.0]
   - [0.0, 0.0, 1.0]
+
+# RM65 Cartesian target filter, applied after mapping and before IK.
+filter:
+  position_tau: 0.06          # seconds
+  rotation_tau: 0.06          # seconds
+  max_linear_velocity: 0.25   # m/s
+  max_angular_velocity: 1.5   # rad/s

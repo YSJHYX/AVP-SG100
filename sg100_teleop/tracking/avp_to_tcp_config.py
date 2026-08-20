@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from sg100_teleop.control.tcp_target_filter import TcpTargetFilterConfig
+
 
 SCHEMA_VERSION = 1
 ROTATION_ATOL = 1e-6
@@ -52,6 +54,7 @@ class AVPToTCPConfig:
     translation_scale: float
     avp_to_tcp_local_rotation: np.ndarray
     source: str
+    filter: TcpTargetFilterConfig
 
 
 def load_avp_to_tcp_config(path: str | Path) -> AVPToTCPConfig:
@@ -75,10 +78,28 @@ def load_avp_to_tcp_config(path: str | Path) -> AVPToTCPConfig:
     if not isinstance(source, str) or not source.strip():
         raise ValueError("AVP-to-TCP config source must be a non-empty string")
 
+    filter_data = data.get("filter", {})
+    if not isinstance(filter_data, dict):
+        raise ValueError("filter must be a YAML mapping")
+    known_filter_keys = {
+        "position_tau",
+        "rotation_tau",
+        "max_linear_velocity",
+        "max_angular_velocity",
+    }
+    unknown_filter_keys = set(filter_data) - known_filter_keys
+    if unknown_filter_keys:
+        raise ValueError(
+            "Unknown AVP-to-TCP filter keys: "
+            + ", ".join(sorted(unknown_filter_keys))
+        )
+    filter_config = TcpTargetFilterConfig(**filter_data)
+
     return AVPToTCPConfig(
         translation_scale=translation_scale,
         avp_to_tcp_local_rotation=validate_avp_to_tcp_local_rotation(
             data["avp_to_tcp_local_rotation"]
         ),
         source=source.strip(),
+        filter=filter_config,
     )
