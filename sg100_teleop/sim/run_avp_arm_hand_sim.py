@@ -76,6 +76,17 @@ TCP_FOREARM_AXIS_LOCAL = np.array(
 )
 FOREARM_DIRECTION_EPSILON_M = 1e-6
 
+# Verbose-only: an accepted IK solution whose largest single-frame joint
+# step exceeds this is logged as a suspected discontinuity.  Large dq
+# with a small pos_err means the same pose was reached from very
+# different joints (branch flip); large dq with a large pos_err means a
+# HOLD-release catch-up.  Normal 60 Hz teleop stays far below it.
+IK_ACCEPT_JUMP_LOG_RAD = 0.2
+
+# Per-frame joint-step clamp applied to accepted best-effort fallback
+# solutions so a single solve can never produce a visible jump.
+IK_FALLBACK_MAX_STEP_RAD = 0.1
+
 
 def extract_forearm_axis(
     hand: np.ndarray,
@@ -1063,6 +1074,8 @@ def main():
 
     ik_failure_count = 0
 
+    ik_fallback_count = 0
+
     # ========================================================
     # Arm-pipeline diagonostics
     # ========================================================
@@ -1752,6 +1765,37 @@ def main():
                                             "values."
                                         )
 
+                                    accept_dq = np.abs(
+                                        q_arm_candidate
+                                        - q_arm_goal
+                                    )
+
+                                    accept_dq_max = float(
+                                        np.max(
+                                            accept_dq,
+                                        )
+                                    )
+
+                                    if (
+                                        args.verbose
+                                        and accept_dq_max
+                                        > IK_ACCEPT_JUMP_LOG_RAD
+                                    ):
+                                        print(
+                                            "IK accept jump: "
+                                            f"dq_max="
+                                            f"{accept_dq_max:.3f} rad "
+                                            f"({np.degrees(accept_dq_max):.1f} deg), "
+                                            f"dq="
+                                            f"{np.round(accept_dq, 3).tolist()}, "
+                                            f"reason="
+                                            f"{ik_result.reason}, "
+                                            f"pos_err="
+                                            f"{ik_result.position_error * 1000.0:.3f} mm, "
+                                            f"rot_err="
+                                            f"{np.degrees(ik_result.rotation_error):.3f} deg"
+                                        )
+
                                     q_arm_goal = (
                                         q_arm_candidate
                                         .copy()
@@ -1761,11 +1805,17 @@ def main():
                                 # ---------------------------------
                                 # IK failure:
                                 #
-                                # hold the last valid q_arm_goal.
-                                #
-                                # This is intentionally lightweight
-                                # because this project is simulation
-                                # teleoperation validation only.
+                                # A plain hold would freeze the arm
+                                # while the target keeps drifting and
+                                # then snap back in a single frame
+                                # when the target re-enters the
+                                # feasible set.  Instead, fall back to
+                                # the damped position task in
+                                # best-effort mode: the arm keeps
+                                # tracking from the closest reachable
+                                # configuration, orientation waits.
+                                # The per-frame clamp bounds any
+                                # single solve to a continuous step.
                                 # ---------------------------------
 
                                 else:
@@ -1782,7 +1832,53 @@ def main():
                                             f"sigma_min="
                                             f"{ik_result.sigma_min:.5f}, "
                                             f"condition="
-                                            f"{ik_result.condition_number:.2f}"
+                                            f"{ik_result.condition_number:.2f}, "
+                                            f"reason="
+                                            f"{ik_result.reason}"
+                                        )
+
+                                    (
+                                        q_arm_fallback,
+                                        fallback_result,
+                                    ) = ik_solver.solve(
+                                        q_seed=(
+                                            q_arm_goal
+                                        ),
+                                        target_position=(
+                                            p_target
+                                        ),
+                                        target_rotation=(
+                                            None
+                                        ),
+                                        position_only=(
+                                            True
+                                        ),
+                                        best_effort=(
+                                            True
+                                        ),
+                                    )
+
+                                    if (
+                                        q_arm_fallback.shape
+                                        == (ARM_DOF,)
+                                        and np.all(
+                                            np.isfinite(
+                                                q_arm_fallback
+                                            )
+                                        )
+                                    ):
+                                        q_arm_goal = np.clip(
+                                            q_arm_fallback,
+                                            q_arm_goal
+                                            - IK_FALLBACK_MAX_STEP_RAD,
+                                            q_arm_goal
+                                            + IK_FALLBACK_MAX_STEP_RAD,
+                                        )
+
+                                        ik_fallback_count += 1
+
+                                        last_ik_result = (
+                                            fallback_result
                                         )
 
 
@@ -2038,6 +2134,11 @@ def main():
                     )
 
                     print(
+                        "IK fallbacks    :",
+                        ik_fallback_count,
+                    )
+
+                    print(
                         "q_arm_goal      :",
                         np.round(
                             q_arm_goal,
@@ -2199,6 +2300,11 @@ def main():
     print(
         "IK failures       :",
         ik_failure_count,
+    )
+
+    print(
+        "IK fallbacks      :",
+        ik_fallback_count,
     )
 
     print(

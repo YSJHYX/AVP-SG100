@@ -492,6 +492,8 @@ class RM65IKSolver:
         self,
         q_seed: np.ndarray,
         target_position: np.ndarray,
+        *,
+        best_effort: bool = False,
     ):
         """Damped-least-squares 3D position task with null-space
         posture regularization toward the seed.
@@ -501,6 +503,10 @@ class RM65IKSolver:
 
         The orientation never enters the residual, the Jacobian, or
         the convergence criterion.
+
+        best_effort=True keeps the partially walked q when the target
+        is unreachable, so the caller can continue tracking from the
+        closest reachable configuration instead of freezing.
         """
 
         lower = self.lower + self.joint_limit_margin
@@ -587,6 +593,22 @@ class RM65IKSolver:
                 condition_number=condition,
                 damping=POSITION_ONLY_DAMPING,
                 reason="position_only_success",
+            )
+
+        if best_effort:
+            # The target is unreachable, but the iterations stopped at
+            # (locally) the closest reachable configuration.  Return
+            # that walk result so the caller can keep following the
+            # target along the feasibility boundary.
+            return q, IKResult(
+                converged=False,
+                iterations=iteration,
+                position_error=pos_error,
+                rotation_error=0.0,
+                sigma_min=sigma_min,
+                condition_number=condition,
+                damping=POSITION_ONLY_DAMPING,
+                reason="position_only_best_effort",
             )
 
         # HOLD semantics: return the seed unchanged and report the
@@ -753,6 +775,7 @@ class RM65IKSolver:
         tcp_axis_local: np.ndarray | None = None,
         axis_weight: float = AXIS_IK_WEIGHT,
         axis_tolerance_rad: float = AXIS_IK_TOLERANCE_RAD,
+        best_effort: bool = False,
     ):
         """
         position_only=False (default):
@@ -767,7 +790,8 @@ class RM65IKSolver:
             null-space posture term toward the seed keeps the
             redundant solution continuous frame to frame.  On
             non-convergence the seed is returned unchanged (HOLD),
-            matching the official path's failure semantics.
+            matching the official path's failure semantics, unless
+            best_effort=True returns the partially walked q instead.
 
         target_axis is not None:
             rank-5 position + selected TCP-axis DLS task.  Rotation about
@@ -792,6 +816,7 @@ class RM65IKSolver:
             return self._solve_position_only(
                 q,
                 target_position,
+                best_effort=best_effort,
             )
 
         if target_axis is not None:
