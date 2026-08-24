@@ -10,6 +10,11 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from sg100_teleop.sim.camera_observations import (
+    CAMERA_TO_OBSERVATION_KEY,
+    validate_camera_observation_contract,
+)
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CAMERA = "workstation_front"
@@ -38,6 +43,7 @@ class MujocoStateRecorder:
             raise ValueError("record_fps must be finite and > 0")
 
         self.model = model
+        validate_camera_observation_contract(model)
         self.record_fps = float(record_fps)
         self.period = 1.0 / self.record_fps
         self.camera_name = str(camera_name)
@@ -148,6 +154,7 @@ class MujocoStateRecorder:
             "schema_version": 1,
             "scene_path": self.scene_identity,
             "camera_name": self.camera_name,
+            "camera_observations": dict(CAMERA_TO_OBSERVATION_KEY),
             "record_fps": self.record_fps,
             "mujoco_timestep": float(self.model.opt.timestep),
             "frame_count": self.frame_count,
@@ -195,6 +202,10 @@ class MujocoStateRecorder:
                 mocap_quat=mocap_quat,
                 scene_path=np.asarray(self.scene_identity),
                 camera_name=np.asarray(self.camera_name),
+                camera_names=np.asarray(tuple(CAMERA_TO_OBSERVATION_KEY)),
+                camera_observation_keys=np.asarray(
+                    tuple(CAMERA_TO_OBSERVATION_KEY.values())
+                ),
                 record_fps=np.asarray(self.record_fps, dtype=np.float64),
                 mujoco_timestep=np.asarray(self.model.opt.timestep, dtype=np.float64),
                 wall_start_time=np.asarray(metadata["wall_start_time"]),

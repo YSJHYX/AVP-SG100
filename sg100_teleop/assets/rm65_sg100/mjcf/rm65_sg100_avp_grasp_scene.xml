@@ -44,24 +44,36 @@
   <worldbody>
 
     <!--
-      Fixed VLA-style head camera centered on the table's front (+X) edge.
-      The front edge midpoint is [0.75, 0.15, 0], so the camera retains
-      y=0.15 and its image X axis is exactly parallel to that edge (world Y).
-      It sits 0.80 m beyond that edge at a 1.10 m head-camera height and
-      looks toward the manipulation-volume center [0.32, 0.15, 0.45].
-      The xyaxes values are computed from that camera-to-target vector with
-      world +Z as the preferred image-up direction; they are not hand-tuned
-      Euler angles.  This camera is world-fixed and has no physical effect.
+      Fixed VLA head/eye camera on the RM65 side of the workstation.  The
+      0.90 m eye height is computed relative to the z=0 tabletop and the
+      recorded manipulation volume, rather than chosen as a surveillance
+      height.  Its target [0.487893, -0.073461, 0.161779] is the mean of the
+      palm/object midpoints from all 975 recorded states with palm-object
+      distance below 0.20 m (approach, grasp, and manipulation states).
+
+      Camera and target share world Y exactly.  The look-at frame is built
+      from world up [0,0,1], yielding image X exactly parallel to the table's
+      Y edges and zero projected table roll.  A 50 degree vertical field of
+      view prioritizes objects, SG100, wrist/forearm, and useful arm context;
+      peripheral table and the base bottom may be cropped.  The camera is
+      world-fixed and has no physical effect.
     -->
     <camera
       name="workstation_front"
       mode="fixed"
-      pos="1.55 0.15 1.10"
-      xyaxes="0 1 0 -0.467227055 0 0.884137356"
-      fovy="55"
+      pos="-0.050000 -0.073461236 0.900000"
+      xyaxes="0.000000000 -1.000000000 0.000000000 0.808212783 0.000000000 0.588890565"
+      fovy="50"
     />
 
-    <!-- Single soft key light for deterministic offscreen recording. -->
+    <!--
+      Single soft key light for deterministic offscreen recording.  Shadow
+      casting stays disabled because the original SG100 CAD export contains
+      thousands of adjacent shells: MuJoCo shadow-map self-intersection on
+      those shells creates jagged false "missing triangle" bands even though
+      the visual surface is complete.  The opposite-side fill below retains
+      readable shape without that artifact.
+    -->
     <light
       name="workstation_key"
       directional="true"
@@ -69,8 +81,29 @@
       dir="0.26372844 0.33980396 -0.90276275"
       ambient="0.25 0.25 0.25"
       diffuse="0.75 0.75 0.75"
-      specular="0.20 0.20 0.20"
-      castshadow="true"
+      specular="0.10 0.10 0.10"
+      castshadow="false"
+    />
+
+    <!--
+      Shadowless fill from the opposite (+Y) side, roughly matching the key
+      light's intensity ratio of a standard three-point lighting setup.
+      Without it the ego-centric wrist camera looks at the finger row
+      against the key light's back side: during grasp approaches the
+      fingers render nearly black even though the head view is fine.  The
+      fill carries no castshadow, so it cannot add new hard shadows, and
+      its intensity is deliberately below the key light (no flashlight
+      hotspot, no over-exposure on either camera).
+    -->
+    <light
+      name="workstation_fill"
+      directional="true"
+      pos="0.40 1.60 1.80"
+      dir="-0.20 -0.65 -0.73"
+      ambient="0.20 0.20 0.20"
+      diffuse="0.32 0.32 0.32"
+      specular="0.05 0.05 0.05"
+      castshadow="false"
     />
 
     <!-- Q_TELEOP_READY TCP position -->

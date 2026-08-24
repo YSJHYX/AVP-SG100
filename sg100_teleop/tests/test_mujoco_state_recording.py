@@ -6,6 +6,7 @@ import os
 os.environ.setdefault("MUJOCO_GL", "egl")
 
 from pathlib import Path
+import json
 import tempfile
 
 import av
@@ -56,18 +57,18 @@ def test_camera_and_offscreen_render() -> None:
     assert camera_id >= 0
     assert model.nlight >= 1
 
-    target = np.array([0.32, 0.15, 0.45])
+    target = np.array([0.4878925, -0.073461236, 0.16177864])
     expected = target - data.cam_xpos[camera_id]
     expected /= np.linalg.norm(expected)
     camera_rotation = data.cam_xmat[camera_id].reshape(3, 3)
     optical_axis = -camera_rotation[:, 2]
     assert float(np.dot(optical_axis, expected)) > 1.0 - 1e-8
-    # Table front is the +X edge x=0.75, spanning world Y with midpoint
-    # y=0.15. The camera is centered on that midpoint and its image X axis
-    # is parallel to the edge rather than presenting an oblique side view.
-    assert abs(float(data.cam_xpos[camera_id, 1]) - 0.15) < 1e-12
-    assert abs(float(data.cam_xpos[camera_id, 0]) - 0.75 - 0.80) < 1e-12
-    assert abs(float(np.dot(camera_rotation[:, 0], [0.0, 1.0, 0.0]))) > 1.0 - 1e-8
+    # Robot-side eye camera: behind the near x=-0.15 table edge, centred on
+    # the table's Y midpoint and looking forward over the arm.
+    assert abs(float(data.cam_xpos[camera_id, 1]) + 0.073461236) < 1e-12
+    assert abs(float(data.cam_xpos[camera_id, 0]) + 0.05) < 1e-12
+    assert abs(float(data.cam_xpos[camera_id, 2]) - 0.90) < 1e-12
+    assert abs(float(np.dot(camera_rotation[:, 0], [0.0, 1.0, 0.0]))) > 0.99
 
     with mujoco.Renderer(model, height=720, width=1280) as renderer:
         renderer.update_scene(data, camera=CAMERA)
@@ -116,12 +117,27 @@ def test_30_fps_sampling_and_state_fidelity() -> None:
                 model.nmocap,
                 3,
             )
+            assert tuple(archive["camera_names"].tolist()) == (
+                "workstation_front",
+                "wrist_camera",
+            )
+            assert tuple(archive["camera_observation_keys"].tolist()) == (
+                "base_0_rgb",
+                "right_wrist_0_rgb",
+            )
             replay = mujoco.MjData(model)
             replay.qpos[:] = archive["qpos"][-1]
             replay.mocap_pos[:] = archive["mocap_pos"][-1]
             replay.mocap_quat[:] = archive["mocap_quat"][-1]
             replay.time = float(archive["timestamps"][-1])
             mujoco.mj_forward(model, replay)
+
+        assert recorder.metadata_path is not None
+        metadata = json.loads(recorder.metadata_path.read_text(encoding="utf-8"))
+        assert metadata["camera_observations"] == {
+            "workstation_front": "base_0_rgb",
+            "wrist_camera": "right_wrist_0_rgb",
+        }
 
         for name in watched:
             np.testing.assert_allclose(
