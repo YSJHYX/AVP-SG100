@@ -22,11 +22,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import tempfile
 from typing import Iterable, Sequence
+import zipfile
 
 
 PHYSICS_SCHEMA_PREFIXES = ("Physics", "Physx", "Newton", "Mjc")
 PHYSICS_PROPERTY_PREFIXES = ("physics:", "physx", "newton:", "mjc:")
-ROBOT_WORLD_GEOM_MARKERS = ("rm65", "sg100", "robot", "link", "visual")
+ROBOT_WORLD_GEOM_MARKERS = ("rm65", "sg100", "robot", "link")
+# This plane is the MuJoCo renderer's dark background treatment, not physical
+# workstation geometry.  RealityKit owns its environment/background, so
+# exporting the infinite plane would create a duplicate black floor in AVP.
+EXCLUDED_WORLD_VISUALS = frozenset({"workstation_floor_visual"})
+MATERIAL_PROTOTYPE_PREFIX = "Flattened_Prototype_"
 
 
 @dataclass
@@ -49,6 +55,7 @@ class ExportAudit:
     kept_renderables: list[VisualRecord]
     skipped_guides: list[str]
     skipped_physics_only: list[str]
+    excluded_world_renderables: list[str]
     world_static_renderables: list[str]
     ownership_collisions: dict[str, list[str]]
     nested_runtime_bodies: list[tuple[str, str]]
@@ -230,9 +237,22 @@ def _looks_like_robot_world_geom(name: str) -> bool:
 
 
 def _copy_materials(flat_layer, source_root, output_layer, destination_root, Sdf) -> None:
+    """Copy material bindings and their flattened instance prototypes.
+
+    ``UsdStage.Flatten`` keeps instanced converter materials as internal
+    references to root-level ``Flattened_Prototype_*`` specs.  Copying only
+    the Materials scope produces a package that opens with unresolved prim
+    warnings.  Keep those material-network prototypes at their authored root
+    paths so the internal references remain valid in the compatibility stage.
+    """
+
     source_materials = source_root.GetChild("Materials")
     if not source_materials:
         return
+    for root_prim in flat_layer.rootPrims:
+        if root_prim.name.startswith(MATERIAL_PROTOTYPE_PREFIX):
+            prototype_path = Sdf.Path.absoluteRootPath.AppendChild(root_prim.name)
+            Sdf.CopySpec(flat_layer, prototype_path, output_layer, prototype_path)
     destination_path = destination_root.GetPath().AppendChild("Materials")
     Sdf.CopySpec(flat_layer, source_materials.GetPath(), output_layer, destination_path)
 
@@ -251,6 +271,54 @@ def _package_stage(stage_path: Path, output_path: Path, UsdUtils, Sdf) -> None:
     finally:
         if temporary_package.exists():
             temporary_package.unlink()
+
+
+def validate_usdz_package(usdz_path: str | Path) -> dict[str, object]:
+    """Validate archive integrity and packaged USD asset references."""
+
+    *_prefix, Sdf, _Tf, Usd, _UsdGeom, _UsdPhysics, UsdUtils = _require_dependencies()
+    usdz_path = Path(usdz_path).expanduser().resolve()
+    if not usdz_path.is_file() or not zipfile.is_zipfile(usdz_path):
+        raise RuntimeError(f"Invalid USDZ archive: {usdz_path}")
+    with zipfile.ZipFile(usdz_path) as archive:
+        corrupt_member = archive.testzip()
+        members = archive.namelist()
+    if corrupt_member is not None:
+        raise RuntimeError(f"Corrupt USDZ member: {corrupt_member}")
+    if not members:
+        raise RuntimeError(f"Empty USDZ archive: {usdz_path}")
+    if any(Path(member).is_absolute() or ".." in Path(member).parts for member in members):
+        raise RuntimeError("USDZ contains an unsafe absolute/parent archive path")
+
+    stage = Usd.Stage.Open(str(usdz_path))
+    if stage is None or not stage.GetDefaultPrim():
+        raise RuntimeError(f"USDZ stage cannot be reopened: {usdz_path}")
+    _layers, resolved_assets, unresolved_assets = UsdUtils.ComputeAllDependencies(
+        Sdf.AssetPath(str(usdz_path))
+    )
+    if unresolved_assets:
+        raise RuntimeError(f"USDZ has unresolved assets: {unresolved_assets}")
+
+    absolute_authored_assets = []
+    for prim in stage.TraverseAll():
+        for attribute in prim.GetAttributes():
+            value = attribute.Get()
+            values = value if isinstance(value, (list, tuple)) else (value,)
+            for item in values:
+                if isinstance(item, Sdf.AssetPath) and Path(item.path).is_absolute():
+                    absolute_authored_assets.append(
+                        f"{prim.GetPath()}.{attribute.GetName()}={item.path}"
+                    )
+    if absolute_authored_assets:
+        raise RuntimeError(
+            "USDZ contains absolute authored assets: "
+            + ", ".join(absolute_authored_assets)
+        )
+    return {
+        "members": members,
+        "resolved_assets": [str(asset) for asset in resolved_assets],
+        "unresolved_assets": [],
+    }
 
 
 def audit_compat_stage(stage, body_names: Sequence[str]) -> tuple[dict[str, str], dict[str, list[str]], list[tuple[str, str]], list[str]]:
@@ -349,6 +417,7 @@ def export_compat_usdz(
         skipped_guides = []
         skipped_physics_only = []
         world_gprims = []
+        excluded_world_renderables = []
         for prim in Usd.PrimRange(source_geometry):
             if prim == source_geometry or not prim.IsA(UsdGeom.Gprim):
                 continue
@@ -357,7 +426,10 @@ def export_compat_usdz(
             if purpose != str(UsdGeom.Tokens.default_):
                 skipped_guides.append(str(prim.GetPath()))
             elif owner is None:
-                world_gprims.append(prim)
+                if prim.GetName() in EXCLUDED_WORLD_VISUALS:
+                    excluded_world_renderables.append(str(prim.GetPath()))
+                else:
+                    world_gprims.append(prim)
 
         for prim in source_stage.Traverse():
             if prim.IsA(UsdGeom.Gprim):
@@ -506,6 +578,7 @@ def export_compat_usdz(
             raise RuntimeError("Visual world transform changed during compatibility rewrite")
 
         _package_stage(compat_stage_path, output_path, UsdUtils, Sdf)
+        validate_usdz_package(output_path)
         audit = ExportAudit(
             xml_path=str(xml_path),
             intermediate_asset=str(intermediate_asset),
@@ -515,6 +588,7 @@ def export_compat_usdz(
             kept_renderables=visual_records,
             skipped_guides=skipped_guides,
             skipped_physics_only=skipped_physics_only,
+            excluded_world_renderables=excluded_world_renderables,
             world_static_renderables=[str(prim.GetPath()) for prim in world_gprims],
             ownership_collisions=ownership_collisions,
             nested_runtime_bodies=nested,

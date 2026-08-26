@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<mujoco model="RM65-SG100-avp-grasp-scene">
+
+  <!--
+    AVP teleop + grasp scene.
+
+    Derived from rm65_sg100_grasp_scene.xml. Differences:
+      * includes rm65_sg100_avp_grasp_robot.xml (collision robot with the
+        palm backstop and link-2 capsules baked in);
+      * gravity is ON (0 0 -9.81) so the water bottle rests on the table.
+
+    When this scene is driven by run_avp_arm_hand_sim.py, the arm needs a
+    one-line gravity-compensation feedforward in the physics loop (see plan);
+    this XML itself is gravity-correct and validated standalone.
+  -->
+
+  <!--
+    Main-file option wins over the included robot's option, so this sets
+    gravity for the whole model.
+  -->
+  <option
+    timestep="0.002"
+    integrator="implicitfast"
+    gravity="0 0 -9.81"
+    noslip_iterations="3"
+  />
+  <compiler angle="radian" />
+
+  <!-- Allow the recording renderer's default 1280x720 offscreen target. -->
+  <visual>
+    <global offwidth="1280" offheight="720" />
+    <!-- Headlight disabled: with the single overhead workstation light it
+         was the dominant over-exposure source on white RM65/SG100
+         surfaces (near-white fraction dropped from ~30% to ~3% without
+         it).  Keeping it off also keeps per-camera illumination
+         identical instead of view-dependent. -->
+    <headlight active="0" />
+  </visual>
+
+  <include file="rm65_sg100_avp_grasp_robot.xml"/>
+  <include file="rm65_sg100_avp_grasp_objects.xml"/>
+
+  <!--
+    Scene-level workspace reference markers.
+
+    These are visualization/debug sites only.
+    They do not participate in collision or dynamics.
+  -->
+  <worldbody>
+
+    <!--
+      Visual-only workstation floor.  Without it every camera that sees
+      past the grasp_table edges looks into the empty black world, which
+      dominated the head/wrist backgrounds with high-contrast void noise
+      (up to ~70% of head pixels).  The plane is matte desaturated
+      green-gray, deliberately darker than the tabletop so the workspace
+      surface stays unambiguous.  No collision, no dynamics.
+    -->
+    <geom
+      name="workstation_floor_visual"
+      type="plane"
+      size="0 0 0.001"
+      pos="0.30 0.15 -0.041"
+      rgba="0.16 0.19 0.17 1"
+      contype="0"
+      conaffinity="0"
+      group="1"
+    />
+
+    <!--
+      Fixed VLA head/eye camera on the RM65 side of the workstation.
+
+      v5 geometry: workspace-centred framing.  The target
+      [0.355, 0.045, 0.095] is a blend of the table centre and the
+      recorded interaction centroid, and the 1.03 m height with a 52
+      degree fovy places all four grasp_table corners inside the frame
+      with a 5.3% worst-case margin (near corners (923,682)/(194,667),
+      far corners (823,262)/(371,256) in the 1280x720 canvas), instead
+      of the old tight crop around the interaction spot.  The camera
+      sits 0.10 m to the arm centreline's left (+Y) for a slight
+      oblique front view that keeps the hand/object region clear of the
+      forearm silhouette.  The look-at frame is built from world up
+      [0,0,1]; the projected near-edge roll is 1.2 deg.  World-fixed,
+      no physical effect.
+    -->
+    <camera
+      name="workstation_front"
+      mode="fixed"
+      pos="-0.530000000 0.026500000 1.030000000"
+      xyaxes="0.020899389 -0.999781584 0.000000000 0.726025193 0.015176798 0.687500606"
+      fovy="52"
+    />
+
+    <!--
+      Single soft key light for deterministic offscreen recording.  Shadow
+      casting stays disabled because the original SG100 CAD export contains
+      thousands of adjacent shells: MuJoCo shadow-map self-intersection on
+      those shells creates jagged false "missing triangle" bands even though
+      the visual surface is complete.  The opposite-side fill below retains
+      readable shape without that artifact.
+    -->
+    <light
+      name="workstation_key"
+      directional="true"
+      pos="-0.20 -0.50 2.20"
+      dir="0.26372844 0.33980396 -0.90276275"
+      ambient="0.25 0.25 0.25"
+      diffuse="0.75 0.75 0.75"
+      specular="0.10 0.10 0.10"
+      castshadow="false"
+    />
+
+
+
+    <!-- Q_TELEOP_READY TCP position -->
+    <site
+      name="workspace_ready"
+      type="sphere"
+      pos="0.25048434 0.11727796 0.62550799"
+      size="0.006"
+      rgba="0 1 0 1"
+    />
+
+    <!-- radial = +60 mm -->
+    <site
+      name="workspace_outward_60"
+      type="sphere"
+      pos="0.30482326 0.14271970 0.62550799"
+      size="0.005"
+      rgba="1 0 0 1"
+    />
+
+    <!-- radial = -60 mm -->
+    <site
+      name="workspace_inward_60"
+      type="sphere"
+      pos="0.19614543 0.09183622 0.62550799"
+      size="0.005"
+      rgba="1 0 0 1"
+    />
+
+    <!-- lateral = +160 mm = LEFT -->
+    <site
+      name="workspace_left_160"
+      type="sphere"
+      pos="0.18263970 0.26218174 0.62550799"
+      size="0.005"
+      rgba="0 0 1 1"
+    />
+
+    <!-- lateral = -140 mm = RIGHT -->
+    <site
+      name="workspace_right_140"
+      type="sphere"
+      pos="0.30984840 -0.00951285 0.62550799"
+      size="0.005"
+      rgba="0 0 1 1"
+    />
+
+        <!-- ======================================================
+         Big table = robot mount + workspace surface
+
+         The robot base_link sits ON this table: the tabletop's top
+         face is exactly at z = 0, matching the base STL's bottom
+         (z = 0), and the water bottle rests on the same surface.
+
+         Axes are aligned with the world (no yaw).
+
+         Dimensions:
+           depth     = 900 mm   (x: -0.150 .. +0.750)
+           width     = 1000 mm  (y: -0.350 .. +0.650)
+           thickness = 40 mm
+
+         Collision (same masks as the old raised workspace table):
+           bottle <-> table ON
+           finger <-> table OFF (by intent; see validate script note)
+           arm    <-> table ON
+         ====================================================== -->
+
+    <body
+      name="grasp_table"
+      pos="0.30 0.15 -0.02"
+    >
+      <geom
+        name="grasp_table_collision"
+        type="box"
+        size="0.450 0.500 0.020"
+        rgba="0.28 0.36 0.30 1"
+        contype="4"
+        conaffinity="3"
+        friction="0.8 0.005 0.0001"
+        solref="0.005 1"
+      />
+    </body>
+
+        <!-- ======================================================
+         Upright primitive water bottle
+
+         Height   = 220 mm
+         Diameter = 40 mm
+
+         Initial placement:
+           105 mm OUTWARD from READY grasp reference.
+           Bottle bottom (z 0.00000) sits exactly on the tabletop
+           (z = 0), i.e. directly on the robot's mount table.
+
+         Free joint makes bottle a dynamic 6-DoF rigid body.
+
+         Collision:
+           finger <-> bottle ON
+           bottle <-> table ON
+         ====================================================== -->
+
+    <body
+      name="water_bottle"
+      pos="0.46101150 0.29368833 0.11000000"
+    >
+      <freejoint
+        name="water_bottle_free"
+      />
+
+      <geom
+        name="water_bottle_collision"
+        type="cylinder"
+        size="0.020 0.110"
+        mass="0.500"
+        rgba="0.2 0.6 1.0 0.75"
+        contype="2"
+        conaffinity="1"
+        friction="1.5 0.01 0.0001"
+        condim="4"
+        solref="0.005 1"
+      />
+
+      <!--
+          Intended side-grasp height.
+
+          World grasp-reference Z:
+            0.14944829
+
+          Bottle center Z:
+            0.11000000
+
+          Therefore local grasp Z:
+            +0.03944829
+      -->
+      <site
+        name="water_bottle_grasp_center"
+        type="sphere"
+        pos="0 0 0.03944829"
+        size="0.006"
+        rgba="1 0.4 0 1"
+      />
+
+      <!--
+          80 mm vertical grasp-critical band.
+      -->
+      <site
+        name="water_bottle_grasp_roi_low"
+        type="sphere"
+        pos="0 0 -0.00055171"
+        size="0.004"
+        rgba="1 1 0 1"
+      />
+
+      <site
+        name="water_bottle_grasp_roi_high"
+        type="sphere"
+        pos="0 0 0.07944829"
+        size="0.004"
+        rgba="1 1 0 1"
+      />
+
+    </body>
+
+  </worldbody>
+
+</mujoco>

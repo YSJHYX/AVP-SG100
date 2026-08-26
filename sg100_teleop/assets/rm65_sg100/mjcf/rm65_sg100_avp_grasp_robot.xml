@@ -130,76 +130,98 @@
                     rgba="0 1 0 0"
                   />
                   <!--
-                    Compact inward-looking wrist camera, based on the
-                    reference robot's short camera bar immediately proximal
-                    to the hand.  In the sg100_base_link frame the fingers
-                    point +Z, the forearm points -Z, the palm face points -Y,
-                    and +X is the thumb side.  The optical centre sits at the
-                    thumb/palm-side wrist corner (0.108, -0.015, -0.050).
-                    Relative to the v3 pose it extends 43 mm farther toward
-                    +X/thumb and 20 mm toward +Z/fingers, producing a 12.0 cm
-                    palm-origin radius.  This moves the wrist body away from
-                    image centre without reverting to a long little-finger-
-                    side outrigger.
+                    v7 medium wrist-camera bracket.  In sg100_base_link,
+                    +Z points toward the fingers, -Y is the outward palm
+                    normal, and +X is the thumb side.  The thin fixed bracket
+                    carries the optical centre to (0.016859,-0.160165,0), a
+                    16.1 cm palm-origin radius.  This is the user-approved
+                    initial v6 palm-normal viewing ray shortened by 29 mm:
+                    the camera remains clearly displaced from the hand while
+                    the bracket becomes medium length instead of a long pole.
 
-                    The invisible wrist_camera_interaction_target explicitly
-                    defines the local hand-object ROI at
-                    (0.020, -0.045, 0.130): 13 cm forward along the fingers
-                    and 4.5 cm into the palm/contact direction.  The local
-                    view ray (-0.4344, -0.1481, +0.8885) points from the
-                    optical centre to that target.  An 80 degree field of
-                    view increases interaction-region pixel density while
-                    retaining the inner palm, opposing thumb, curled finger
-                    row, target object, and contact region.  xyaxes are
-                    computed from that ray with +Z as preferred image-up.
+                    The target is derived from recorded FK: at the approach
+                    frame, the midpoint between the object's palm-local
+                    centre and the four distal-link centroid defines the open
+                    grasp centre; that point is blended 60/40 with the
+                    physical palm_collision centre.  The resulting
+                    (0.0172354,-0.0546254,0.0980463) target is not tied to one
+                    finger and projects exactly to image centre.  The local
+                    view ray is (+0.00261,+0.73263,+0.68062), looking from
+                    the palm-normal extension into the palm cavity and
+                    distally toward the grasp volume, not at the wrist origin
+                    or one selected finger.
 
-                    The black box is the visible camera body.  The slightly
-                    larger invisible box is its physical envelope.  Its
-                    contact class (contype=1, conaffinity=6) collides with
-                    both table geoms (4/3) and grasp objects (2/1), but not
-                    with SG100 finger pads (1/2) or RM65 link geoms (8/4), so
-                    the fixed wrist mount cannot create artificial self-
-                    contacts.  mass=0 preserves the calibrated hand inertia;
-                    the geom still participates fully in collision.
+                    wrist_camera_mount_base and wrist_camera_extension are
+                    visual-only fixed hardware (no joint, mass, or contact).
+                    The camera-head collision package moves with the optical
+                    head at the bracket end.  Its unchanged contact class
+                    collides with table/objects but not hand/arm self geoms;
+                    mass=0 preserves the calibrated inertia contract.
                   -->
                   <site
                     name="wrist_camera_interaction_target"
                     type="sphere"
-                    pos="0.020 -0.045 0.130"
+                    pos="0.017235401 -0.054625429 0.098046320"
                     size="0.002"
                     rgba="1 0 1 0"
                   />
-                  <geom
-                    name="wrist_camera_visual"
-                    type="box"
-                    pos="0.115818624 -0.012334560 -0.065992640"
-                    size="0.035 0.014 0.018"
-                    xyaxes="-0.322673928 0.946510188 0.000000000 0.840955390 0.286689338 0.458915303"
-                    rgba="0.045 0.055 0.070 1"
-                    group="1"
-                    contype="0"
-                    conaffinity="0"
-                    mass="0"
-                  />
-                  <geom
-                    name="wrist_camera_collision"
-                    type="box"
-                    pos="0.115818624 -0.012334560 -0.065992640"
-                    size="0.037 0.016 0.020"
-                    xyaxes="-0.322673928 0.946510188 0.000000000 0.840955390 0.286689338 0.458915303"
-                    contype="1"
-                    conaffinity="6"
-                    friction="0.8 0.01 0.001"
-                    group="3"
-                    rgba="0 0.5 1 0"
-                    mass="0"
-                  />
-                  <camera
-                    name="wrist_camera"
-                    pos="0.108 -0.015 -0.050"
-                    xyaxes="-0.322673928 0.946510188 0.000000000 0.840955390 0.286689338 0.458915303"
-                    fovy="80"
-                  />
+                  <body name="wrist_camera_mount_base">
+                    <geom
+                      name="wrist_camera_mount_base_visual"
+                      type="box"
+                      pos="0 -0.038 -0.020"
+                      size="0.025 0.012 0.010"
+                      rgba="0.045 0.050 0.060 1"
+                      group="1"
+                      contype="0"
+                      conaffinity="0"
+                      mass="0"
+                    />
+                    <geom
+                      name="wrist_camera_extension_visual"
+                      type="capsule"
+                      fromto="0 -0.045 -0.020 0.016859 -0.160165 0.000"
+                      size="0.0045"
+                      rgba="0.100 0.110 0.125 1"
+                      group="1"
+                      contype="0"
+                      conaffinity="0"
+                      mass="0"
+                    />
+                    <body name="wrist_camera_head" pos="0.016859 -0.160165 0.000">
+                      <geom
+                        name="wrist_camera_visual"
+                        type="box"
+                        pos="-0.000052258 -0.014652684 -0.013612352"
+                        size="0.035 0.014 0.018"
+                        xyaxes="0.999993640 -0.003566422 0.000000000 -0.002427369 -0.680613254 0.732638865"
+                        rgba="0.080 0.090 0.105 1"
+                        group="1"
+                        contype="0"
+                        conaffinity="0"
+                        mass="0"
+                      />
+                      <geom
+                        name="wrist_camera_collision"
+                        type="box"
+                        pos="-0.000052258 -0.014652684 -0.013612352"
+                        size="0.037 0.016 0.020"
+                        xyaxes="0.999993640 -0.003566422 0.000000000 -0.002427369 -0.680613254 0.732638865"
+                        contype="1"
+                        conaffinity="6"
+                        friction="0.8 0.01 0.001"
+                        group="3"
+                        rgba="0 0.5 1 0"
+                        mass="0"
+                      />
+                      <camera
+                        name="wrist_camera"
+                        pos="0 0 0"
+                        xyaxes="0.999993640 -0.003566422 0.000000000 -0.002427369 -0.680613254 0.732638865"
+                        fovy="75"
+                      />
+                    </body>
+                  </body>
                   <body name="thumb_link1" pos="0.0315 -0.0318581 0.0384">
                     <inertial pos="0.0120772 0.00239257 0.0136728" quat="0.896107 -0.329025 0.284087 -0.0896036" mass="0.0113388" diaginertia="1.6811e-06 1.39718e-06 7.75511e-07" />
                     <joint name="thumb_j1" pos="0 0 0" axis="0 0 -1" range="0 2.182" damping="0.002" armature="0.001" />

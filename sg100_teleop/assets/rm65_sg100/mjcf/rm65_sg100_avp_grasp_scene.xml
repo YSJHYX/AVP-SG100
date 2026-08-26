@@ -30,6 +30,10 @@
   <!-- Allow the recording renderer's default 1280x720 offscreen target. -->
   <visual>
     <global offwidth="1280" offheight="720" />
+    <!-- Headlight disabled: it was the dominant over-exposure source on
+         white RM65/SG100 surfaces.  Keeping it off also makes illumination
+         identical between cameras instead of view-dependent. -->
+    <headlight active="0" />
   </visual>
 
   <include file="rm65_sg100_avp_grasp_robot.xml"/>
@@ -44,24 +48,37 @@
   <worldbody>
 
     <!--
-      Fixed VLA head/eye camera on the RM65 side of the workstation.  The
-      0.90 m eye height is computed relative to the z=0 tabletop and the
-      recorded manipulation volume, rather than chosen as a surveillance
-      height.  Its target [0.487893, -0.073461, 0.161779] is the mean of the
-      palm/object midpoints from all 975 recorded states with palm-object
-      distance below 0.20 m (approach, grasp, and manipulation states).
+      Visual-only neutral charcoal workstation floor.  It supplies a stable,
+      low-information background where a camera sees past the table, while
+      remaining deliberately much darker than the matte neutral tabletop.
+      No collision, no dynamics.
+    -->
+    <geom
+      name="workstation_floor_visual"
+      type="plane"
+      size="0 0 0.001"
+      pos="0.30 0.15 -0.041"
+      rgba="0.075 0.080 0.085 1"
+      contype="0"
+      conaffinity="0"
+      group="1"
+    />
 
-      Camera and target share world Y exactly.  The look-at frame is built
-      from world up [0,0,1], yielding image X exactly parallel to the table's
-      Y edges and zero projected table roll.  A 50 degree vertical field of
-      view prioritizes objects, SG100, wrist/forearm, and useful arm context;
-      peripheral table and the base bottom may be cropped.  The camera is
-      world-fixed and has no physical effect.
+    <!--
+      Fixed VLA head/eye camera on the RM65 side of the workstation.
+
+      v7 deliberately restores the frozen v4 base-side, over-the-arm
+      geometry.  Its target is the recorded active interaction centroid,
+      not the table centre or RM65 pedestal.  The lower table corners and
+      pedestal may remain outside the image: pixel density is reserved for
+      task objects, SG100, wrist/forearm, and the manipulation path.
+      Camera and target share world Y, so world-up look-at construction gives
+      zero table roll.  World-fixed, no physical effect.
     -->
     <camera
       name="workstation_front"
       mode="fixed"
-      pos="-0.050000 -0.073461236 0.900000"
+      pos="-0.050000000 -0.073461236 0.900000000"
       xyaxes="0.000000000 -1.000000000 0.000000000 0.808212783 0.000000000 0.588890565"
       fovy="50"
     />
@@ -71,38 +88,17 @@
       casting stays disabled because the original SG100 CAD export contains
       thousands of adjacent shells: MuJoCo shadow-map self-intersection on
       those shells creates jagged false "missing triangle" bands even though
-      the visual surface is complete.  The opposite-side fill below retains
-      readable shape without that artifact.
+      the visual surface is complete.  A modest ambient component on this
+      same light retains readable shape without adding another light source.
     -->
     <light
       name="workstation_key"
       directional="true"
       pos="-0.20 -0.50 2.20"
       dir="0.26372844 0.33980396 -0.90276275"
-      ambient="0.25 0.25 0.25"
-      diffuse="0.75 0.75 0.75"
+      ambient="0.35 0.35 0.35"
+      diffuse="0.65 0.65 0.65"
       specular="0.10 0.10 0.10"
-      castshadow="false"
-    />
-
-    <!--
-      Shadowless fill from the opposite (+Y) side, roughly matching the key
-      light's intensity ratio of a standard three-point lighting setup.
-      Without it the ego-centric wrist camera looks at the finger row
-      against the key light's back side: during grasp approaches the
-      fingers render nearly black even though the head view is fine.  The
-      fill carries no castshadow, so it cannot add new hard shadows, and
-      its intensity is deliberately below the key light (no flashlight
-      hotspot, no over-exposure on either camera).
-    -->
-    <light
-      name="workstation_fill"
-      directional="true"
-      pos="0.40 1.60 1.80"
-      dir="-0.20 -0.65 -0.73"
-      ambient="0.20 0.20 0.20"
-      diffuse="0.32 0.32 0.32"
-      specular="0.05 0.05 0.05"
       castshadow="false"
     />
 
@@ -179,7 +175,7 @@
         name="grasp_table_collision"
         type="box"
         size="0.450 0.500 0.020"
-        rgba="0.55 0.55 0.55 1"
+        rgba="0.42 0.43 0.44 1"
         contype="4"
         conaffinity="3"
         friction="0.8 0.005 0.0001"
