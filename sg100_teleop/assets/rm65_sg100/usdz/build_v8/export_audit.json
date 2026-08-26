@@ -1,0 +1,643 @@
+{
+  "body_paths": {
+    "base_link": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link",
+    "drop_bin": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin",
+    "grasp_table": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/grasp_table",
+    "index_link1": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/index_link1",
+    "index_link2": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/index_link2",
+    "index_link3": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/index_link3",
+    "link_1": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_1",
+    "link_2": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_2",
+    "link_3": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_3",
+    "link_4": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_4",
+    "link_5": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_5",
+    "link_6": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_6",
+    "little_linik3": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/little_linik3",
+    "little_link1": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/little_link1",
+    "little_llink2": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/little_llink2",
+    "middle_link1": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/middle_link1",
+    "middle_link2": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/middle_link2",
+    "obj_apple": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_apple",
+    "obj_coke": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_coke",
+    "obj_mug": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug",
+    "sg100_base_link": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/sg100_base_link",
+    "thumb_link1": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/thumb_link1",
+    "thumb_link2": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/thumb_link2",
+    "thumb_link3": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/thumb_link3"
+  },
+  "excluded_world_renderables": [
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/workstation_floor_visual"
+  ],
+  "intermediate_asset": "/home/heymandex2025/VisionProTeleop/sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v8_compat_intermediate_6jasav62/RM65-SG100-avp-grasp-scene.usda",
+  "kept_renderables": [
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "base_link",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 3.7211707326623156e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/rm65_visual_0",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/rm65_visual_0",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "link_1",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 3.821937780146278e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_1/rm65_visual_1",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/rm65_visual_1",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "link_2",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 7.593569439912073e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_2/rm65_visual_2",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/rm65_visual_2",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "link_3",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 3.922610862863718e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_3/rm65_visual_3",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/rm65_visual_3",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "link_4",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 2.94007482248837e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_4/rm65_visual_4",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/rm65_visual_4",
+      "transform_error": 1.1102230246251565e-16
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "link_5",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 3.740219618828672e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_5/rm65_visual_5",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/rm65_visual_5",
+      "transform_error": 1.1102230246251565e-16
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "link_6",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.8417350630683949e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/link_6/rm65_visual_6",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/rm65_visual_6",
+      "transform_error": 1.6940658945086007e-21
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "sg100_base_link",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 2.516520172801684e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/sg100_base_link/sg100_base_link_visual_part1",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/sg100_base_link_visual_part1",
+      "transform_error": 1.6940658945086007e-21
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "sg100_base_link",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 2.12792732739997e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/sg100_base_link/sg100_base_link_visual_part2",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/sg100_base_link_visual_part2",
+      "transform_error": 1.6940658945086007e-21
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "sg100_base_link",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 3.6430938682441294e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/sg100_base_link/sg100_base_link_visual_part3",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/sg100_base_link_visual_part3",
+      "transform_error": 1.6940658945086007e-21
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "thumb_link1",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 9.047705362696945e-10,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/thumb_link1/thumb_link1_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_link1_visual",
+      "transform_error": 1.6940658945086007e-21
+    },
+    {
+      "bbox_extent_ratio": [
+        0.9999999999999998,
+        1.0,
+        1.0
+      ],
+      "body": "thumb_link2",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.7067512871754564e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/thumb_link2/thumb_link2_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_link2/thumb_link2_visual",
+      "transform_error": 6.938893903907228e-18
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "thumb_link3",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.531275474475624e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/thumb_link3/thumb_link3_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_link2/thumb_link3/thumb_link3_visual",
+      "transform_error": 6.938893903907228e-18
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "index_link1",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.0518473453347e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/index_link1/index_link1_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_link1_visual",
+      "transform_error": 1.1102230246251565e-16
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0000000000000016
+      ],
+      "body": "index_link2",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.873591230078242e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/index_link2/index_link2_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_link2/index_link2_visual",
+      "transform_error": 3.3306690738754696e-16
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        0.9999999999999998,
+        1.0
+      ],
+      "body": "index_link3",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.82033038642615e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/index_link3/index_link3_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_link2/index_link3/index_link3_visual",
+      "transform_error": 6.938893903907228e-18
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "middle_link1",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.8735374970185736e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/middle_link1/middle_link1_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/middle_link1/middle_link1_visual",
+      "transform_error": 1.1102230246251565e-16
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "middle_link2",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.8204179483283234e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/middle_link2/middle_link2_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/middle_link1/middle_link2/middle_link2_visual",
+      "transform_error": 1.1102230246251565e-16
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "little_link1",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.0728953246663675e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/little_link1/little_link1_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_link1_visual",
+      "transform_error": 2.220446049250313e-16
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "little_llink2",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.873572609556451e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/little_llink2/little_llink2_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_llink2/little_llink2_visual",
+      "transform_error": 1.6940658945086007e-21
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "little_linik3",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.820577771871612e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/little_linik3/little_linik3_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_llink2/little_linik3/little_linik3_visual",
+      "transform_error": 1.3877787807814457e-17
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "obj_coke",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 1.89670795605959e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_coke/obj_coke_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_coke/obj_coke_visual",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "obj_apple",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 2.086915668053635e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_apple/obj_apple_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_apple/obj_apple_visual",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0809401714124531,
+        1.144686463254906,
+        1.0000000002894318
+      ],
+      "body": "obj_mug",
+      "compiled_mesh_correction": true,
+      "compiled_mesh_fit_error": 3.6435484282448805e-09,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_visual",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_visual",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "drop_bin",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 0.0,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_bottom",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_bottom",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "drop_bin",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 0.0,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_pX",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_pX",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "drop_bin",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 0.0,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_nX",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_nX",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "drop_bin",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 0.0,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_pY",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_pY",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "drop_bin",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 0.0,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_nY",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/wood_crate_wall_nY",
+      "transform_error": 0.0
+    },
+    {
+      "bbox_extent_ratio": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "body": "grasp_table",
+      "compiled_mesh_correction": false,
+      "compiled_mesh_fit_error": 0.0,
+      "destination_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/grasp_table/grasp_table_collision",
+      "purpose": "default",
+      "source_path": "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/grasp_table/grasp_table_collision",
+      "transform_error": 0.0
+    }
+  ],
+  "nested_runtime_bodies": [],
+  "output_path": "/home/heymandex2025/VisionProTeleop/sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v8_compat.usdz",
+  "ownership_collisions": {},
+  "physics_prims": [],
+  "runtime_body_names": [
+    "base_link",
+    "link_1",
+    "link_2",
+    "link_3",
+    "link_4",
+    "link_5",
+    "link_6",
+    "sg100_base_link",
+    "thumb_link1",
+    "thumb_link2",
+    "thumb_link3",
+    "index_link1",
+    "index_link2",
+    "index_link3",
+    "middle_link1",
+    "middle_link2",
+    "little_link1",
+    "little_llink2",
+    "little_linik3",
+    "obj_coke",
+    "obj_apple",
+    "obj_mug",
+    "drop_bin",
+    "grasp_table"
+  ],
+  "skipped_guides": [
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/palm_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_link2/thumb_link2_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_link2/thumb_link3/thumb_link3_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_link2/index_link2_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_link2/index_link3/index_link3_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/middle_link1/middle_link2/middle_link2_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_llink2/little_llink2_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_llink2/little_linik3/little_linik3_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_coke/obj_coke_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_apple/obj_apple_collision",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_0",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_1",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_2",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_3",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_4",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_5",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_6",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_7",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_8",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_9",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_10",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_11",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_12",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_13",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_14",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_15",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_16",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_17",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_18",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_19",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_20",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_21",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_22",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_23",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_24",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_25",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_26",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_27",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_28",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_29",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_30",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/obj_mug/mug_coll_31"
+  ],
+  "skipped_physics_only": [
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_link2/thumb_link3/thumb_j3",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_link2/thumb_j2",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/thumb_link1/thumb_j1",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_link2/index_link3/index_j3",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_link2/index_j2",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/index_link1/index_j1",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/middle_link1/middle_link2/middle_j2",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/middle_link1/middle_j1",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_llink2/little_linik3/little_j3",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_llink2/little_j2",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/little_link1/little_j1",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/sg100_base_link/PhysicsFixedJoint",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/link_6/joint_6",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/link_5/joint_5",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/link_4/joint_4",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/link_3/joint_3",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/link_2/joint_2",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/link_1/joint_1",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/base_link/PhysicsFixedJoint",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/drop_bin/PhysicsFixedJoint",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Geometry/grasp_table/PhysicsFixedJoint",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/PhysicsMaterial",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/PhysicsMaterial_1",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/PhysicsMaterial_2",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/PhysicsMaterial_3",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/PhysicsMaterial_4",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/joint_1_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/joint_2_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/joint_3_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/joint_4_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/joint_5_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/joint_6_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/thumb_j1_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/thumb_j2_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/thumb_j3_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/index_j1_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/index_j2_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/index_j3_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/middle_j1_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/middle_j2_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/little_j1_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/little_j2_pos",
+    "/tn__RM65SG100avpgraspscene_lW0AEK/Physics/little_j3_pos",
+    "/PhysicsScene"
+  ],
+  "world_static_renderables": [],
+  "xml_path": "/home/heymandex2025/VisionProTeleop/sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_avp_grasp_scene.xml"
+}
+Generated: /home/heymandex2025/VisionProTeleop/sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v8_compat.usdz
+Runtime bodies: 24
+Runtime body targets: 24
+Visual leaves: 30
+Ownership collisions: 0
+Nested runtime bodies: 0
+World static renderables: 0
+tn__RM65SG100avpgraspscene_lW0AEK [Xform]
+  Geometry [Scope]
+    base_link [Xform]
+      rm65_visual_0 [Mesh]
+    link_1 [Xform]
+      rm65_visual_1 [Mesh]
+    link_2 [Xform]
+      rm65_visual_2 [Mesh]
+    link_3 [Xform]
+      rm65_visual_3 [Mesh]
+    link_4 [Xform]
+      rm65_visual_4 [Mesh]
+    link_5 [Xform]
+      rm65_visual_5 [Mesh]
+    link_6 [Xform]
+      rm65_visual_6 [Mesh]
+    sg100_base_link [Xform]
+      sg100_base_link_visual_part1 [Mesh]
+      sg100_base_link_visual_part2 [Mesh]
+      sg100_base_link_visual_part3 [Mesh]
+    thumb_link1 [Xform]
+      thumb_link1_visual [Mesh]
+    thumb_link2 [Xform]
+      thumb_link2_visual [Mesh]
+    thumb_link3 [Xform]
+      thumb_link3_visual [Mesh]
+    index_link1 [Xform]
+      index_link1_visual [Mesh]
+    index_link2 [Xform]
+      index_link2_visual [Mesh]
+    index_link3 [Xform]
+      index_link3_visual [Mesh]
+    middle_link1 [Xform]
+      middle_link1_visual [Mesh]
+    middle_link2 [Xform]
+      middle_link2_visual [Mesh]
+    little_link1 [Xform]
+      little_link1_visual [Mesh]
+    little_llink2 [Xform]
+      little_llink2_visual [Mesh]
+    little_linik3 [Xform]
+      little_linik3_visual [Mesh]
+    obj_coke [Xform]
+      obj_coke_visual [Mesh]
+    obj_apple [Xform]
+      obj_apple_visual [Mesh]
+    obj_mug [Xform]
+      mug_visual [Mesh]
+    drop_bin [Xform]
+      wood_crate_bottom [Cube]
+      wood_crate_wall_pX [Cube]
+      wood_crate_wall_nX [Cube]
+      wood_crate_wall_pY [Cube]
+      wood_crate_wall_nY [Cube]
+    grasp_table [Xform]
+      grasp_table_collision [Cube]
+  Materials [Scope]
+    coke_mat [Material]
+    apple_mat [Material]
+    mug_mat [Material]

@@ -1,0 +1,70 @@
+#usda 1.0
+(
+    customLayerData = {
+        string creator = "MuJoCo USD Converter v0.5.0"
+    }
+    defaultPrim = "tn__RM65SG100avpgraspscene_lW0AEK"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "tn__RM65SG100avpgraspscene_lW0AEK" (
+    displayName = "RM65-SG100-avp-grasp-scene"
+)
+{
+    def Scope "Materials"
+    {
+        def Material "coke_mat" (
+            prepend references = @./MaterialsLibrary.usdc@</Materials/coke_mat>
+        )
+        {
+        }
+
+        def Material "apple_mat" (
+            prepend references = @./MaterialsLibrary.usdc@</Materials/apple_mat>
+        )
+        {
+        }
+
+        def Material "mug_mat" (
+            prepend references = @./MaterialsLibrary.usdc@</Materials/mug_mat>
+        )
+        {
+        }
+    }
+
+    over "Geometry"
+    {
+        over "obj_coke"
+        {
+            over "obj_coke_visual" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                rel material:binding = </tn__RM65SG100avpgraspscene_lW0AEK/Materials/coke_mat>
+            }
+        }
+
+        over "obj_apple"
+        {
+            over "obj_apple_visual" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                rel material:binding = </tn__RM65SG100avpgraspscene_lW0AEK/Materials/apple_mat>
+            }
+        }
+
+        over "obj_mug"
+        {
+            over "mug_visual" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                rel material:binding = </tn__RM65SG100avpgraspscene_lW0AEK/Materials/mug_mat>
+            }
+        }
+    }
+}
+
