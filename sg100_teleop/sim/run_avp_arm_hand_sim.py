@@ -308,6 +308,15 @@ GRASP_PALM_OFFSET = np.array(
 # 0.128 m; 0.25 m leaves a clear pre-grasp standoff.
 STARTUP_PALM_TO_BOTTLE_M = 0.25
 
+# The v8 multi-object scene removed the water_bottle body.  When it is
+# absent, anchor the pre-grasp startup pose to this historical bottle
+# placement (authored in the pre-refactor scene, commit fc4991e) so the
+# startup configuration matches the pre-refactor behaviour exactly.
+STARTUP_ANCHOR_FALLBACK_M = np.array(
+    [0.46101150, 0.29368833, 0.11000000],
+    dtype=np.float64,
+)
+
 _IK_SEED_OFFSETS = (
     (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
     (0.0, 0.0, 0.0, 0.0, 0.0, np.pi),
@@ -336,8 +345,10 @@ def _approach_rotation(approach):
 def compute_startup_arm_q(model, data, ik_solver):
     """Pre-grasp startup pose near the scene's water bottle.
 
-    Returns the best-margin converged IK solution, or None when the
-    bottle body is missing or no seed converges.
+    Returns the best-margin converged IK solution, or None when no
+    seed converges.  Without a water_bottle body (v8 multi-object
+    scene) the anchor falls back to the historical bottle placement
+    so the startup pose stays aligned with the pre-refactor scene.
     """
 
     bottle_id = mujoco.mj_name2id(
@@ -347,12 +358,12 @@ def compute_startup_arm_q(model, data, ik_solver):
     )
 
     if bottle_id < 0:
-        return None
-
-    # A fresh MjData still holds the XML initial state, so this reads
-    # the bottle's authored placement.
-    mujoco.mj_forward(model, data)
-    bottle = data.xpos[bottle_id].copy()
+        bottle = STARTUP_ANCHOR_FALLBACK_M.copy()
+    else:
+        # A fresh MjData still holds the XML initial state, so this
+        # reads the bottle's authored placement.
+        mujoco.mj_forward(model, data)
+        bottle = data.xpos[bottle_id].copy()
 
     # Approach direction: base -> teleop-ready TCP (horizontal), the
     # same convention as run_grasp_demo.py.
