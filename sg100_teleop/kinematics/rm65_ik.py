@@ -494,6 +494,7 @@ class RM65IKSolver:
         target_position: np.ndarray,
         *,
         best_effort: bool = False,
+        posture_reference: np.ndarray | None = None,
     ):
         """Damped-least-squares 3D position task with null-space
         posture regularization toward the seed.
@@ -519,6 +520,22 @@ class RM65IKSolver:
         )
 
         q = q_seed.copy()
+
+        # Null-space posture target: a fixed reference when provided
+        # (a cross-frame anchor so the task redundancy cannot drift),
+        # otherwise the per-frame seed (legacy self-referential
+        # behaviour).
+        if posture_reference is None:
+            posture_target = q
+        else:
+            posture_target = np.asarray(
+                posture_reference,
+                dtype=np.float64,
+            )
+            if posture_target.shape != (6,):
+                raise ValueError(
+                    "posture_reference must have shape (6,)"
+                )
 
         # Adaptive (Levenberg-Marquardt style) damping: strong damping
         # keeps large steps stable; once the error decreases steadily
@@ -549,14 +566,16 @@ class RM65IKSolver:
 
             dq_task = J.T @ np.linalg.solve(A, e)
 
-            # Weak null-space posture preference toward the seed:
+            # Weak null-space posture preference toward the reference:
             # resolves the 6-DoF redundancy for continuity without
             # competing with the position task.
             J_pinv = J.T @ np.linalg.inv(A)
 
             N = np.eye(6) - J_pinv @ J
 
-            dq_null = POSITION_ONLY_POSTURE_GAIN * (q_seed - q)
+            dq_null = POSITION_ONLY_POSTURE_GAIN * (
+                posture_target - q
+            )
 
             dq = dq_task + N @ dq_null
 
@@ -639,6 +658,7 @@ class RM65IKSolver:
         *,
         axis_weight: float,
         axis_tolerance_rad: float,
+        posture_reference: np.ndarray | None = None,
     ):
         """DLS position + TCP-axis IK with roll left unconstrained."""
 
@@ -663,6 +683,20 @@ class RM65IKSolver:
             upper,
         )
         q = q_seed.copy()
+
+        # Same posture-anchor semantics as the position-only solve.
+        if posture_reference is None:
+            posture_target = q
+        else:
+            posture_target = np.asarray(
+                posture_reference,
+                dtype=np.float64,
+            )
+            if posture_target.shape != (6,):
+                raise ValueError(
+                    "posture_reference must have shape (6,)"
+                )
+
         damping = AXIS_IK_DAMPING
         previous_cost = float("inf")
         iteration = 0
@@ -701,7 +735,9 @@ class RM65IKSolver:
             J_pinv = J_task.T @ np.linalg.inv(regularized)
             dq_task = J_pinv @ task_error
             null_projector = np.eye(6) - J_pinv @ J_task
-            dq_null = AXIS_IK_POSTURE_GAIN * (q_seed - q)
+            dq_null = AXIS_IK_POSTURE_GAIN * (
+                posture_target - q
+            )
             dq = dq_task + null_projector @ dq_null
             dq = np.clip(
                 dq,
@@ -776,6 +812,7 @@ class RM65IKSolver:
         axis_weight: float = AXIS_IK_WEIGHT,
         axis_tolerance_rad: float = AXIS_IK_TOLERANCE_RAD,
         best_effort: bool = False,
+        posture_reference: np.ndarray | None = None,
     ):
         """
         position_only=False (default):
@@ -797,6 +834,12 @@ class RM65IKSolver:
             rank-5 position + selected TCP-axis DLS task.  Rotation about
             the selected TCP axis is unconstrained.  ``target_rotation`` is
             ignored, while ``tcp_axis_local`` defaults to local +Z.
+
+        posture_reference:
+            Fixed joint-space reference (6,) anchoring the null-space
+            posture term of the iterative solves, so the redundant DoFs
+            cannot drift frame to frame.  None keeps the legacy
+            per-frame-seed behaviour.
         """
 
         q = np.asarray(q_seed, dtype=np.float64).copy()
@@ -817,6 +860,7 @@ class RM65IKSolver:
                 q,
                 target_position,
                 best_effort=best_effort,
+                posture_reference=posture_reference,
             )
 
         if target_axis is not None:
@@ -829,6 +873,7 @@ class RM65IKSolver:
                 tcp_axis_local,
                 axis_weight=axis_weight,
                 axis_tolerance_rad=axis_tolerance_rad,
+                posture_reference=posture_reference,
             )
 
         if target_rotation is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import time
 from pathlib import Path
 
@@ -88,8 +89,88 @@ FOREARM_DIRECTION_EPSILON_M = 1e-6
 IK_ACCEPT_JUMP_LOG_RAD = 0.2
 
 # Per-frame joint-step clamp applied to accepted best-effort fallback
-# solutions so a single solve can never produce a visible jump.
-IK_FALLBACK_MAX_STEP_RAD = 0.1
+# solutions so a single solve can never produce a visible jump.  0.05
+# rad per tracking frame aligns the fallback ceiling with the physics-
+# rate arm command filter (~3 rad/s) so boundary following cannot
+# out-slew the resume catch-up.
+IK_FALLBACK_MAX_STEP_RAD = 0.05
+
+# ============================================================
+# Wrist-roll (position + forearm roll) teleoperation mode
+#
+# Task decomposition ported from the Quest teleop
+# (teleoperate_rm65_sg100.py): TCP translation drives a
+# best-effort position task, and the forearm roll extracted from
+# the AVP wrist rotation drives joint 6 directly.  Wrist pitch and
+# yaw deliberately do not feed the arm.  joint 6's position
+# Jacobian column is exactly zero because sg100_base_link sits on
+# the joint-6 axis, so the roll overwrite cannot disturb the
+# position solution.
+# ============================================================
+
+WRIST_ROLL_MAX_RAD = np.radians(90.0)
+
+# Roll gain and direction.  Flip the sign if joint 6 turns against
+# the operator's wrist during the one-time visual validation.
+WRIST_ROLL_SCALE = 1.0
+WRIST_ROLL_SIGN = 1.0
+
+# One-pole low-pass on the roll scalar (seconds).
+WRIST_ROLL_FILTER_TAU = 0.06
+
+# Fallback roll axis (wrist-local) when the calibration frame has
+# no valid 27-joint forearm direction.
+WRIST_ROLL_FALLBACK_AXIS_LOCAL = np.array(
+    [0.0, 0.0, 1.0],
+    dtype=np.float64,
+)
+
+
+def _wrap_to_pi(angle: float) -> float:
+    """Wrap one angle to [-pi, pi]."""
+    return math.atan2(
+        math.sin(angle),
+        math.cos(angle),
+    )
+
+
+def extract_wrist_roll(
+    rotation: np.ndarray,
+    axis: np.ndarray,
+) -> float:
+    """Extract the signed twist (roll) of ``rotation`` about ``axis``.
+
+    Swing-twist decomposition ported from the Quest teleop: both
+    arguments are expressed in the same frame, and the returned
+    angle is the rotation's twist component about ``axis``.  q and
+    -q encode the same rotation; keeping w non-negative selects the
+    shortest signed twist and avoids a discontinuity at ordinary
+    poses.
+    """
+    axis = np.asarray(axis, dtype=np.float64)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis.shape != (3,) or axis_norm < 1e-12:
+        raise ValueError("roll axis must be a non-zero 3-vector")
+
+    quaternion = np.empty(4)
+    mujoco.mju_mat2Quat(
+        quaternion,
+        np.asarray(rotation, dtype=np.float64).reshape(9),
+    )
+    if quaternion[0] < 0.0:
+        quaternion *= -1.0
+
+    unit_axis = axis / axis_norm
+    projected = float(np.dot(quaternion[1:], unit_axis))
+    twist_norm = math.hypot(float(quaternion[0]), projected)
+    if twist_norm < 1e-12:
+        # A 180-degree pure swing has no uniquely defined twist.
+        # Holding the calibrated wrist angle is the safest behaviour
+        # at that singularity.
+        return 0.0
+
+    angle = 2.0 * math.atan2(projected, float(quaternion[0]))
+    return _wrap_to_pi(angle)
 
 
 def extract_forearm_axis(
@@ -134,6 +215,7 @@ def solve_forearm_axis_or_position(
     target_position: np.ndarray,
     n_forearm_avp: np.ndarray | None,
     forearm_axis_calibrated: bool,
+    posture_reference: np.ndarray | None = None,
 ):
     """Run the 5-DoF task, or its required position-only fallback."""
 
@@ -151,6 +233,7 @@ def solve_forearm_axis_or_position(
             target_position=target_position,
             target_rotation=None,
             position_only=True,
+            posture_reference=posture_reference,
         )
 
     return ik_solver.solve(
@@ -159,6 +242,7 @@ def solve_forearm_axis_or_position(
         target_rotation=None,
         target_axis=a_target,
         tcp_axis_local=TCP_FOREARM_AXIS_LOCAL,
+        posture_reference=posture_reference,
     )
 
 
@@ -396,6 +480,20 @@ def build_arg_parser():
     )
 
     parser.add_argument(
+        "--arm-filter-tau",
+        type=float,
+        default=0.03,
+        help="RM65 arm command low-pass time constant (s)",
+    )
+
+    parser.add_argument(
+        "--max-arm-velocity",
+        type=float,
+        default=3.0,
+        help="Maximum RM65 joint velocity (rad/s)",
+    )
+
+    parser.add_argument(
         "--tracking-timeout",
         type=float,
         default=2.0,
@@ -457,6 +555,19 @@ def build_arg_parser():
         ),
     )
 
+    mode_group.add_argument(
+        "--wrist-roll-ik",
+        action="store_true",
+        help=(
+            "4-DoF IK: wrist translation controls TCP xyz and the "
+            "AVP forearm roll drives joint 6 directly; wrist "
+            "pitch/yaw are ignored. Position solving is best-effort "
+            "damped least squares, so targets beyond the reachable "
+            "set are followed along the workspace boundary instead "
+            "of failing."
+        ),
+    )
+
     parser.add_argument(
         "--attach",
         nargs=4,
@@ -504,6 +615,16 @@ def main():
     if args.filter_tau <= 0.0:
         raise ValueError(
             "--filter-tau must be > 0"
+        )
+
+    if args.arm_filter_tau <= 0.0:
+        raise ValueError(
+            "--arm-filter-tau must be > 0"
+        )
+
+    if args.max_arm_velocity <= 0.0:
+        raise ValueError(
+            "--max-arm-velocity must be > 0"
         )
 
     if args.max_hand_velocity <= 0.0:
@@ -608,15 +729,19 @@ def main():
     print(
         "arm IK mode       :",
         (
-            "forearm-axis (5-DoF, TCP +Z / roll free)"
-            if args.forearm_axis_ik
+            "wrist-roll (position + forearm roll, pitch/yaw free)"
+            if args.wrist_roll_ik
             else (
-                "position-only (orientation free)"
-                if args.position_only_ik
+                "forearm-axis (5-DoF, TCP +Z / roll free)"
+                if args.forearm_axis_ik
                 else (
-                    "fixed-orientation (calibration anchor)"
-                    if args.lock_tcp_rotation
-                    else "6-DoF pose (follows wrist)"
+                    "position-only (orientation free)"
+                    if args.position_only_ik
+                    else (
+                        "fixed-orientation (calibration anchor)"
+                        if args.lock_tcp_rotation
+                        else "6-DoF pose (follows wrist)"
+                    )
                 )
             )
         ),
@@ -994,6 +1119,40 @@ def main():
         startup_arm_q.copy()
     )
 
+    # Posture anchor for the IK null-space term: the arm configuration
+    # captured at neutral calibration.  Redundancy (position-only and
+    # fallback solves) resolves toward this instead of random-walking.
+    q_arm_reference = (
+        startup_arm_q.copy()
+    )
+
+    # ========================================================
+    # RM65 arm command filter
+    #
+    # q_arm_goal may still step discontinuously (solution branch
+    # switch, fallback resume).  The physics-rate low-pass + joint
+    # velocity limit converts any such step into a bounded-speed
+    # slew, mirroring the SG100 hand path below.
+    # ========================================================
+
+    arm_command_filter = (
+        JointCommandFilter(
+            dof=ARM_DOF,
+            tau=args.arm_filter_tau,
+            max_velocity=(
+                args.max_arm_velocity
+            ),
+        )
+    )
+
+    arm_command_filter.reset(
+        startup_arm_q.copy()
+    )
+
+    q_arm_cmd = (
+        q_arm_goal.copy()
+    )
+
     # ========================================================
     # Robot TCP pose from the current MuJoCo state
     # ========================================================
@@ -1091,6 +1250,13 @@ def main():
     forearm_axis_calibrated = False
     q_hand0_runtime = None
 
+    # Wrist-roll mode anchors: joint-6 zero, the roll axis captured
+    # at the neutral frame, and the filtered roll state.
+    q6_roll_anchor = None
+    roll_axis_anchor = None
+    filtered_roll = 0.0
+    last_roll_time_s = None
+
     # ========================================================
     # IK diagnostics
     # ========================================================
@@ -1116,6 +1282,18 @@ def main():
             q_arm_goal,
             4,
         ),
+    )
+
+    print(
+        "arm filter tau    :",
+        args.arm_filter_tau,
+        "s",
+    )
+
+    print(
+        "max arm velocity  :",
+        args.max_arm_velocity,
+        "rad/s",
     )
 
     print(
@@ -1534,7 +1712,10 @@ def main():
 
                             n_forearm_avp = (
                                 extract_forearm_axis(hand)
-                                if args.forearm_axis_ik
+                                if (
+                                    args.forearm_axis_ik
+                                    or args.wrist_roll_ik
+                                )
                                 else None
                             )
 
@@ -1632,6 +1813,48 @@ def main():
                                         :3,
                                     ].copy()
                                 )
+                                # Posture anchor for the IK null-space
+                                # term, captured with the same neutral
+                                # frame.
+                                q_arm_reference = (
+                                    q_arm_goal.copy()
+                                )
+
+                                # Wrist-roll anchors: the joint-6 zero
+                                # and the roll axis.  The axis is the
+                                # forearm direction at this neutral
+                                # frame expressed in the anchor wrist
+                                # frame; without valid 27-joint
+                                # forearm data the wrist-local
+                                # fallback axis is used.
+                                if args.wrist_roll_ik:
+                                    q6_roll_anchor = float(
+                                        q_arm_reference[5]
+                                    )
+
+                                    roll_axis_anchor = None
+                                    if (
+                                        n_forearm_avp is not None
+                                    ):
+                                        axis = (
+                                            T_avp_wrist_0[:3, :3].T
+                                            @ n_forearm_avp
+                                        )
+                                        axis_norm = float(
+                                            np.linalg.norm(axis)
+                                        )
+                                        if axis_norm > 1e-12:
+                                            roll_axis_anchor = (
+                                                axis / axis_norm
+                                            )
+                                    if roll_axis_anchor is None:
+                                        roll_axis_anchor = (
+                                            WRIST_ROLL_FALLBACK_AXIS_LOCAL
+                                            .copy()
+                                        )
+
+                                    filtered_roll = 0.0
+                                    last_roll_time_s = None
                                 q_hand0_runtime = (
                                     q_hand_candidate.copy()
                                 )
@@ -1720,7 +1943,99 @@ def main():
                                 #   the mapped wrist orientation.
                                 # ---------------------------------
 
-                                if args.forearm_axis_ik:
+                                if args.wrist_roll_ik:
+                                    # Position task: best-effort DLS
+                                    # with the posture anchor.  The
+                                    # roll overwrite below cannot
+                                    # disturb the position solution
+                                    # because joint 6's position
+                                    # Jacobian column is zero.
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = ik_solver.solve(
+                                        q_seed=(
+                                            q_arm_goal
+                                        ),
+                                        target_position=(
+                                            p_target
+                                        ),
+                                        target_rotation=(
+                                            None
+                                        ),
+                                        position_only=(
+                                            True
+                                        ),
+                                        best_effort=(
+                                            True
+                                        ),
+                                        posture_reference=(
+                                            q_arm_reference
+                                        ),
+                                    )
+
+                                    # Roll channel: twist of the
+                                    # anchor-relative wrist rotation
+                                    # about the calibrated forearm
+                                    # direction, low-passed on the
+                                    # frame timestamps.
+                                    R_rel_anchor = (
+                                        T_avp_wrist_0[:3, :3].T
+                                        @ T_avp_wrist[:3, :3]
+                                    )
+                                    raw_roll = float(
+                                        np.clip(
+                                            WRIST_ROLL_SIGN
+                                            * WRIST_ROLL_SCALE
+                                            * extract_wrist_roll(
+                                                R_rel_anchor,
+                                                roll_axis_anchor,
+                                            ),
+                                            -WRIST_ROLL_MAX_RAD,
+                                            WRIST_ROLL_MAX_RAD,
+                                        )
+                                    )
+
+                                    roll_time_s = (
+                                        received_monotonic_ns * 1e-9
+                                    )
+                                    if (
+                                        last_roll_time_s is None
+                                        or roll_time_s
+                                        <= last_roll_time_s
+                                    ):
+                                        filtered_roll = raw_roll
+                                    else:
+                                        roll_dt = (
+                                            roll_time_s
+                                            - last_roll_time_s
+                                        )
+                                        roll_alpha = (
+                                            1.0
+                                            - math.exp(
+                                                -roll_dt
+                                                / WRIST_ROLL_FILTER_TAU
+                                            )
+                                        )
+                                        filtered_roll += (
+                                            roll_alpha
+                                            * (
+                                                raw_roll
+                                                - filtered_roll
+                                            )
+                                        )
+                                    last_roll_time_s = roll_time_s
+
+                                    q_arm_candidate[5] = (
+                                        np.clip(
+                                            q6_roll_anchor
+                                            + filtered_roll,
+                                            ik_solver.lower[5],
+                                            ik_solver.upper[5],
+                                        )
+                                    )
+
+                                elif args.forearm_axis_ik:
                                     (
                                         q_arm_candidate,
                                         ik_result,
@@ -1731,6 +2046,9 @@ def main():
                                         p_target,
                                         n_forearm_avp,
                                         forearm_axis_calibrated,
+                                        posture_reference=(
+                                            q_arm_reference
+                                        ),
                                     )
 
                                 elif args.position_only_ik:
@@ -1750,6 +2068,9 @@ def main():
                                             ),
                                             position_only=(
                                                 True
+                                            ),
+                                            posture_reference=(
+                                                q_arm_reference
                                             ),
                                         )
                                     )
@@ -1791,10 +2112,19 @@ def main():
 
                                 # ---------------------------------
                                 # Accept only a valid converged IK
-                                # solution.
+                                # solution.  Wrist-roll mode always
+                                # accepts its best-effort position
+                                # result plus the direct roll channel
+                                # (Quest-style always-track
+                                # semantics); the generic fallback
+                                # branch is intentionally bypassed
+                                # there.
                                 # ---------------------------------
 
-                                if ik_result.converged:
+                                if (
+                                    ik_result.converged
+                                    or args.wrist_roll_ik
+                                ):
 
                                     if (
                                         q_arm_candidate.shape
@@ -1907,6 +2237,9 @@ def main():
                                         ),
                                         best_effort=(
                                             True
+                                        ),
+                                        posture_reference=(
+                                            q_arm_reference
                                         ),
                                     )
 
@@ -2023,6 +2356,10 @@ def main():
                         n_forearm0_avp = None
                         forearm_axis_calibrated = False
                         q_hand0_runtime = None
+                        q6_roll_anchor = None
+                        roll_axis_anchor = None
+                        filtered_roll = 0.0
+                        last_roll_time_s = None
                         print_teleop_state(
                             "Tracking timeout invalidated the wrist anchor. "
                             "Reacquisition requires another C confirmation."
@@ -2063,9 +2400,15 @@ def main():
                     # ---------------------------------------------
                     # RM65 command
                     #
-                    # q_arm_goal is already a continuous IK output.
-                    # We intentionally do not add another arm filter
-                    # in this first integrated runner.
+                    # low-rate q_arm_goal
+                    #         ↓
+                    # JointCommandFilter @ physics rate
+                    #         ↓
+                    # high-rate q_arm_cmd
+                    #
+                    # Any upstream discontinuity (branch switch,
+                    # fallback resume) degrades into a bounded-speed
+                    # slew instead of a snap.
                     # ---------------------------------------------
 
                     # ---------------------------------------------
@@ -2078,6 +2421,13 @@ def main():
                     # high-rate q_hand_cmd
                     # ---------------------------------------------
 
+                    q_arm_cmd = (
+                        arm_command_filter.update(
+                            q_arm_goal,
+                            physics_dt,
+                        )
+                    )
+
                     q_hand_cmd = (
                         hand_command_filter.update(
                             q_hand_goal,
@@ -2088,7 +2438,7 @@ def main():
                     write_robot_controls(
                         data,
                         robot_layout,
-                        q_arm_goal,
+                        q_arm_cmd,
                         q_hand_cmd,
                     )
 
@@ -2198,6 +2548,14 @@ def main():
                         "q_arm_goal      :",
                         np.round(
                             q_arm_goal,
+                            3,
+                        ),
+                    )
+
+                    print(
+                        "arm cmd         :",
+                        np.round(
+                            q_arm_cmd,
                             3,
                         ),
                     )
