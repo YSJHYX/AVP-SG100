@@ -40,6 +40,16 @@ SIM_XML = (
 SIM_NBODY = 20
 SIM_RUNTIME_BODIES = 19
 SIM_DIMS = (17, 17, 17)
+LEGACY_FULL_SCENE_USDZ = (
+    ROOT
+    / "sg100_teleop/assets/rm65_sg100/usdz/"
+    "rm65_sg100_avp_grasp_scene_compat.usdz"
+)
+V7_COMPAT_USDZ = (
+    ROOT
+    / "sg100_teleop/assets/rm65_sg100/usdz/"
+    "rm65_sg100_avp_grasp_v7_compat.usdz"
+)
 
 Q_ARM_READY = np.array(
     [0.32488, -0.76769, 0.97621, 0.22463, -1.80649, -0.12430],
@@ -47,12 +57,12 @@ Q_ARM_READY = np.array(
 )
 Q_HAND_READY = np.zeros(11, dtype=np.float64)
 
-# Recorded before introducing the fixed base_link body; dims/nbody updated
-# for the 6 grasp objects (coke / redbull / pringles / apple / orange / mug
-# freejoints).  Rotations are xmat row-major values from MuJoCo after
+# Current V7 production-scene contract.  The two fixed wrist-camera hardware
+# bodies add visual attachment nodes but no qpos, DoF, actuator, mass, or
+# inertia.  Rotations below are xmat row-major values from MuJoCo after
 # mj_forward at the teleop ready pose.
-PRE_BASE_DIMS = (66, 61, 17)
-PRE_BASE_NBODY = 28
+V7_SCENE_DIMS = (66, 59, 17)
+V7_SCENE_NBODY = 31
 PRE_BASE_QPOS_ADDRESSES = tuple(range(17))
 PRE_BASE_READY_POSES = {
     "link_1": (
@@ -101,9 +111,26 @@ SCALE_VISUALS = {
     "rm65_visual_0",
     "rm65_visual_3",
     "rm65_visual_6",
-    "sg100_base_link_visual",
+    "sg100_base_link_visual_part1",
     "index_link2_visual",
     "middle_link1_visual",
+}
+
+SG100_VISUAL_FACE_COUNTS = {
+    "sg100_base_link_visual_part1": 187_999,
+    "sg100_base_link_visual_part2": 181_028,
+    "sg100_base_link_visual_part3": 112_678,
+    "thumb_link1_visual": 16_970,
+    "thumb_link2_visual": 193_892,
+    "thumb_link3_visual": 19_130,
+    "index_link1_visual": 19_560,
+    "index_link2_visual": 193_892,
+    "index_link3_visual": 19_130,
+    "middle_link1_visual": 193_892,
+    "middle_link2_visual": 19_130,
+    "little_link1_visual": 19_502,
+    "little_llink2_visual": 193_892,
+    "little_linik3_visual": 19_130,
 }
 
 
@@ -119,8 +146,8 @@ def test_base_link_source_and_kinematic_regression() -> None:
     layout = resolve_robot_layout(model)
     initialize_robot_state(model, data, layout, Q_ARM_READY, Q_HAND_READY)
 
-    assert (model.nq, model.nv, model.nu) == PRE_BASE_DIMS
-    assert model.nbody == PRE_BASE_NBODY + 1
+    assert (model.nq, model.nv, model.nu) == V7_SCENE_DIMS
+    assert model.nbody == V7_SCENE_NBODY
 
     base_id = _body_id(model, "base_link")
     assert int(model.body_jntnum[base_id]) == 0
@@ -188,16 +215,17 @@ def _run_usd_contract_checks(
     temp_dir: Path,
     *,
     xml_path: Path = SCENE_XML,
-    expected_bodies: int = 28,
+    expected_bodies: int = 30,
     expect_guides: bool = True,
     expect_table_bottle: bool = True,
 ) -> None:
     try:
-        from pxr import Usd, UsdGeom
+        from pxr import Sdf, Usd, UsdGeom
         from sg100_teleop.tools.export_avp_mujoco_usdz import (
             audit_compat_stage,
             export_compat_usdz,
             runtime_body_names,
+            validate_usdz_package,
         )
     except ImportError as exc:
         raise RuntimeError(
@@ -216,13 +244,22 @@ def _run_usd_contract_checks(
 
     assert len(body_names) == expected_bodies
     assert len(audit.body_paths) == expected_bodies
-    assert len(audit.kept_renderables) == expected_bodies
+    assert len(audit.kept_renderables) >= expected_bodies
     assert not audit.ownership_collisions
     assert not audit.nested_runtime_bodies
     assert not audit.physics_prims
     assert not audit.world_static_renderables
     if expect_guides:
         assert any(path.endswith("/workspace_ready") for path in audit.skipped_guides)
+        assert audit.excluded_world_renderables == [
+            next(
+                path
+                for path in audit.excluded_world_renderables
+                if path.endswith("/workstation_floor_visual")
+            )
+        ]
+    else:
+        assert not audit.excluded_world_renderables
     assert any(path.endswith("/PhysicsScene") for path in audit.skipped_physics_only)
 
     stage = Usd.Stage.Open(str(output))
@@ -244,8 +281,12 @@ def _run_usd_contract_checks(
     assert rm65_base.GetParent() == base
     assert not geometry.GetChild("rm65_visual_0")
 
-    visual_by_body = {record.body: record for record in audit.kept_renderables}
+    visual_by_body: dict[str, list] = {name: [] for name in body_names}
+    for record in audit.kept_renderables:
+        if record.body is not None:
+            visual_by_body[record.body].append(record)
     assert set(visual_by_body) == set(body_names)
+    assert all(visual_by_body.values())
     for record in audit.kept_renderables:
         assert record.transform_error <= 1e-8
         np.testing.assert_allclose(record.bbox_extent_ratio, np.ones(3), atol=1e-10)
@@ -261,7 +302,16 @@ def _run_usd_contract_checks(
     }
 
     # Main robot visuals retain either authored display color or a material binding.
-    for visual_name in ("rm65_visual_0", "rm65_visual_3", "sg100_base_link_visual"):
+    source_color_visuals = [
+        "rm65_visual_0",
+        "rm65_visual_3",
+        (
+            "sg100_base_link_visual_part1"
+            if expect_table_bottle
+            else "sg100_base_link_visual"
+        ),
+    ]
+    for visual_name in source_color_visuals:
         record = next(
             item for item in audit.kept_renderables if Path(item.destination_path).name == visual_name
         )
@@ -277,14 +327,129 @@ def _run_usd_contract_checks(
             assert archive.namelist()
         return
 
+    # Every pre-V7 streamed entity keeps its exact top-level name.  The only
+    # new runtime targets are the two fixed wrist-camera attachment bodies.
+    legacy_extract = temp_dir / "legacy_compat.usdc"
+    with zipfile.ZipFile(LEGACY_FULL_SCENE_USDZ) as archive:
+        legacy_extract.write_bytes(archive.read("avp_compat.usdc"))
+    legacy_layer = Sdf.Layer.FindOrOpen(str(legacy_extract))
+    assert legacy_layer is not None
+    legacy_geometry = legacy_layer.GetPrimAtPath(
+        Sdf.Path(f"/{legacy_layer.defaultPrim}/Geometry")
+    )
+    legacy_names = {child.name for child in legacy_geometry.nameChildren}
+    assert legacy_names <= set(body_names)
+    assert set(body_names) - legacy_names == {
+        "wrist_camera_mount_base",
+        "wrist_camera_head",
+    }
+
+    visual_names = {Path(record.destination_path).name for record in audit.kept_renderables}
+    assert {
+        "wrist_camera_mount_base_visual",
+        "wrist_camera_extension_visual",
+        "wrist_camera_visual",
+    } <= visual_names
+    assert "wrist_camera_collision" not in visual_names
+    assert "workstation_floor_visual" not in visual_names
+
+    # The production SG100 meshes must remain the current high-density visual
+    # assets, not an earlier simplified export.
+    for visual_name, expected_faces in SG100_VISUAL_FACE_COUNTS.items():
+        record = next(
+            item
+            for item in audit.kept_renderables
+            if Path(item.destination_path).name == visual_name
+        )
+        mesh = UsdGeom.Mesh(stage.GetPrimAtPath(record.destination_path))
+        assert len(mesh.GetFaceVertexCountsAttr().Get()) == expected_faces
+
+    # Key runtime-body world transforms are the same Z-up, metre-scale poses
+    # as the source MJCF.  USD matrices use row-vector convention, hence the
+    # transpose for comparison with MuJoCo's row-major body rotation.
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    for body_name in (
+        "base_link",
+        "link_6",
+        "sg100_base_link",
+        "thumb_link3",
+        "index_link3",
+        "wrist_camera_mount_base",
+        "wrist_camera_head",
+        "grasp_table",
+    ):
+        body_id = _body_id(model, body_name)
+        usd_matrix = xform_cache.GetLocalToWorldTransform(
+            stage.GetPrimAtPath(body_paths[body_name])
+        )
+        np.testing.assert_allclose(
+            np.asarray(usd_matrix.ExtractTranslation()),
+            data.xpos[body_id],
+            atol=2e-6,
+            rtol=0.0,
+        )
+        np.testing.assert_allclose(
+            np.asarray(usd_matrix.ExtractRotationMatrix()).T,
+            data.xmat[body_id].reshape(3, 3),
+            atol=2e-6,
+            rtol=0.0,
+        )
+
+    # V7 medium bracket: primitive support, length, direction, attachment and
+    # housing centre are preserved exactly; the debug collision box is absent.
+    mount = stage.GetPrimAtPath(body_paths["wrist_camera_mount_base"])
+    extension = UsdGeom.Capsule(mount.GetChild("wrist_camera_extension_visual"))
+    assert extension
+    assert abs(float(extension.GetHeightAttr().Get()) - 0.1180982773202048) < 1e-10
+    assert abs(float(extension.GetRadiusAttr().Get()) - 0.0045) < 1e-12
+    extension_matrix = UsdGeom.Xformable(extension).GetLocalTransformation()
+    np.testing.assert_allclose(
+        np.asarray(extension_matrix.ExtractTranslation()),
+        [0.0084295, -0.1025825, -0.01],
+        atol=1e-10,
+        rtol=0.0,
+    )
+    expected_axis = np.array([0.016859, -0.115165, 0.020], dtype=np.float64)
+    expected_axis /= np.linalg.norm(expected_axis)
+    np.testing.assert_allclose(
+        np.asarray(extension_matrix.ExtractRotationMatrix())[2],
+        expected_axis,
+        atol=2e-7,
+        rtol=0.0,
+    )
+
+    camera_head = stage.GetPrimAtPath(body_paths["wrist_camera_head"])
+    housing = camera_head.GetChild("wrist_camera_visual")
+    housing_matrix = UsdGeom.Xformable(housing).GetLocalTransformation()
+    np.testing.assert_allclose(
+        np.asarray(housing_matrix.ExtractTranslation()),
+        [-0.000052258, -0.014652684, -0.013612352],
+        atol=1e-12,
+        rtol=0.0,
+    )
+
+    table_prim = stage.GetPrimAtPath(
+        visual_by_body["grasp_table"][0].destination_path
+    )
+    table_color = UsdGeom.Gprim(table_prim).GetDisplayColorAttr().Get()
+    np.testing.assert_allclose(
+        np.asarray(table_color[0]), [0.42, 0.43, 0.44], atol=1e-7, rtol=0.0
+    )
+
+    package_audit = validate_usdz_package(output)
+    assert not package_audit["unresolved_assets"]
+    assert len(package_audit["resolved_assets"]) == 6
+
     bbox_cache = UsdGeom.BBoxCache(
         Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=False
     )
     table_prim = stage.GetPrimAtPath(
-        visual_by_body["grasp_table"].destination_path
+        visual_by_body["grasp_table"][0].destination_path
     )
     bottle_prim = stage.GetPrimAtPath(
-        visual_by_body["water_bottle"].destination_path
+        visual_by_body["water_bottle"][0].destination_path
     )
     table_range = bbox_cache.ComputeWorldBound(table_prim).ComputeAlignedRange()
     bottle_range = bbox_cache.ComputeWorldBound(bottle_prim).ComputeAlignedRange()
@@ -313,6 +478,33 @@ def test_sim_usd_contract() -> None:
         )
 
 
+def test_prebuilt_v7_package_contract() -> None:
+    from pxr import Usd
+    from sg100_teleop.tools.export_avp_mujoco_usdz import validate_usdz_package
+
+    package_audit = validate_usdz_package(V7_COMPAT_USDZ)
+    assert len(package_audit["resolved_assets"]) == 6
+    stage = Usd.Stage.Open(str(V7_COMPAT_USDZ))
+    assert stage is not None
+    geometry = stage.GetDefaultPrim().GetChild("Geometry")
+    assert len(geometry.GetChildren()) == 30
+    visual_names = {
+        prim.GetName()
+        for prim in stage.Traverse()
+        if prim.GetTypeName() in {"Mesh", "Cube", "Capsule", "Cylinder"}
+    }
+    assert {
+        "wrist_camera_mount_base_visual",
+        "wrist_camera_extension_visual",
+        "wrist_camera_visual",
+        "grasp_table_collision",
+    } <= visual_names
+    assert "wrist_camera_collision" not in visual_names
+    assert "workstation_floor_visual" not in visual_names
+    for index in range(1, 7):
+        assert stage.GetPrimAtPath(f"/Flattened_Prototype_{index}")
+
+
 def main() -> None:
     test_base_link_source_and_kinematic_regression()
     print("base_link source + kinematic regression: PASS")
@@ -332,6 +524,8 @@ def main() -> None:
             expect_table_bottle=False,
         )
     print("AVP sim USDZ contract: PASS")
+    test_prebuilt_v7_package_contract()
+    print("prebuilt V7 USDZ package: PASS")
 
 
 if __name__ == "__main__":

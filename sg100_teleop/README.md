@@ -25,13 +25,13 @@
 python sg100_teleop/sim/run_avp_arm_hand_sim.py \
   --ip 192.168.2.XXX \
   --calibration sg100_teleop/config/avp_right_calibration.yaml \
-  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_sim_compat.usdz
+  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v7_compat.usdz
 ```
 
-与现阶段部署记录一致的单行命令：
+V7 正式候选的单行命令（首次使用仍需完成下方 AVP live checklist）：
 
 ```bash
-python sg100_teleop/sim/run_avp_arm_hand_sim.py --ip 192.168.2.XXX --calibration sg100_teleop/config/avp_right_calibration.yaml --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_sim_compat.usdz
+python sg100_teleop/sim/run_avp_arm_hand_sim.py --ip 192.168.2.XXX --calibration sg100_teleop/config/avp_right_calibration.yaml --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v7_compat.usdz
 ```
 
 这条命令没有附加 IK mode flag，因此使用默认的 6-DoF full-pose IK：TCP xyz 跟随 wrist 相对平移，TCP rotation 跟随 wrist 相对旋转。
@@ -42,7 +42,7 @@ python sg100_teleop/sim/run_avp_arm_hand_sim.py --ip 192.168.2.XXX --calibration
 python sg100_teleop/sim/run_avp_arm_hand_sim.py \
   --ip 192.168.2.XXX \
   --calibration sg100_teleop/config/avp_right_calibration.yaml \
-  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_sim_compat.usdz \
+  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v7_compat.usdz \
   --position-only-ik
 ```
 
@@ -350,8 +350,9 @@ sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_sim.xml
 
 | 文件 | 用途 |
 |---|---|
-| `rm65_sg100_sim_compat.usdz` | 轻量 robot-compatible visual package，推荐基础运行命令使用 |
+| `rm65_sg100_sim_compat.usdz` | 轻量 robot-only compatibility package，保留用于 rollback |
 | `rm65_sg100_avp_grasp_scene_compat.usdz` | 包含桌面、筐子和纹理物体的兼容 visual scene |
+| `rm65_sg100_avp_grasp_v7_compat.usdz` | 当前 V7 production visual scene：最终 RM65/SG100、腕部相机支架与外壳、中性灰桌面及纹理物体 |
 | `rm65_sg100_avp_grasp_scene.usdz` | 抓取场景完整导出包 |
 
 需要在 AVP 内看到带纹理桌面抓取物与筐子时：
@@ -360,7 +361,7 @@ sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_sim.xml
 python sg100_teleop/sim/run_avp_arm_hand_sim.py \
   --ip 192.168.2.XXX \
   --calibration sg100_teleop/config/avp_right_calibration.yaml \
-  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_scene_compat.usdz
+  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v7_compat.usdz
 ```
 
 `--model` 决定本机 MuJoCo physics/contact；`--usdz` 决定发给 AVP 的 visual package。提供 `--usdz` 后会验证文件并绕过 runtime conversion。兼容包让每个 streamed body 在 USD `Geometry` 下有可唯一匹配的 visual ownership，避免 AVP 对嵌套 body/leaf 重复施加 transform。
@@ -498,14 +499,14 @@ python -m sg100_teleop.tests.test_avp_mujoco_usdz_contract
 python -m sg100_teleop.tests.test_prebuilt_usdz
 ```
 
-当前已知 test drift：`test_avp_mujoco_usdz_contract.py` 的 `PRE_BASE_DIMS` 仍写为旧值 `(66, 61, 17)`，而当前场景实际是 `(66, 59, 17)`，所以它会先在维度回归断言处失败；这不等同于 USDZ 文件校验失败。`test_prebuilt_usdz.py` 当前通过。更新该测试基准前，应先确认减少的两个 passive DoF 是预期场景变更，再同步复核 body pose/ownership 基准。
+V7 contract test 固定验证 `(nq, nv, nu) = (66, 59, 17)`、旧动态节点名称兼容、腕部支架/外壳层级、碰撞调试几何排除、SG100 高精度网格、桌面颜色、关键变换和包内引用。
 
 需要 `pxr` 与 `mujoco-usd-converter` 的 export/audit 使用单独环境：
 
 ```bash
 .venv_usdz/bin/python -m sg100_teleop.tools.export_avp_mujoco_usdz \
   --xml sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_avp_grasp_scene.xml \
-  --output sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_scene_compat.usdz
+  --output sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v7_compat.usdz
 ```
 
 不要在未重新做 USDZ contract/audit 时手工替换包内层级、body names 或 visual ownership。
@@ -535,7 +536,7 @@ python -m sg100_teleop.tests.test_prebuilt_usdz
 - IK fallback 优先位置连续性，orientation 在不可达阶段可暂时偏离。
 - 当前 contact 调试不等价于完整 self-collision planning 或实体安全保证。
 - USDZ visual scene 与 MuJoCo physics model 是两个文件，修改任一侧都需检查 naming、层级、材质与几何一致性。
-- USDZ contract regression 当前有一处旧 scene dimension 基准尚待更新，不能把该脚本列为全绿状态。
+- USDZ 视觉包与 physics scene 是独立文件；每次 V7 MJCF 视觉变更后都必须重新导出并运行 contract test。
 - AVP tracking samples 仍不自动落盘；本机 MP4 必须在 session 结束后由 offline renderer 生成。
 - 实体 RM65/SG100、实体抓取和实体安全链尚未实现。
 
@@ -571,7 +572,7 @@ python -m sg100_teleop.tests.test_prebuilt_usdz
 
 ### AVP 中物体没有外观
 
-使用 `rm65_sg100_avp_grasp_scene_compat.usdz`，不要使用轻量 `rm65_sg100_sim_compat.usdz`；physics `--model` 仍应指向 grasp scene XML。
+使用 `rm65_sg100_avp_grasp_v7_compat.usdz`；轻量 `rm65_sg100_sim_compat.usdz` 仅保留作 robot-only rollback，physics `--model` 仍应指向 grasp scene XML。
 
 ## 16. 维护约束
 
@@ -629,7 +630,8 @@ sg100_teleop/
 │   └── usdz/
 │       ├── rm65_sg100_sim_compat.usdz
 │       ├── rm65_sg100_avp_grasp_scene.usdz
-│       └── rm65_sg100_avp_grasp_scene_compat.usdz
+│       ├── rm65_sg100_avp_grasp_scene_compat.usdz
+│       └── rm65_sg100_avp_grasp_v7_compat.usdz
 └── tests/test_*.py
 ```
 

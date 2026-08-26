@@ -123,6 +123,25 @@ def _select_frames(
         # distance over the whole session.
         best_distance = float("inf")
         approached = False
+        palm_object_distance = np.full(frame_count, np.inf, dtype=np.float64)
+        palm_xy_radius = np.zeros(frame_count, dtype=np.float64)
+        # Evaluate every state once because the close/opposition diagnostics
+        # must describe an actual hand-object interaction, not a maximally
+        # curled hand after the object has already moved elsewhere.
+        for index in range(frame_count):
+            _restore_state(
+                model,
+                data,
+                qpos[index],
+                mocap_pos[index],
+                mocap_quat[index],
+                timestamps[index],
+            )
+            palm_object_distance[index] = np.linalg.norm(
+                data.xpos[palm_id] - data.xpos[object_id]
+            )
+            palm_xy_radius[index] = np.linalg.norm(data.xpos[palm_id, :2])
+        frames["far_reach"] = int(np.argmax(palm_xy_radius))
         for index in range(0, frame_count, max(1, stride)):
             _restore_state(
                 model,
@@ -167,7 +186,16 @@ def _select_frames(
             else (upper - value) / span
         )
         opposition_score += np.clip(progress, 0.0, 1.0)
-    frames["thumb_opposition"] = int(np.argmax(opposition_score))
+    near_object = (
+        palm_object_distance < 0.16
+        if palm_id >= 0 and object_id >= 0
+        else np.ones(frame_count, dtype=bool)
+    )
+    if not np.any(near_object):
+        near_object = np.ones(frame_count, dtype=bool)
+    frames["thumb_opposition"] = int(
+        np.argmax(np.where(near_object, opposition_score, -np.inf))
+    )
 
     # The strongest complete grasp is not necessarily the strongest thumb
     # pose.  Normalize every hand joint by its range and find the recorded
@@ -192,7 +220,9 @@ def _select_frames(
             qpos[:, qpos_adr] - qpos[0, qpos_adr]
         ) / span
     closure_score = np.linalg.norm(normalized_hand_motion, axis=1)
-    frames["grasp_closure"] = int(np.argmax(closure_score))
+    frames["grasp_closure"] = int(
+        np.argmax(np.where(near_object, closure_score, -np.inf))
+    )
 
     return frames
 
@@ -269,7 +299,7 @@ def render_camera_previews(
             if camera == WRIST_CAMERA:
                 camera_frames.extend(("grasp_closure", "thumb_opposition"))
             if camera == HEAD_CAMERA:
-                camera_frames.append("close_hand")
+                camera_frames.extend(("far_reach", "close_hand"))
             for tag in camera_frames:
                 index = frames[
                     "interaction" if tag == "close_hand" else tag
