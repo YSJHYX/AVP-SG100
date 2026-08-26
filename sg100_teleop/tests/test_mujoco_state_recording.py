@@ -82,7 +82,7 @@ def test_camera_and_offscreen_render() -> None:
 
 def test_30_fps_sampling_and_state_fidelity() -> None:
     model, data = make_ready_state()
-    watched = ("sg100_base_link", "water_bottle", "obj_coke")
+    watched = ("sg100_base_link", "obj_mug", "obj_coke")
     expected_poses: dict[str, np.ndarray] = {}
 
     with tempfile.TemporaryDirectory() as temporary:
@@ -176,7 +176,21 @@ def test_mp4_smoke() -> None:
         else:
             raise AssertionError("Missing camera must fail instead of using free camera")
 
-        summary = render_recording(recording, width=1280, height=720)
+        summaries = {
+            camera: render_recording(
+                recording,
+                output_path=Path(temporary) / f"{camera}.mp4",
+                camera=camera,
+                width=1280,
+                height=720,
+            )
+            for camera in ("workstation_front", "wrist_camera", "demo_camera")
+        }
+        for camera, camera_summary in summaries.items():
+            camera_output = Path(camera_summary["output"])
+            assert camera_output.is_file() and camera_output.stat().st_size > 0, camera
+            assert camera_summary["frames"] == 31, camera
+        summary = summaries["workstation_front"]
         output = Path(summary["output"])
         assert output.is_file() and output.stat().st_size > 0
         assert summary["frames"] == 31

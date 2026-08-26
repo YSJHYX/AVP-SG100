@@ -1,12 +1,12 @@
-"""Regression tests for the RM65+SG100 AVP compatibility USDZ pipeline.
+"""Production V8 regression checks for the MuJoCo -> AVP USDZ pipeline.
 
-The source-model checks run in the normal MuJoCo environment.  The USD tests
-must be run with ``.venv_usdz/bin/python`` because the application runtime is
-deliberately not coupled to pxr or mujoco-usd-converter.
+Run this file with ``.venv_usdz/bin/python``.  The application environment is
+intentionally not coupled to Pixar USD or mujoco-usd-converter.
 """
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 from pathlib import Path
 import zipfile
@@ -22,34 +22,10 @@ from sg100_teleop.sim.combined_robot_layout import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCENE_XML = (
-    ROOT
-    / "sg100_teleop/assets/rm65_sg100/mjcf/"
-    "rm65_sg100_avp_grasp_scene.xml"
-)
-ROBOT_XML = (
-    ROOT
-    / "sg100_teleop/assets/rm65_sg100/mjcf/"
-    "rm65_sg100_avp_grasp_robot.xml"
-)
-SIM_XML = (
-    ROOT
-    / "sg100_teleop/assets/rm65_sg100/mjcf/"
-    "rm65_sg100_sim.xml"
-)
-SIM_NBODY = 20
-SIM_RUNTIME_BODIES = 19
-SIM_DIMS = (17, 17, 17)
-LEGACY_FULL_SCENE_USDZ = (
-    ROOT
-    / "sg100_teleop/assets/rm65_sg100/usdz/"
-    "rm65_sg100_avp_grasp_scene_compat.usdz"
-)
-V7_COMPAT_USDZ = (
-    ROOT
-    / "sg100_teleop/assets/rm65_sg100/usdz/"
-    "rm65_sg100_avp_grasp_v7_compat.usdz"
-)
+ASSET_ROOT = ROOT / "sg100_teleop/assets/rm65_sg100"
+SCENE_XML = ASSET_ROOT / "mjcf/rm65_sg100_avp_grasp_scene.xml"
+OLD_ROBOT_USDZ = ASSET_ROOT / "usdz/rm65_sg100_sim_compat.usdz"
+V8_COMPAT_USDZ = ASSET_ROOT / "usdz/rm65_sg100_avp_grasp_v8_compat.usdz"
 
 Q_ARM_READY = np.array(
     [0.32488, -0.76769, 0.97621, 0.22463, -1.80649, -0.12430],
@@ -57,13 +33,33 @@ Q_ARM_READY = np.array(
 )
 Q_HAND_READY = np.zeros(11, dtype=np.float64)
 
-# Current V7 production-scene contract.  The two fixed wrist-camera hardware
-# bodies add visual attachment nodes but no qpos, DoF, actuator, mass, or
-# inertia.  Rotations below are xmat row-major values from MuJoCo after
-# mj_forward at the teleop ready pose.
-V7_SCENE_DIMS = (66, 59, 17)
-V7_SCENE_NBODY = 31
-PRE_BASE_QPOS_ADDRESSES = tuple(range(17))
+RM65_BODIES = (
+    "base_link",
+    "link_1",
+    "link_2",
+    "link_3",
+    "link_4",
+    "link_5",
+    "link_6",
+)
+SG100_BODIES = (
+    "sg100_base_link",
+    "thumb_link1",
+    "thumb_link2",
+    "thumb_link3",
+    "index_link1",
+    "index_link2",
+    "index_link3",
+    "middle_link1",
+    "middle_link2",
+    "little_link1",
+    "little_llink2",
+    "little_linik3",
+)
+ROBOT_BODIES = RM65_BODIES + SG100_BODIES
+SCENE_BODIES = ("obj_coke", "obj_apple", "obj_mug", "drop_bin", "grasp_table")
+V8_BODIES = ROBOT_BODIES + SCENE_BODIES
+
 PRE_BASE_READY_POSES = {
     "link_1": (
         [0.0, 0.0, 0.2405],
@@ -71,14 +67,6 @@ PRE_BASE_READY_POSES = {
             0.9476890366459414, -0.31919506547108084, 0.0,
             0.31919506547108084, 0.9476890366459414, 0.0,
             0.0, 0.0, 1.0,
-        ],
-    ),
-    "link_3": (
-        [0.16848454097051674, 0.05674872573942969, 0.42469701838223456],
-        [
-            -0.9271576755823023, 0.1961905573509667, 0.31919885622467387,
-            -0.3122839421623087, 0.06608062713615731, -0.9476877598580984,
-            -0.20702025040171984, -0.9783366577633743, 7.99993404854149e-12,
         ],
     ),
     "link_6": (
@@ -97,23 +85,6 @@ PRE_BASE_READY_POSES = {
             0.9849963423080381, 0.16954069050990536, -0.032220488841921135,
         ],
     ),
-    "index_link2": (
-        [0.318505478498823, 0.2177804499487535, 0.6294402495169099],
-        [
-            0.5141715580779054, 0.8555499187269574, -0.060514010196292836,
-            -0.8407637060899408, 0.5167166828274061, 0.16161763582527378,
-            0.16954055380836813, -0.03222120814214886, 0.9849963423080379,
-        ],
-    ),
-}
-
-SCALE_VISUALS = {
-    "rm65_visual_0",
-    "rm65_visual_3",
-    "rm65_visual_6",
-    "sg100_base_link_visual_part1",
-    "index_link2_visual",
-    "middle_link1_visual",
 }
 
 SG100_VISUAL_FACE_COUNTS = {
@@ -133,399 +104,300 @@ SG100_VISUAL_FACE_COUNTS = {
     "little_linik3_visual": 19_130,
 }
 
+EXPECTED_VISUALS = {
+    *(f"rm65_visual_{index}" for index in range(7)),
+    *SG100_VISUAL_FACE_COUNTS,
+    "obj_coke_visual",
+    "obj_apple_visual",
+    "mug_visual",
+    "wood_crate_bottom",
+    "wood_crate_wall_pX",
+    "wood_crate_wall_nX",
+    "wood_crate_wall_pY",
+    "wood_crate_wall_nY",
+    "grasp_table_collision",
+}
 
-def _body_id(model, name: str) -> int:
-    result = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
-    assert result >= 0, f"body not found: {name}"
-    return result
+
+def _body_id(model: mujoco.MjModel, name: str) -> int:
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+    assert body_id >= 0, f"body not found: {name}"
+    return body_id
 
 
-def test_base_link_source_and_kinematic_regression() -> None:
+def _stage_geometry(stage):
+    geometry = stage.GetDefaultPrim().GetChild("Geometry")
+    assert geometry
+    return geometry
+
+
+def _world_points(stage, mesh_prim) -> np.ndarray:
+    from pxr import UsdGeom
+
+    points = np.asarray(UsdGeom.Mesh(mesh_prim).GetPointsAttr().Get(), dtype=np.float64)
+    matrix = np.asarray(
+        UsdGeom.XformCache().GetLocalToWorldTransform(mesh_prim), dtype=np.float64
+    )
+    return (np.column_stack((points, np.ones(points.shape[0]))) @ matrix)[:, :3]
+
+
+def _mujoco_geom_world_points(
+    model: mujoco.MjModel, data: mujoco.MjData, geom_name: str
+) -> np.ndarray:
+    geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+    assert geom_id >= 0
+    mesh_id = int(model.geom_dataid[geom_id])
+    start = int(model.mesh_vertadr[mesh_id])
+    count = int(model.mesh_vertnum[mesh_id])
+    points = np.asarray(model.mesh_vert[start : start + count], dtype=np.float64)
+    rotation = np.asarray(data.geom_xmat[geom_id]).reshape(3, 3)
+    return points @ rotation.T + data.geom_xpos[geom_id]
+
+
+def _handle_direction(points: np.ndarray, body_origin: np.ndarray) -> np.ndarray:
+    radial = np.linalg.norm(points[:, :2] - body_origin[:2], axis=1)
+    handle = points[radial >= np.percentile(radial, 95), :2].mean(axis=0)
+    direction = handle - body_origin[:2]
+    return direction / np.linalg.norm(direction)
+
+
+def _assert_body_world_transforms(stage, model, data) -> float:
+    from pxr import UsdGeom
+
+    geometry = _stage_geometry(stage)
+    cache = UsdGeom.XformCache()
+    max_error = 0.0
+    for body_name in V8_BODIES:
+        body_id = _body_id(model, body_name)
+        matrix = cache.GetLocalToWorldTransform(geometry.GetChild(body_name))
+        position_error = np.max(
+            np.abs(np.asarray(matrix.ExtractTranslation()) - data.xpos[body_id])
+        )
+        rotation_error = np.max(
+            np.abs(
+                np.asarray(matrix.ExtractRotationMatrix()).T
+                - data.xmat[body_id].reshape(3, 3)
+            )
+        )
+        max_error = max(max_error, float(position_error), float(rotation_error))
+    assert max_error <= 2e-6
+    return max_error
+
+
+def test_v8_source_contract() -> None:
     model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
-    data = mujoco.MjData(model)
+    assert (model.nq, model.nv, model.nu) == (38, 35, 17)
+    assert model.nbody == 25
+    assert model.ncam == 3
+    assert model.nlight == 1
+    assert tuple(model.body(index).name for index in range(1, model.nbody)) == V8_BODIES
+    assert tuple(model.camera(index).name for index in range(model.ncam)) == (
+        "workstation_front",
+        "demo_camera",
+        "wrist_camera",
+    )
+
     layout = resolve_robot_layout(model)
-    initialize_robot_state(model, data, layout, Q_ARM_READY, Q_HAND_READY)
-
-    assert (model.nq, model.nv, model.nu) == V7_SCENE_DIMS
-    assert model.nbody == V7_SCENE_NBODY
-
-    base_id = _body_id(model, "base_link")
-    assert int(model.body_jntnum[base_id]) == 0
-    assert int(model.body_dofnum[base_id]) == 0
-    np.testing.assert_allclose(data.xpos[base_id], np.zeros(3), atol=1e-12)
-    np.testing.assert_allclose(data.xmat[base_id], np.eye(3).ravel(), atol=1e-12)
-
-    qpos_addresses = tuple(
-        int(
-            model.jnt_qposadr[
-                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            ]
-        )
-        for name in ROBOT_JOINT_ORDER
+    assert tuple(model.joint(int(index)).name for index in layout.joint_ids) == (
+        ROBOT_JOINT_ORDER
     )
-    assert qpos_addresses == PRE_BASE_QPOS_ADDRESSES
-
-    for name, (expected_position, expected_rotation) in PRE_BASE_READY_POSES.items():
-        body_id = _body_id(model, name)
-        np.testing.assert_allclose(data.xpos[body_id], expected_position, atol=1e-10)
-        np.testing.assert_allclose(data.xmat[body_id], expected_rotation, atol=1e-10)
-
-    # sg100_base_link is the authoritative teleoperation TCP body.
-    tcp_id = _body_id(model, "sg100_base_link")
-    np.testing.assert_allclose(
-        data.xpos[tcp_id], PRE_BASE_READY_POSES["sg100_base_link"][0], atol=1e-10
-    )
-
-
-def test_source_table_bottle_contact() -> None:
-    model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
-    data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
-    table_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "grasp_table_collision")
-    bottle_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "water_bottle_collision")
-    table_top = float(data.geom_xpos[table_id, 2] + model.geom_size[table_id, 2])
-    bottle_bottom = float(data.geom_xpos[bottle_id, 2] - model.geom_size[bottle_id, 1])
-    assert abs(bottle_bottom - table_top) < 1e-6
-
-
-def test_sim_source_regression() -> None:
-    model = mujoco.MjModel.from_xml_path(str(SIM_XML))
-    assert (model.nq, model.nv, model.nu) == SIM_DIMS
-    assert model.nbody == SIM_NBODY
-
-    base_id = _body_id(model, "base_link")
-    assert int(model.body_jntnum[base_id]) == 0
-    assert int(model.body_dofnum[base_id]) == 0
-    link1_id = _body_id(model, "link_1")
-    assert int(model.body_parentid[link1_id]) == base_id
-    assert int(model.body_parentid[base_id]) == 0
-
+    assert len(layout.actuator_ids) == 17
     qpos_addresses = tuple(
-        int(
-            model.jnt_qposadr[
-                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-            ]
-        )
-        for name in ROBOT_JOINT_ORDER
+        int(model.jnt_qposadr[model.joint(name).id]) for name in ROBOT_JOINT_ORDER
     )
     assert qpos_addresses == tuple(range(17))
 
-
-def _run_usd_contract_checks(
-    temp_dir: Path,
-    *,
-    xml_path: Path = SCENE_XML,
-    expected_bodies: int = 30,
-    expect_guides: bool = True,
-    expect_table_bottle: bool = True,
-) -> None:
-    try:
-        from pxr import Sdf, Usd, UsdGeom
-        from sg100_teleop.tools.export_avp_mujoco_usdz import (
-            audit_compat_stage,
-            export_compat_usdz,
-            runtime_body_names,
-            validate_usdz_package,
-        )
-    except ImportError as exc:
-        raise RuntimeError(
-            "USD contract tests require .venv_usdz/bin/python"
-        ) from exc
-
-    output = temp_dir / "scene_compat.usdz"
-    intermediate = temp_dir / "intermediate"
-    audit = export_compat_usdz(
-        xml_path,
-        output,
-        intermediate_dir=intermediate,
-    )
-    model = mujoco.MjModel.from_xml_path(str(xml_path))
-    body_names = runtime_body_names(model)
-
-    assert len(body_names) == expected_bodies
-    assert len(audit.body_paths) == expected_bodies
-    assert len(audit.kept_renderables) >= expected_bodies
-    assert not audit.ownership_collisions
-    assert not audit.nested_runtime_bodies
-    assert not audit.physics_prims
-    assert not audit.world_static_renderables
-    if expect_guides:
-        assert any(path.endswith("/workspace_ready") for path in audit.skipped_guides)
-        assert audit.excluded_world_renderables == [
-            next(
-                path
-                for path in audit.excluded_world_renderables
-                if path.endswith("/workstation_floor_visual")
-            )
-        ]
-    else:
-        assert not audit.excluded_world_renderables
-    assert any(path.endswith("/PhysicsScene") for path in audit.skipped_physics_only)
-
-    stage = Usd.Stage.Open(str(output))
-    assert stage is not None
-    assert stage.GetMetadata("upAxis") == "Z"
-    assert stage.GetMetadata("metersPerUnit") == 1.0
-    body_paths, collisions, nested, physics = audit_compat_stage(stage, body_names)
-    assert not collisions
-    assert not nested
-    assert not physics
-
-    geometry = stage.GetDefaultPrim().GetChild("Geometry")
-    assert geometry
-    assert all(stage.GetPrimAtPath(path).GetParent() == geometry for path in body_paths.values())
-
-    base = stage.GetPrimAtPath(body_paths["base_link"])
-    rm65_base = base.GetChild("rm65_visual_0")
-    assert rm65_base
-    assert rm65_base.GetParent() == base
-    assert not geometry.GetChild("rm65_visual_0")
-
-    visual_by_body: dict[str, list] = {name: [] for name in body_names}
-    for record in audit.kept_renderables:
-        if record.body is not None:
-            visual_by_body[record.body].append(record)
-    assert set(visual_by_body) == set(body_names)
-    assert all(visual_by_body.values())
-    for record in audit.kept_renderables:
-        assert record.transform_error <= 1e-8
-        np.testing.assert_allclose(record.bbox_extent_ratio, np.ones(3), atol=1e-10)
-
-    scale_records = {
-        Path(record.destination_path).name: record
-        for record in audit.kept_renderables
-        if Path(record.destination_path).name in SCALE_VISUALS
-    }
-    assert set(scale_records) == {
-        name for name in SCALE_VISUALS
-        if name in {Path(r.destination_path).name for r in audit.kept_renderables}
-    }
-
-    # Main robot visuals retain either authored display color or a material binding.
-    source_color_visuals = [
-        "rm65_visual_0",
-        "rm65_visual_3",
-        (
-            "sg100_base_link_visual_part1"
-            if expect_table_bottle
-            else "sg100_base_link_visual"
-        ),
-    ]
-    for visual_name in source_color_visuals:
-        record = next(
-            item for item in audit.kept_renderables if Path(item.destination_path).name == visual_name
-        )
-        prim = stage.GetPrimAtPath(record.destination_path)
-        color = UsdGeom.Gprim(prim).GetDisplayColorAttr().Get()
-        material_targets = prim.GetRelationship("material:binding").GetTargets()
-        assert color or material_targets
-
-    if not expect_table_bottle:
-        assert zipfile.is_zipfile(output)
-        with zipfile.ZipFile(output) as archive:
-            assert archive.testzip() is None
-            assert archive.namelist()
-        return
-
-    # Every pre-V7 streamed entity keeps its exact top-level name.  The only
-    # new runtime targets are the two fixed wrist-camera attachment bodies.
-    legacy_extract = temp_dir / "legacy_compat.usdc"
-    with zipfile.ZipFile(LEGACY_FULL_SCENE_USDZ) as archive:
-        legacy_extract.write_bytes(archive.read("avp_compat.usdc"))
-    legacy_layer = Sdf.Layer.FindOrOpen(str(legacy_extract))
-    assert legacy_layer is not None
-    legacy_geometry = legacy_layer.GetPrimAtPath(
-        Sdf.Path(f"/{legacy_layer.defaultPrim}/Geometry")
-    )
-    legacy_names = {child.name for child in legacy_geometry.nameChildren}
-    assert legacy_names <= set(body_names)
-    assert set(body_names) - legacy_names == {
-        "wrist_camera_mount_base",
-        "wrist_camera_head",
-    }
-
-    visual_names = {Path(record.destination_path).name for record in audit.kept_renderables}
-    assert {
-        "wrist_camera_mount_base_visual",
-        "wrist_camera_extension_visual",
-        "wrist_camera_visual",
-    } <= visual_names
-    assert "wrist_camera_collision" not in visual_names
-    assert "workstation_floor_visual" not in visual_names
-
-    # The production SG100 meshes must remain the current high-density visual
-    # assets, not an earlier simplified export.
-    for visual_name, expected_faces in SG100_VISUAL_FACE_COUNTS.items():
-        record = next(
-            item
-            for item in audit.kept_renderables
-            if Path(item.destination_path).name == visual_name
-        )
-        mesh = UsdGeom.Mesh(stage.GetPrimAtPath(record.destination_path))
-        assert len(mesh.GetFaceVertexCountsAttr().Get()) == expected_faces
-
-    # Key runtime-body world transforms are the same Z-up, metre-scale poses
-    # as the source MJCF.  USD matrices use row-vector convention, hence the
-    # transpose for comparison with MuJoCo's row-major body rotation.
     data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
-    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
-    for body_name in (
-        "base_link",
-        "link_6",
-        "sg100_base_link",
-        "thumb_link3",
-        "index_link3",
-        "wrist_camera_mount_base",
-        "wrist_camera_head",
-        "grasp_table",
-    ):
-        body_id = _body_id(model, body_name)
-        usd_matrix = xform_cache.GetLocalToWorldTransform(
-            stage.GetPrimAtPath(body_paths[body_name])
-        )
-        np.testing.assert_allclose(
-            np.asarray(usd_matrix.ExtractTranslation()),
-            data.xpos[body_id],
-            atol=2e-6,
-            rtol=0.0,
-        )
-        np.testing.assert_allclose(
-            np.asarray(usd_matrix.ExtractRotationMatrix()).T,
-            data.xmat[body_id].reshape(3, 3),
-            atol=2e-6,
-            rtol=0.0,
-        )
+    initialize_robot_state(model, data, layout, Q_ARM_READY, Q_HAND_READY)
+    for name, (position, rotation) in PRE_BASE_READY_POSES.items():
+        body_id = _body_id(model, name)
+        np.testing.assert_allclose(data.xpos[body_id], position, atol=1e-10)
+        np.testing.assert_allclose(data.xmat[body_id], rotation, atol=1e-10)
 
-    # V7 medium bracket: primitive support, length, direction, attachment and
-    # housing centre are preserved exactly; the debug collision box is absent.
-    mount = stage.GetPrimAtPath(body_paths["wrist_camera_mount_base"])
-    extension = UsdGeom.Capsule(mount.GetChild("wrist_camera_extension_visual"))
-    assert extension
-    assert abs(float(extension.GetHeightAttr().Get()) - 0.1180982773202048) < 1e-10
-    assert abs(float(extension.GetRadiusAttr().Get()) - 0.0045) < 1e-12
-    extension_matrix = UsdGeom.Xformable(extension).GetLocalTransformation()
-    np.testing.assert_allclose(
-        np.asarray(extension_matrix.ExtractTranslation()),
-        [0.0084295, -0.1025825, -0.01],
-        atol=1e-10,
-        rtol=0.0,
-    )
-    expected_axis = np.array([0.016859, -0.115165, 0.020], dtype=np.float64)
-    expected_axis /= np.linalg.norm(expected_axis)
-    np.testing.assert_allclose(
-        np.asarray(extension_matrix.ExtractRotationMatrix())[2],
-        expected_axis,
-        atol=2e-7,
-        rtol=0.0,
+
+def test_fresh_v8_export_contract() -> None:
+    from sg100_teleop.tools.export_avp_mujoco_usdz import export_compat_usdz
+
+    with tempfile.TemporaryDirectory(prefix="test_avp_v8_export_") as directory:
+        output = Path(directory) / "v8.usdz"
+        audit = export_compat_usdz(SCENE_XML, output)
+        assert audit.runtime_body_names == list(V8_BODIES)
+        assert len(audit.body_paths) == 24
+        assert len(audit.kept_renderables) == 30
+        assert not audit.ownership_collisions
+        assert not audit.nested_runtime_bodies
+        assert not audit.physics_prims
+        assert not audit.world_static_renderables
+        assert len(audit.excluded_world_renderables) == 1
+        assert audit.excluded_world_renderables[0].endswith("/workstation_floor_visual")
+
+        corrections = [
+            Path(record.destination_path).name
+            for record in audit.kept_renderables
+            if record.compiled_mesh_correction
+        ]
+        assert corrections == ["mug_visual"]
+        mesh_records = [
+            record
+            for record in audit.kept_renderables
+            if record.compiled_mesh_fit_error > 0.0
+        ]
+        assert len(mesh_records) == 24
+        assert max(record.compiled_mesh_fit_error for record in mesh_records) <= 1e-7
+        assert max(record.transform_error for record in audit.kept_renderables) <= 1e-8
+        for record in audit.kept_renderables:
+            if not record.compiled_mesh_correction:
+                np.testing.assert_allclose(record.bbox_extent_ratio, np.ones(3), atol=1e-10)
+
+
+def test_prebuilt_v8_package_and_scene_contract() -> None:
+    from pxr import Usd, UsdGeom
+    from sg100_teleop.tools.export_avp_mujoco_usdz import (
+        audit_compat_stage,
+        validate_usdz_package,
     )
 
-    camera_head = stage.GetPrimAtPath(body_paths["wrist_camera_head"])
-    housing = camera_head.GetChild("wrist_camera_visual")
-    housing_matrix = UsdGeom.Xformable(housing).GetLocalTransformation()
-    np.testing.assert_allclose(
-        np.asarray(housing_matrix.ExtractTranslation()),
-        [-0.000052258, -0.014652684, -0.013612352],
-        atol=1e-12,
-        rtol=0.0,
-    )
-
-    table_prim = stage.GetPrimAtPath(
-        visual_by_body["grasp_table"][0].destination_path
-    )
-    table_color = UsdGeom.Gprim(table_prim).GetDisplayColorAttr().Get()
-    np.testing.assert_allclose(
-        np.asarray(table_color[0]), [0.42, 0.43, 0.44], atol=1e-7, rtol=0.0
-    )
-
-    package_audit = validate_usdz_package(output)
-    assert not package_audit["unresolved_assets"]
-    assert len(package_audit["resolved_assets"]) == 6
-
-    bbox_cache = UsdGeom.BBoxCache(
-        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=False
-    )
-    table_prim = stage.GetPrimAtPath(
-        visual_by_body["grasp_table"][0].destination_path
-    )
-    bottle_prim = stage.GetPrimAtPath(
-        visual_by_body["water_bottle"][0].destination_path
-    )
-    table_range = bbox_cache.ComputeWorldBound(table_prim).ComputeAlignedRange()
-    bottle_range = bbox_cache.ComputeWorldBound(bottle_prim).ComputeAlignedRange()
-    gap = float(bottle_range.GetMin()[2] - table_range.GetMax()[2])
-    assert abs(gap) < 1e-6
-
-    assert zipfile.is_zipfile(output)
-    with zipfile.ZipFile(output) as archive:
+    assert OLD_ROBOT_USDZ.is_file()
+    assert OLD_ROBOT_USDZ.stat().st_size == 11_971_227
+    assert V8_COMPAT_USDZ.is_file()
+    assert zipfile.is_zipfile(V8_COMPAT_USDZ)
+    with zipfile.ZipFile(V8_COMPAT_USDZ) as archive:
         assert archive.testzip() is None
-        assert archive.namelist()
+        assert set(archive.namelist()) == {
+            "avp_compat.usdc",
+            "0/coke_red.png",
+            "0/ycb-apple.png",
+            "0/image0.png",
+        }
 
+    package = validate_usdz_package(V8_COMPAT_USDZ)
+    assert not package["unresolved_assets"]
+    assert len(package["resolved_assets"]) == 3
+    stage = Usd.Stage.Open(str(V8_COMPAT_USDZ))
+    assert stage is not None and stage.GetDefaultPrim()
+    assert UsdGeom.GetStageUpAxis(stage) == "Z"
+    assert UsdGeom.GetStageMetersPerUnit(stage) == 1.0
 
-def test_usd_contract() -> None:
-    with tempfile.TemporaryDirectory(prefix="test_avp_compat_") as directory:
-        _run_usd_contract_checks(Path(directory))
+    geometry = _stage_geometry(stage)
+    assert tuple(child.GetName() for child in geometry.GetChildren()) == V8_BODIES
+    paths, collisions, nested, physics = audit_compat_stage(stage, list(V8_BODIES))
+    assert set(paths) == set(V8_BODIES)
+    assert not collisions and not nested and not physics
+    assert all(stage.GetPrimAtPath(path).GetParent() == geometry for path in paths.values())
 
+    old_stage = Usd.Stage.Open(str(OLD_ROBOT_USDZ))
+    old_names = tuple(child.GetName() for child in _stage_geometry(old_stage).GetChildren())
+    assert old_names == ROBOT_BODIES
+    assert tuple(child.GetName() for child in geometry.GetChildren())[:19] == old_names
 
-def test_sim_usd_contract() -> None:
-    with tempfile.TemporaryDirectory(prefix="test_avp_sim_compat_") as directory:
-        _run_usd_contract_checks(
-            Path(directory),
-            xml_path=SIM_XML,
-            expected_bodies=SIM_RUNTIME_BODIES,
-            expect_guides=False,
-            expect_table_bottle=False,
-        )
-
-
-def test_prebuilt_v7_package_contract() -> None:
-    from pxr import Usd
-    from sg100_teleop.tools.export_avp_mujoco_usdz import validate_usdz_package
-
-    package_audit = validate_usdz_package(V7_COMPAT_USDZ)
-    assert len(package_audit["resolved_assets"]) == 6
-    stage = Usd.Stage.Open(str(V7_COMPAT_USDZ))
-    assert stage is not None
-    geometry = stage.GetDefaultPrim().GetChild("Geometry")
-    assert len(geometry.GetChildren()) == 30
-    visual_names = {
-        prim.GetName()
+    renderables = {
+        prim.GetName(): prim
         for prim in stage.Traverse()
         if prim.GetTypeName() in {"Mesh", "Cube", "Capsule", "Cylinder"}
     }
-    assert {
-        "wrist_camera_mount_base_visual",
-        "wrist_camera_extension_visual",
-        "wrist_camera_visual",
-        "grasp_table_collision",
-    } <= visual_names
-    assert "wrist_camera_collision" not in visual_names
-    assert "workstation_floor_visual" not in visual_names
-    for index in range(1, 7):
-        assert stage.GetPrimAtPath(f"/Flattened_Prototype_{index}")
+    assert set(renderables) == EXPECTED_VISUALS
+    assert not any(prim.IsA(UsdGeom.Camera) for prim in stage.Traverse())
+    assert not any("Light" in prim.GetTypeName() for prim in stage.Traverse())
+    forbidden = (
+        "wrist_camera",
+        "camera_mount",
+        "camera_head",
+        "camera_collision",
+        "workstation_front",
+        "demo_camera",
+        "water_bottle",
+        "redbull",
+        "pringles",
+        "orange",
+        "diagnostic",
+        "debug",
+        "palm_collision",
+        "mug_coll_",
+    )
+    all_names = "\n".join(prim.GetName().lower() for prim in stage.Traverse())
+    assert not any(name in all_names for name in forbidden)
+
+    for visual_name, expected_faces in SG100_VISUAL_FACE_COUNTS.items():
+        mesh = UsdGeom.Mesh(renderables[visual_name])
+        assert len(mesh.GetFaceVertexCountsAttr().Get()) == expected_faces
+
+    model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    _assert_body_world_transforms(stage, model, data)
+
+    bbox = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=False
+    )
+    table_range = bbox.ComputeWorldBound(geometry.GetChild("grasp_table")).ComputeAlignedRange()
+    np.testing.assert_allclose(table_range.GetMin(), [-0.15, -0.35, -0.04], atol=2e-8)
+    np.testing.assert_allclose(table_range.GetMax(), [0.75, 0.65, 0.0], atol=2e-8)
+
+    crate = geometry.GetChild("drop_bin")
+    assert {child.GetName() for child in crate.GetChildren()} == {
+        "wood_crate_bottom",
+        "wood_crate_wall_pX",
+        "wood_crate_wall_nX",
+        "wood_crate_wall_pY",
+        "wood_crate_wall_nY",
+    }
+    crate_range = bbox.ComputeWorldBound(crate).ComputeAlignedRange()
+    np.testing.assert_allclose(crate_range.GetMin(), [0.445, -0.255, 0.0], atol=2e-8)
+    np.testing.assert_allclose(crate_range.GetMax(), [0.655, -0.045, 0.08], atol=2e-8)
+    top_center = np.array([0.55, -0.15, 0.079])
+    for child in crate.GetChildren():
+        child_range = bbox.ComputeWorldBound(child).ComputeAlignedRange()
+        inside = np.all(top_center >= child_range.GetMin()) and np.all(
+            top_center <= child_range.GetMax()
+        )
+        assert not inside, f"crate is closed at the top by {child.GetName()}"
+
+    mug_mesh = renderables["mug_visual"]
+    mujoco_points = _mujoco_geom_world_points(model, data, "mug_visual")
+    usd_points = _world_points(stage, mug_mesh)
+    assert mujoco_points.shape == usd_points.shape
+    np.testing.assert_allclose(usd_points, mujoco_points, atol=5e-9, rtol=0.0)
+    body_origin = data.xpos[_body_id(model, "obj_mug")]
+    usd_body_matrix = UsdGeom.XformCache().GetLocalToWorldTransform(
+        geometry.GetChild("obj_mug")
+    )
+    usd_body_origin = np.asarray(usd_body_matrix.ExtractTranslation())
+    source_direction = _handle_direction(mujoco_points, body_origin)
+    package_direction = _handle_direction(usd_points, usd_body_origin)
+    angle = np.degrees(
+        np.arccos(np.clip(np.dot(source_direction, package_direction), -1.0, 1.0))
+    )
+    assert angle <= 2.0
+    assert np.degrees(
+        np.arccos(np.clip(np.dot(source_direction, [-1.0, 0.0]), -1.0, 1.0))
+    ) <= 10.0
+
+
+def test_runtime_accepts_the_prebuilt_v8_package() -> None:
+    runtime_python = ROOT / ".venv/bin/python"
+    script = (
+        "from avp_stream.streamer import VisionProStreamer; "
+        "import sys; print(VisionProStreamer._validate_prebuilt_usdz(sys.argv[1]))"
+    )
+    result = subprocess.run(
+        [str(runtime_python), "-c", script, str(V8_COMPAT_USDZ)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == str(V8_COMPAT_USDZ.resolve())
 
 
 def main() -> None:
-    test_base_link_source_and_kinematic_regression()
-    print("base_link source + kinematic regression: PASS")
-    test_source_table_bottle_contact()
-    print("source table/bottle contact: PASS")
-    test_sim_source_regression()
-    print("sim source regression: PASS")
-    with tempfile.TemporaryDirectory(prefix="test_avp_compat_") as directory:
-        _run_usd_contract_checks(Path(directory))
-    print("AVP USDZ contract A-P: PASS")
-    with tempfile.TemporaryDirectory(prefix="test_avp_sim_compat_") as directory:
-        _run_usd_contract_checks(
-            Path(directory),
-            xml_path=SIM_XML,
-            expected_bodies=SIM_RUNTIME_BODIES,
-            expect_guides=False,
-            expect_table_bottle=False,
-        )
-    print("AVP sim USDZ contract: PASS")
-    test_prebuilt_v7_package_contract()
-    print("prebuilt V7 USDZ package: PASS")
+    test_v8_source_contract()
+    print("V8 MJCF compile/physics/camera contract: PASS")
+    test_fresh_v8_export_contract()
+    print("fresh V8 USDZ conversion contract: PASS")
+    test_prebuilt_v8_package_and_scene_contract()
+    print("prebuilt V8 package/visual/transform/handle contract: PASS")
+    test_runtime_accepts_the_prebuilt_v8_package()
+    print("AVP prebuilt-package runtime validation: PASS")
 
 
 if __name__ == "__main__":

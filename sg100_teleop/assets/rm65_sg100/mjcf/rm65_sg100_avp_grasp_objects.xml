@@ -143,29 +143,6 @@
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
 
-    <!-- Red Bull can: d55 x h135 mm, 0.30 kg -->
-    <body name="obj_redbull" pos="0.36 0.50 0.0">
-      <freejoint name="obj_redbull_free" />
-      <geom name="obj_redbull_visual" type="mesh" mesh="redbull_mesh" material="redbull_mat"
-            euler="1.57 -1.57 0" mass="0" group="1" contype="0" conaffinity="0" />
-      <geom name="obj_redbull_collision" type="cylinder" pos="0 0 0.0676"
-            size="0.0275 0.0676" mass="0.30" group="3" contype="2" conaffinity="1"
-            friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
-    </body>
-
-    <!-- Pringles can: d59 x h186 mm, 0.20 kg.
-         The mesh is off-center by ~3 mm (its local z span is
-         -0.0956..+0.0899), so the collision cylinder is shifted to
-         match the mesh, not the body origin. -->
-    <body name="obj_pringles" pos="0.20 0.42 0.09564">
-      <freejoint name="obj_pringles_free" />
-      <geom name="obj_pringles_visual" type="mesh" mesh="pringles_mesh" material="pringles_mat"
-            euler="1.57 0 0" mass="0" group="1" contype="0" conaffinity="0" />
-      <geom name="obj_pringles_collision" type="cylinder" pos="0 0 -0.00285"
-            size="0.0297 0.0928" mass="0.20" group="3" contype="2" conaffinity="1"
-            friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
-    </body>
-
     <!-- Apple: ~d75 mm, 0.15 kg -->
     <body name="obj_apple" pos="0.30 0.28 0.001">
       <freejoint name="obj_apple_free" />
@@ -176,18 +153,11 @@
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
 
-    <!-- Orange: ~d72 mm, 0.15 kg -->
-    <body name="obj_orange" pos="0.42 0.10 0.001">
-      <freejoint name="obj_orange_free" />
-      <geom name="obj_orange_visual" type="mesh" mesh="orange_mesh" material="orange_mat"
-            mass="0" group="1" contype="0" conaffinity="0" />
-      <geom name="obj_orange_collision" type="sphere" pos="0 0 0.0355"
-            size="0.0355" mass="0.15" group="3" contype="2" conaffinity="1"
-            friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
-    </body>
-
-    <!-- Ceramic mug: 120 x 90 x 90 mm (incl. handle), 0.35 kg -->
-    <body name="obj_mug" pos="0.55 0.15 0.04281">
+    <!-- Ceramic mug: translation unchanged; its compiled-mesh handle points
+         along local +Y.  This yaw aligns that handle with the READY-pose
+         SG100 palm in table XY while retaining a perfectly upright cup. -->
+    <body name="obj_mug" pos="0.55 0.15 0.04281"
+          quat="0.667606304 0 0 0.744514488">
       <freejoint name="obj_mug_free" />
       <inertial pos="0 0 0" mass="0.35" diaginertia="0.0005 0.0005 0.0005" />
       <geom name="mug_visual" type="mesh" mesh="mug_vis" material="mug_mat"
@@ -320,42 +290,45 @@
             contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
-      <site name="mug_bottom" type="sphere" pos="0 0 -0.04281" size="0.004" rgba="0 0 0 0" />
-      <site name="mug_top"    type="sphere" pos="0 0  0.04263" size="0.004" rgba="0 0 0 0" />
     </body>
 
     <!-- ======================================================
-         Drop bin: open-top 210 x 210 x 135 mm, cavity 180 x 180 mm.
+         Lightweight open wooden crate: 210 x 210 x 80 mm outside,
+         180 x 180 x 65 mm usable cavity.
 
          Static furniture (no joint, no DoF).  Grasped objects are
-         meant to be released over it and land inside.  Visual is the
-         hollow shell mesh; collision is 5 hidden boxes (floor +
-         4 walls).  Same collision class as the table:
+         meant to be released over it and land inside.  Five warm,
+         desaturated primitive boxes form the bottom and four low walls;
+         there is no top and no solid interior volume.  Same collision
+         class as the table:
            bin (4/3) <-> objects (2/3)  ON
            bin (4/3) <-> fingers (1/2)  ON
            bin (4/3) <-> arm    (8/4)   ON
          ====================================================== -->
     <body name="drop_bin" pos="0.55 -0.15 0">
-      <geom name="drop_bin_visual" type="mesh" mesh="drop_bin_mesh"
-            rgba="0.25 0.27 0.31 1" group="1" contype="0" conaffinity="0" />
-      <geom name="drop_bin_floor_collision" type="box" pos="0 0 0.0075"
-            size="0.105 0.105 0.0075" group="3"
+      <geom name="wood_crate_bottom" type="box" pos="0 0 0.0075"
+            size="0.105 0.105 0.0075" group="1"
+            rgba="0.48 0.34 0.22 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
-      <geom name="drop_bin_wall_pX" type="box" pos="0.0975 0 0.0675"
-            size="0.0075 0.105 0.0675" group="3"
+      <geom name="wood_crate_wall_pX" type="box" pos="0.0975 0 0.0475"
+            size="0.0075 0.105 0.0325" group="1"
+            rgba="0.57 0.41 0.27 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
-      <geom name="drop_bin_wall_nX" type="box" pos="-0.0975 0 0.0675"
-            size="0.0075 0.105 0.0675" group="3"
+      <geom name="wood_crate_wall_nX" type="box" pos="-0.0975 0 0.0475"
+            size="0.0075 0.105 0.0325" group="1"
+            rgba="0.53 0.38 0.25 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
-      <geom name="drop_bin_wall_pY" type="box" pos="0 0.0975 0.0675"
-            size="0.105 0.0075 0.0675" group="3"
+      <geom name="wood_crate_wall_pY" type="box" pos="0 0.0975 0.0475"
+            size="0.090 0.0075 0.0325" group="1"
+            rgba="0.60 0.44 0.29 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
-      <geom name="drop_bin_wall_nY" type="box" pos="0 -0.0975 0.0675"
-            size="0.105 0.0075 0.0675" group="3"
+      <geom name="wood_crate_wall_nY" type="box" pos="0 -0.0975 0.0475"
+            size="0.090 0.0075 0.0325" group="1"
+            rgba="0.55 0.39 0.26 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>

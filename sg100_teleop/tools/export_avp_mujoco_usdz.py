@@ -24,6 +24,8 @@ import tempfile
 from typing import Iterable, Sequence
 import zipfile
 
+import numpy as np
+
 
 PHYSICS_SCHEMA_PREFIXES = ("Physics", "Physx", "Newton", "Mjc")
 PHYSICS_PROPERTY_PREFIXES = ("physics:", "physx", "newton:", "mjc:")
@@ -43,6 +45,8 @@ class VisualRecord:
     purpose: str
     transform_error: float = 0.0
     bbox_extent_ratio: list[float] = field(default_factory=list)
+    compiled_mesh_fit_error: float = 0.0
+    compiled_mesh_correction: bool = False
 
 
 @dataclass
@@ -212,6 +216,54 @@ def _strip_physics(prim) -> None:
 
 def _matrix_max_error(lhs, rhs) -> float:
     return max(abs(float(lhs[row][column]) - float(rhs[row][column])) for row in range(4) for column in range(4))
+
+
+def _compiled_mesh_local_transform(model, geom_id: int, usd_mesh, mujoco, Gf):
+    """Fit USD mesh points to MuJoCo's compiled body-local mesh geometry.
+
+    The upstream converter normally reproduces MJCF mesh transforms exactly,
+    but currently applies ``mesh refquat`` with the opposite convention.  A
+    fit against MuJoCo's compiled vertices also accounts for its mesh
+    canonicalization without changing MJCF, topology, normals, UVs, or
+    materials.  Vertex order is preserved by both pipelines.
+    """
+
+    mesh_id = int(model.geom_dataid[geom_id])
+    mesh_start = int(model.mesh_vertadr[mesh_id])
+    mesh_count = int(model.mesh_vertnum[mesh_id])
+    compiled_points = np.asarray(
+        model.mesh_vert[mesh_start : mesh_start + mesh_count], dtype=np.float64
+    )
+    usd_points = np.asarray(usd_mesh.GetPointsAttr().Get(), dtype=np.float64)
+    if usd_points.shape != compiled_points.shape:
+        raise RuntimeError(
+            f"USD/MuJoCo mesh vertex mismatch for geom {model.geom(geom_id).name!r}: "
+            f"{usd_points.shape} != {compiled_points.shape}"
+        )
+
+    geom_rotation_flat = np.empty(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(geom_rotation_flat, model.geom_quat[geom_id])
+    desired_points = (
+        compiled_points @ geom_rotation_flat.reshape(3, 3).T
+        + model.geom_pos[geom_id]
+    )
+    homogeneous = np.column_stack((usd_points, np.ones(usd_points.shape[0])))
+    coefficients, *_ = np.linalg.lstsq(homogeneous, desired_points, rcond=None)
+    fitted_points = homogeneous @ coefficients
+    fit_error = float(np.max(np.abs(fitted_points - desired_points)))
+    if fit_error > 1e-7:
+        raise RuntimeError(
+            f"Could not fit compiled MuJoCo mesh transform for "
+            f"{model.geom(geom_id).name!r}: max error {fit_error:.3e} m"
+        )
+
+    matrix = Gf.Matrix4d(
+        coefficients[0, 0], coefficients[0, 1], coefficients[0, 2], 0.0,
+        coefficients[1, 0], coefficients[1, 1], coefficients[1, 2], 0.0,
+        coefficients[2, 0], coefficients[2, 1], coefficients[2, 2], 0.0,
+        coefficients[3, 0], coefficients[3, 1], coefficients[3, 2], 1.0,
+    )
+    return matrix, fit_error
 
 
 def _extent(prim, time_code, UsdGeom) -> list[float]:
@@ -480,6 +532,8 @@ def export_compat_usdz(
         flat_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
         occupied_paths: set[str] = set()
         visual_records: list[VisualRecord] = []
+        expected_world_transforms = {}
+        expected_world_extents = {}
 
         destination_body_paths = {}
         for body_name in body_names:
@@ -515,12 +569,51 @@ def export_compat_usdz(
                 destination_xformable.ClearXformOpOrder()
                 destination_xformable.AddTransformOp().Set(visual_relative)
                 _strip_physics(destination_visual)
+                mesh_fit_error = 0.0
+                mesh_correction = False
+                expected_world = flat_cache.GetLocalToWorldTransform(source_visual)
+                if destination_visual.IsA(UsdGeom.Mesh):
+                    geom_id = mujoco.mj_name2id(
+                        model, mujoco.mjtObj.mjOBJ_GEOM, source_visual.GetName()
+                    )
+                    if geom_id < 0:
+                        raise RuntimeError(
+                            f"No MuJoCo geom matches USD mesh {source_visual.GetPath()}"
+                        )
+                    compiled_local, mesh_fit_error = _compiled_mesh_local_transform(
+                        model,
+                        geom_id,
+                        UsdGeom.Mesh(destination_visual),
+                        mujoco,
+                        Gf,
+                    )
+                    if _matrix_max_error(compiled_local, visual_relative) > 1e-6:
+                        destination_xformable.ClearXformOpOrder()
+                        destination_xformable.AddTransformOp().Set(compiled_local)
+                        mesh_correction = True
+                        expected_world = compiled_local * flat_cache.GetLocalToWorldTransform(
+                            flat_body
+                        )
+                        points = np.asarray(
+                            UsdGeom.Mesh(destination_visual).GetPointsAttr().Get(),
+                            dtype=np.float64,
+                        )
+                        world_points = np.column_stack(
+                            (points, np.ones(points.shape[0]))
+                        ) @ np.asarray(expected_world, dtype=np.float64)
+                        expected_world_extents[str(destination_visual_path)] = (
+                            np.max(world_points[:, :3], axis=0)
+                            - np.min(world_points[:, :3], axis=0)
+                        )
+                expected_world_transforms[str(destination_visual_path)] = expected_world
                 visual_records.append(
                     VisualRecord(
                         body=body_name,
                         source_path=str(source_visual.GetPath()),
                         destination_path=str(destination_visual_path),
                         purpose=str(UsdGeom.Tokens.default_),
+                        compiled_mesh_fit_error=mesh_fit_error,
+                        compiled_mesh_correction=mesh_correction,
                     )
                 )
 
@@ -550,6 +643,9 @@ def export_compat_usdz(
                     purpose=str(UsdGeom.Tokens.default_),
                 )
             )
+            expected_world_transforms[str(destination_visual_path)] = (
+                flat_cache.GetLocalToWorldTransform(flat_visual)
+            )
 
         output_stage.GetRootLayer().Save()
         output_stage.Reload()
@@ -557,12 +653,14 @@ def export_compat_usdz(
         for record in visual_records:
             source_prim = flat_stage.GetPrimAtPath(record.source_path)
             destination_prim = output_stage.GetPrimAtPath(record.destination_path)
-            source_world = flat_cache.GetLocalToWorldTransform(source_prim)
+            source_world = expected_world_transforms[record.destination_path]
             destination_world = output_cache.GetLocalToWorldTransform(destination_prim)
             record.transform_error = _matrix_max_error(source_world, destination_world)
+            expected_extent = expected_world_extents.get(record.destination_path)
+            if expected_extent is None:
+                expected_extent = _extent(source_prim, Usd.TimeCode.Default(), UsdGeom)
             record.bbox_extent_ratio = _extent_ratio(
-                _extent(source_prim, Usd.TimeCode.Default(), UsdGeom),
-                _extent(destination_prim, Usd.TimeCode.Default(), UsdGeom),
+                expected_extent, _extent(destination_prim, Usd.TimeCode.Default(), UsdGeom)
             )
 
         body_paths, ownership_collisions, nested, physics_prims = audit_compat_stage(

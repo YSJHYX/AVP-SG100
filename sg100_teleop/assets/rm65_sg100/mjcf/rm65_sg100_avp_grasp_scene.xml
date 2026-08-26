@@ -39,12 +39,6 @@
   <include file="rm65_sg100_avp_grasp_robot.xml"/>
   <include file="rm65_sg100_avp_grasp_objects.xml"/>
 
-  <!--
-    Scene-level workspace reference markers.
-
-    These are visualization/debug sites only.
-    They do not participate in collision or dynamics.
-  -->
   <worldbody>
 
     <!--
@@ -84,67 +78,39 @@
     />
 
     <!--
-      Single soft key light for deterministic offscreen recording.  Shadow
-      casting stays disabled because the original SG100 CAD export contains
-      thousands of adjacent shells: MuJoCo shadow-map self-intersection on
-      those shells creates jagged false "missing triangle" bands even though
-      the visual surface is complete.  A modest ambient component on this
-      same light retains readable shape without adding another light source.
+      World-fixed presentation camera on the far side of the table.  Its
+      world-up look-at basis has exactly zero roll.  The pose and 60 degree
+      vertical field of view retain a conservative >=15% bounding-sphere
+      margin for the complete table, RM65, SG100, three task objects, and
+      crate over all 3,129 states in the production reference trajectory.
+      It is presentation-only and intentionally absent from the VLA
+      observation-key mapping.
+    -->
+    <camera
+      name="demo_camera"
+      mode="fixed"
+      pos="1.500000000 -0.050000000 1.400000000"
+      xyaxes="0.129339184 0.991600411 0.000000000 -0.665525418 0.086807663 0.741309886"
+      fovy="60"
+    />
+
+    <!--
+      Single near-vertical overhead light for deterministic offscreen
+      recording.  MuJoCo shadow mapping produces large black self-shadow
+      bands on the thousands of adjacent SG100 CAD shells, so map-based
+      casting is disabled; the diffuse/ambient balance retains soft local
+      shape shading without those false missing-surface regions.  The
+      headlight remains disabled, so illumination is camera-independent.
     -->
     <light
-      name="workstation_key"
+      name="workstation_overhead"
       directional="true"
-      pos="-0.20 -0.50 2.20"
-      dir="0.26372844 0.33980396 -0.90276275"
-      ambient="0.35 0.35 0.35"
-      diffuse="0.65 0.65 0.65"
-      specular="0.10 0.10 0.10"
+      pos="0.30 0.15 2.20"
+      dir="0 0 -1"
+      ambient="0.42 0.42 0.42"
+      diffuse="0.58 0.58 0.58"
+      specular="0.08 0.08 0.08"
       castshadow="false"
-    />
-
-    <!-- Q_TELEOP_READY TCP position -->
-    <site
-      name="workspace_ready"
-      type="sphere"
-      pos="0.25048434 0.11727796 0.62550799"
-      size="0.006"
-      rgba="0 1 0 1"
-    />
-
-    <!-- radial = +60 mm -->
-    <site
-      name="workspace_outward_60"
-      type="sphere"
-      pos="0.30482326 0.14271970 0.62550799"
-      size="0.005"
-      rgba="1 0 0 1"
-    />
-
-    <!-- radial = -60 mm -->
-    <site
-      name="workspace_inward_60"
-      type="sphere"
-      pos="0.19614543 0.09183622 0.62550799"
-      size="0.005"
-      rgba="1 0 0 1"
-    />
-
-    <!-- lateral = +160 mm = LEFT -->
-    <site
-      name="workspace_left_160"
-      type="sphere"
-      pos="0.18263970 0.26218174 0.62550799"
-      size="0.005"
-      rgba="0 0 1 1"
-    />
-
-    <!-- lateral = -140 mm = RIGHT -->
-    <site
-      name="workspace_right_140"
-      type="sphere"
-      pos="0.30984840 -0.00951285 0.62550799"
-      size="0.005"
-      rgba="0 0 1 1"
     />
 
         <!-- ======================================================
@@ -181,86 +147,6 @@
         friction="0.8 0.005 0.0001"
         solref="0.005 1"
       />
-    </body>
-
-        <!-- ======================================================
-         Upright primitive water bottle
-
-         Height   = 220 mm
-         Diameter = 40 mm
-
-         Initial placement:
-           105 mm OUTWARD from READY grasp reference.
-           Bottle bottom (z 0.00000) sits exactly on the tabletop
-           (z = 0), i.e. directly on the robot's mount table.
-
-         Free joint makes bottle a dynamic 6-DoF rigid body.
-
-         Collision:
-           finger <-> bottle ON
-           bottle <-> table ON
-         ====================================================== -->
-
-    <body
-      name="water_bottle"
-      pos="0.46101150 0.29368833 0.11000000"
-    >
-      <freejoint
-        name="water_bottle_free"
-      />
-
-      <geom
-        name="water_bottle_collision"
-        type="cylinder"
-        size="0.020 0.110"
-        mass="0.500"
-        rgba="0.2 0.6 1.0 0.75"
-        contype="2"
-        conaffinity="1"
-        friction="1.5 0.01 0.0001"
-        condim="4"
-        solref="0.005 1"
-      />
-
-      <!--
-          Intended side-grasp height.
-
-          World grasp-reference Z:
-            0.14944829
-
-          Bottle center Z:
-            0.11000000
-
-          Therefore local grasp Z:
-            +0.03944829
-      -->
-      <site
-        name="water_bottle_grasp_center"
-        type="sphere"
-        pos="0 0 0.03944829"
-        size="0.006"
-        rgba="1 0.4 0 1"
-      />
-
-      <!--
-          80 mm vertical grasp-critical band.
-      -->
-      <site
-        name="water_bottle_grasp_roi_low"
-        type="sphere"
-        pos="0 0 -0.00055171"
-        size="0.004"
-        rgba="1 1 0 1"
-      />
-
-      <site
-        name="water_bottle_grasp_roi_high"
-        type="sphere"
-        pos="0 0 0.07944829"
-        size="0.004"
-        rgba="1 1 0 1"
-      />
-
     </body>
 
   </worldbody>

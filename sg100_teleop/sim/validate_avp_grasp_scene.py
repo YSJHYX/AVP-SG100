@@ -5,12 +5,13 @@ Run from the repo root:
     python -m sg100_teleop.sim.validate_avp_grasp_scene
 
 Loads ``rm65_sg100_avp_grasp_scene.xml`` and asserts that it is structurally
-correct and dynamically sane: it compiles, gravity is on, the table/bottle and
-all collision geoms exist, the 17-DoF robot layout still passes
+correct and dynamically sane: it compiles, gravity is on, the table, three
+production task objects, and open crate collision geoms exist, the 17-DoF
+robot layout still passes
 ``resolve_robot_layout`` (so it can later plug into ``run_avp_arm_hand_sim``),
-the water bottle is a free rigid body, the collision bitmasks produce the
-expected pairs, the fingers are force-limited, and the bottle actually rests
-on the table under gravity.
+the task objects are free rigid bodies, the collision bitmasks produce the
+expected pairs, the fingers are force-limited, and all three objects rest on
+the table under gravity.
 
 Each check prints PASS / FAIL; any failure exits non-zero.
 """
@@ -33,8 +34,8 @@ from sg100_teleop.sim.combined_robot_layout import (
 
 # Mirrors RM65_TELEOP_READY_Q in run_avp_arm_hand_sim.py. Inlined (not imported)
 # so this validator stays free of the AVP/hardware imports that module pulls in
-# at load time. At this pose the hand sits clear of the bottle, so any motion of
-# the bottle during the test is due to gravity + table contact, not the arm.
+# at load time. At this pose the hand sits clear of the props, so any motion of
+# the props during the test is due to gravity + table contact, not the arm.
 READY_Q = np.array(
     [0.32488, -0.76769, 0.97621, 0.22463, -1.80649, -0.12430],
     dtype=np.float64,
@@ -90,7 +91,10 @@ def check_gravity(model: mujoco.MjModel) -> None:
 
 def check_bodies(model: mujoco.MjModel) -> None:
     missing = [
-        n for n in ("water_bottle", "grasp_table", "sg100_base_link", "link_6")
+        n for n in (
+            "obj_coke", "obj_apple", "obj_mug", "drop_bin",
+            "grasp_table", "sg100_base_link", "link_6",
+        )
         if _body_id(model, n) < 0
     ]
     assert not missing, f"missing bodies: {missing}"
@@ -110,7 +114,11 @@ def check_geoms(model: mujoco.MjModel) -> None:
         "middle_link2_collision",
         "little_linik3_collision",
         # environment
-        "water_bottle_collision",
+        "obj_coke_collision",
+        "obj_apple_collision",
+        "mug_coll_0",
+        "wood_crate_bottom",
+        "wood_crate_wall_pX",
         "grasp_table_collision",
     )
     missing = [n for n in required if _geom_id(model, n) < 0]
@@ -121,40 +129,38 @@ def check_layout(model: mujoco.MjModel) -> None:
     layout = resolve_robot_layout(model)
     assert layout.qpos_indices.shape == (ARM_DOF + HAND_DOF,)
     assert layout.dof_indices.tolist() == list(range(ARM_DOF + HAND_DOF)), (
-        "robot DoFs must occupy the first 17 slots so the bottle freejoint "
-        "stays behind them"
+        "robot DoFs must occupy the first 17 slots so prop freejoints stay "
+        "behind them"
     )
 
 
-def check_bottle_freejoint(model: mujoco.MjModel) -> None:
-    jid = _joint_id(model, "water_bottle_free")
-    assert jid >= 0, "water_bottle_free joint missing"
-    assert model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_FREE, (
-        "water_bottle_free must be a free joint"
-    )
-    assert int(model.jnt_dofadr[jid]) >= ARM_DOF + HAND_DOF, (
-        "bottle freejoint DoF must start after the 17 robot DoFs"
-    )
+def check_task_object_freejoints(model: mujoco.MjModel) -> None:
+    for name in ("obj_coke", "obj_apple", "obj_mug"):
+        jid = _joint_id(model, f"{name}_free")
+        assert jid >= 0, f"{name}_free joint missing"
+        assert model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_FREE
+        assert int(model.jnt_dofadr[jid]) >= ARM_DOF + HAND_DOF
 
 
 def check_collision_masks(model: mujoco.MjModel) -> None:
-    # finger (incl. new link-2) <-> bottle : ON
-    assert _can_collide(model, "index_link3_collision", "water_bottle_collision")
-    assert _can_collide(model, "index_link2_collision", "water_bottle_collision")
-    assert _can_collide(model, "palm_collision", "water_bottle_collision")
-    # bottle <-> table : ON
-    assert _can_collide(model, "water_bottle_collision", "grasp_table_collision")
+    # finger (including link-2) <-> task objects: ON
+    for object_geom in ("obj_coke_collision", "obj_apple_collision", "mug_coll_0"):
+        assert _can_collide(model, "index_link3_collision", object_geom)
+        assert _can_collide(model, "index_link2_collision", object_geom)
+        assert _can_collide(model, "palm_collision", object_geom)
+        assert _can_collide(model, object_geom, "grasp_table_collision")
+        assert _can_collide(model, object_geom, "wood_crate_bottom")
     # finger <-> finger : OFF (no self-collision)
     assert not _can_collide(
         model, "index_link3_collision", "middle_link2_collision"
     ), "finger capsules must not collide with each other"
-    # arm (link meshes) <-> table : ON ; <-> bottle : OFF ; <-> hand : OFF
+    # arm (link meshes) <-> table : ON ; <-> objects/hand : OFF
     assert _can_collide(model, "rm65_visual_3", "grasp_table_collision"), (
         "arm links must collide with the table"
     )
     assert not _can_collide(
-        model, "rm65_visual_3", "water_bottle_collision"
-    ), "arm links must NOT collide with the bottle"
+        model, "rm65_visual_3", "obj_coke_collision"
+    ), "arm links must NOT collide with task objects"
     assert not _can_collide(
         model, "rm65_visual_3", "index_link3_collision"
     ), "arm links must NOT collide with the hand"
@@ -165,7 +171,7 @@ def check_collision_masks(model: mujoco.MjModel) -> None:
 
 def check_arm_collision_mask(model: mujoco.MjModel) -> None:
     """Arm link meshes get their own collision class (8 / 4): collide with the
-    table only, not the bottle, hand, or other arm links."""
+    table/crate only, not task objects, hand, or other arm links."""
     for i in range(1, 7):
         name = f"rm65_visual_{i}"
         gid = _geom_id(model, name)
@@ -188,32 +194,36 @@ def check_finger_force_range(model: mujoco.MjModel) -> None:
 
 
 def check_dynamics_stability(model: mujoco.MjModel) -> None:
-    """Step 1 s of physics; the bottle must rest on the table, not fall through."""
+    """Step 1 s; all production props must settle without falling through."""
     layout = resolve_robot_layout(model)
     arm_dof = layout.dof_indices[:ARM_DOF]
     data = mujoco.MjData(model)
 
     # Start in the real AVP startup configuration: arm at the teleop-ready
-    # pose, hand open, bottle at its tuned rest spot on the table.
+    # pose, hand open, props at their authored table placements.
     initialize_robot_state(model, data, layout, READY_Q, np.zeros(HAND_DOF))
 
-    bottle_id = _body_id(model, "water_bottle")
-    z0 = float(data.xpos[bottle_id][2])
+    object_ids = {
+        name: _body_id(model, name) for name in ("obj_coke", "obj_apple", "obj_mug")
+    }
+    z0 = {name: float(data.xpos[body][2]) for name, body in object_ids.items()}
 
     # Hold the arm with gravity-compensation feedforward (exactly what the AVP
-    # script will do), so only the free bottle responds to gravity.
+    # script will do), so only the free props respond to gravity.
     max_ncon = 0
     for _ in range(500):  # 500 * 0.002 s = 1 s
         data.qfrc_applied[arm_dof] = data.qfrc_bias[arm_dof]
         mujoco.mj_step(model, data)
         max_ncon = max(max_ncon, int(data.ncon))
 
-    z1 = float(data.xpos[bottle_id][2])
-    assert np.isfinite(z1), f"bottle z is non-finite: {z1}"
-    assert 0.09 < z1 < 0.13, (
-        f"bottle did not rest on the table: z0={z0:.4f} z1={z1:.4f} "
-        f"(max_ncon={max_ncon})"
-    )
+    z1 = {name: float(data.xpos[body][2]) for name, body in object_ids.items()}
+    for name, z in z1.items():
+        assert np.isfinite(z), f"{name} z is non-finite: {z}"
+        assert z > -0.005, f"{name} fell through table: z0={z0[name]:.4f}, z1={z:.4f}"
+        assert abs(z - z0[name]) < 0.015, (
+            f"{name} did not settle near its authored pose: "
+            f"z0={z0[name]:.4f}, z1={z:.4f}, max_ncon={max_ncon}"
+        )
 
     # Arm must stay near the ready pose. With arm<->table collision now on, a
     # ready pose that penetrates the table would be kicked and explode here.
@@ -232,18 +242,55 @@ def check_dynamics_stability(model: mujoco.MjModel) -> None:
     check_dynamics_stability.arm_drift = arm_drift  # type: ignore[attr-defined]
 
 
+def check_crate_contact_stability(model: mujoco.MjModel) -> None:
+    """Drop the apple into the crate and verify bottom contact is stable."""
+    layout = resolve_robot_layout(model)
+    data = mujoco.MjData(model)
+    initialize_robot_state(model, data, layout, READY_Q, np.zeros(HAND_DOF))
+    joint = _joint_id(model, "obj_apple_free")
+    qadr = int(model.jnt_qposadr[joint])
+    data.qpos[qadr : qadr + 7] = [0.55, -0.15, 0.12, 1, 0, 0, 0]
+    mujoco.mj_forward(model, data)
+    arm_dof = layout.dof_indices[:ARM_DOF]
+    apple_geom = _geom_id(model, "obj_apple_collision")
+    crate_geoms = {
+        _geom_id(model, name)
+        for name in (
+            "wood_crate_bottom", "wood_crate_wall_pX", "wood_crate_wall_nX",
+            "wood_crate_wall_pY", "wood_crate_wall_nY",
+        )
+    }
+    crate_contact = False
+    for _ in range(750):
+        data.qfrc_applied[arm_dof] = data.qfrc_bias[arm_dof]
+        mujoco.mj_step(model, data)
+        crate_contact |= any(
+            apple_geom in (contact.geom1, contact.geom2)
+            and bool({contact.geom1, contact.geom2} & crate_geoms)
+            for contact in data.contact
+        )
+    apple = _body_id(model, "obj_apple")
+    position = data.xpos[apple]
+    assert crate_contact, "apple never contacted crate bottom/walls"
+    assert np.linalg.norm(position[:2] - [0.55, -0.15]) < 0.03
+    assert 0.01 < float(position[2]) < 0.03
+    assert np.all(np.isfinite(data.qpos)) and np.all(np.isfinite(data.qvel))
+    check_crate_contact_stability.position = position.copy()  # type: ignore[attr-defined]
+
+
 CHECKS: list[tuple[str, Callable[[mujoco.MjModel], None]]] = [
     ("compiles (valid XML + mesh paths)", check_compiles),
     ("gravity == 0 0 -9.81", check_gravity),
     ("key bodies present", check_bodies),
     ("key geoms present (palm / link-2 / tips / env)", check_geoms),
     ("resolve_robot_layout passes (17 DoF contiguous)", check_layout),
-    ("water_bottle is a free rigid body after robot DoFs", check_bottle_freejoint),
-    ("collision bitmasks (finger-bottle ON, bottle-table ON, arm-table ON, "
+    ("three task objects are free rigid bodies after robot DoFs", check_task_object_freejoints),
+    ("collision bitmasks (finger-object ON, object-table/crate ON, arm-table ON, "
      "rest OFF)", check_collision_masks),
     ("arm link collision class == (8, 4) [table only]", check_arm_collision_mask),
     ("hand actuator forcerange == [-20, 20]", check_finger_force_range),
-    ("bottle rests on table under gravity (1 s sim)", check_dynamics_stability),
+    ("three task objects rest on table under gravity (1 s sim)", check_dynamics_stability),
+    ("apple settles inside open crate without instability", check_crate_contact_stability),
 ]
 
 
@@ -260,13 +307,15 @@ def main() -> int:
             failures.append(title)
             continue
         extra = ""
-        if title.startswith("bottle rests"):
+        if title.startswith("three task objects rest"):
             extra = (
-                f"  [z0={check_dynamics_stability.z0:.4f}, "
-                f"z1={check_dynamics_stability.z1:.4f}, "
+                f"  [z0={check_dynamics_stability.z0}, "
+                f"z1={check_dynamics_stability.z1}, "
                 f"max_ncon={check_dynamics_stability.max_ncon}, "
                 f"arm_drift={check_dynamics_stability.arm_drift:.4f}]"
             )
+        elif title.startswith("apple settles"):
+            extra = f"  [position={check_crate_contact_stability.position}]"
         print(f"  PASS  {title}{extra}")
 
     if failures:

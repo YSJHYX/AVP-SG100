@@ -1,0 +1,112 @@
+{
+  "cup_handle": {
+    "alignment_error_degrees": 0.0,
+    "cup_to_ready_palm_xy": [
+      -0.994085130943044,
+      -0.10860364836390696
+    ],
+    "handle_world_xy": [
+      -0.9940851312337183,
+      -0.10860364570326848
+    ],
+    "mesh_handle_local_axis": "+Y",
+    "upright_z_dot": 1.0
+  },
+  "demo_coverage": {
+    "coverage_fraction": 1.0,
+    "covered_frames": 3129,
+    "minimum_conservative_margin": 0.1503366573198005,
+    "scanned_frames": 3129,
+    "worst_frame": 0,
+    "worst_x_extent_ndc": 0.37624029288660504,
+    "worst_y_extent_ndc": 0.8496633426801995
+  },
+  "frames": {
+    "container": 512,
+    "far_reach": 1857,
+    "grasp": 2809,
+    "home": 0,
+    "interaction": 1730,
+    "mid": 1564
+  },
+  "image_statistics": {
+    "crate_top_visibility_v8.png": {
+      "mean": 29.113566984953703,
+      "near_black_fraction": 0.0,
+      "near_white_fraction": 0.0006369357638888889,
+      "variance": 739.7129185121507
+    },
+    "cup_handle_orientation_v8.png": {
+      "mean": 55.8318482349537,
+      "near_black_fraction": 1.0850694444444444e-06,
+      "near_white_fraction": 0.007241753472222222,
+      "variance": 2629.336456610069
+    },
+    "demo_container_v8.png": {
+      "mean": 29.352456597222222,
+      "near_black_fraction": 0.0,
+      "near_white_fraction": 0.0006608072916666666,
+      "variance": 778.4171769801766
+    },
+    "demo_far_reach_v8.png": {
+      "mean": 29.341417100694443,
+      "near_black_fraction": 0.0,
+      "near_white_fraction": 0.0010188802083333332,
+      "variance": 796.5830856943719
+    },
+    "demo_home_v8.png": {
+      "mean": 29.121196108217593,
+      "near_black_fraction": 0.0,
+      "near_white_fraction": 0.0006369357638888889,
+      "variance": 739.5785670733761
+    },
+    "demo_mid_v8.png": {
+      "mean": 29.494292534722224,
+      "near_black_fraction": 0.0,
+      "near_white_fraction": 0.0006618923611111111,
+      "variance": 797.7155605961365
+    },
+    "head_container_v8.png": {
+      "mean": 57.131403356481485,
+      "near_black_fraction": 1.0850694444444444e-06,
+      "near_white_fraction": 0.005504557291666667,
+      "variance": 2793.8858140317484
+    },
+    "head_home_v8.png": {
+      "mean": 55.831847511574075,
+      "near_black_fraction": 1.0850694444444444e-06,
+      "near_white_fraction": 0.007241753472222222,
+      "variance": 2629.336488918877
+    },
+    "head_interaction_v8.png": {
+      "mean": 55.82153428819444,
+      "near_black_fraction": 0.0,
+      "near_white_fraction": 0.005544704861111111,
+      "variance": 2615.6417263785984
+    },
+    "wrist_grasp_v8.png": {
+      "mean": 38.30183195891204,
+      "near_black_fraction": 0.32822157118055556,
+      "near_white_fraction": 0.0,
+      "variance": 1298.3443673036488
+    },
+    "wrist_home_v8.png": {
+      "mean": 47.746867404513885,
+      "near_black_fraction": 0.42861870659722223,
+      "near_white_fraction": 0.0,
+      "variance": 2402.64954042556
+    },
+    "wrist_interaction_v8.png": {
+      "mean": 52.15924406828704,
+      "near_black_fraction": 0.37512803819444446,
+      "near_white_fraction": 0.0,
+      "variance": 2405.983920117225
+    }
+  },
+  "model_dimensions": {
+    "nq": 38,
+    "nu": 17,
+    "nv": 35
+  },
+  "scene": "sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_avp_grasp_scene.xml"
+}
