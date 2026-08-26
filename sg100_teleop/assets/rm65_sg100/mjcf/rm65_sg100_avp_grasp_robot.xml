@@ -166,6 +166,12 @@
                     rgba="1 0 1 0"
                   />
                   <body name="wrist_camera_mount_base">
+                    <!-- Placeholder inertial: an all-zero-mass geom set
+                         with no explicit inertial makes the compiler
+                         fail ("body mass is too small").  1e-6 kg is
+                         four orders below joint_6's armature and keeps
+                         the calibrated inertia contract intact. -->
+                    <inertial pos="0 -0.038 -0.020" mass="1e-6" diaginertia="1e-12 1e-12 1e-12" />
                     <geom
                       name="wrist_camera_mount_base_visual"
                       type="box"
@@ -189,6 +195,10 @@
                       mass="0"
                     />
                     <body name="wrist_camera_head" pos="0.016859 -0.160165 0.000">
+                      <!-- Same compiler requirement as the mount base;
+                           negligible mass, collision handled by the
+                           wrist_camera_collision geom below. -->
+                      <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-12 1e-12 1e-12" />
                       <geom
                         name="wrist_camera_visual"
                         type="box"
