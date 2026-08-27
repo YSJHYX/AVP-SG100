@@ -159,13 +159,6 @@ def _mujoco_geom_world_points(
     return points @ rotation.T + data.geom_xpos[geom_id]
 
 
-def _handle_direction(points: np.ndarray, body_origin: np.ndarray) -> np.ndarray:
-    radial = np.linalg.norm(points[:, :2] - body_origin[:2], axis=1)
-    handle = points[radial >= np.percentile(radial, 95), :2].mean(axis=0)
-    direction = handle - body_origin[:2]
-    return direction / np.linalg.norm(direction)
-
-
 def _assert_body_world_transforms(
     stage, model, data, body_names=V8_BODIES
 ) -> float:
@@ -363,20 +356,27 @@ def test_prebuilt_v8_package_and_scene_contract() -> None:
     mujoco_points = _mujoco_geom_world_points(model, data, "mug_visual")
     usd_points = _world_points(stage, mug_mesh)
     assert mujoco_points.shape == usd_points.shape
-    np.testing.assert_allclose(usd_points, mujoco_points, atol=5e-9, rtol=0.0)
+    # USD mesh points are stored at float precision; the near-zero final yaw
+    # exposes up to ~4e-8 m of quantization in the reconstructed world points.
+    np.testing.assert_allclose(usd_points, mujoco_points, atol=5e-8, rtol=0.0)
     body_origin = data.xpos[_body_id(model, "obj_mug")]
     usd_body_matrix = UsdGeom.XformCache().GetLocalToWorldTransform(
         geometry.GetChild("obj_mug")
     )
-    usd_body_origin = np.asarray(usd_body_matrix.ExtractTranslation())
-    source_direction = _handle_direction(mujoco_points, body_origin)
-    package_direction = _handle_direction(usd_points, usd_body_origin)
+    source_direction = -data.xmat[_body_id(model, "obj_mug")].reshape(3, 3)[:2, 1]
+    source_direction /= np.linalg.norm(source_direction)
+    usd_body_rotation = np.asarray(usd_body_matrix.ExtractRotationMatrix()).T
+    package_direction = -usd_body_rotation[:2, 1]
+    package_direction /= np.linalg.norm(package_direction)
     angle = np.degrees(
         np.arccos(np.clip(np.dot(source_direction, package_direction), -1.0, 1.0))
     )
     assert angle <= 2.0
+    crate_origin = data.xpos[_body_id(model, "drop_bin")]
+    toward_crate = crate_origin[:2] - body_origin[:2]
+    toward_crate /= np.linalg.norm(toward_crate)
     assert np.degrees(
-        np.arccos(np.clip(np.dot(source_direction, [-1.0, 0.0]), -1.0, 1.0))
+        np.arccos(np.clip(np.dot(source_direction, toward_crate), -1.0, 1.0))
     ) <= 10.0
 
 

@@ -10,6 +10,7 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 import mujoco
 import numpy as np
 
+from sg100_teleop.kinematics.rm65_ik import RM65IKSolver
 from sg100_teleop.recording.refine_scene_v8 import (
     EXPECTED_REFERENCE_FRAMES,
     RECORDING,
@@ -21,7 +22,12 @@ from sg100_teleop.sim.camera_observations import (
     render_camera_observations,
     validate_camera_observation_contract,
 )
-from sg100_teleop.sim.combined_robot_layout import resolve_robot_layout
+from sg100_teleop.sim.combined_robot_layout import (
+    HAND_DOF,
+    initialize_robot_state,
+    resolve_robot_layout,
+)
+from sg100_teleop.sim.run_avp_arm_hand_sim import TCP_BODY, compute_startup_arm_q
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -157,28 +163,56 @@ def test_only_three_task_objects_are_free_bodies() -> None:
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name) == -1
 
 
-def test_cup_is_upright_and_handle_faces_ready_palm() -> None:
+def test_cup_is_upright_and_handle_is_rotated_90_degrees_toward_crate() -> None:
     model = make_model()
     data = mujoco.MjData(model)
+    layout = resolve_robot_layout(model)
+    arm_q = compute_startup_arm_q(
+        model,
+        data,
+        RM65IKSolver(model, tcp_body_name=TCP_BODY),
+    )
+    assert arm_q is not None
+    initialize_robot_state(
+        model,
+        data,
+        layout,
+        arm_q,
+        np.zeros(HAND_DOF, dtype=np.float64),
+    )
     mug = object_id(model, mujoco.mjtObj.mjOBJ_BODY, "obj_mug")
     joint = object_id(model, mujoco.mjtObj.mjOBJ_JOINT, "obj_mug_free")
     qadr = int(model.jnt_qposadr[joint])
     np.testing.assert_allclose(model.qpos0[qadr : qadr + 3], [0.55, 0.15, 0.04281], atol=1e-12, rtol=0)
-    mujoco.mj_forward(model, data)
     rotation = data.xmat[mug].reshape(3, 3)
     assert float(rotation[2, 2]) > 1.0 - 1e-12
-    mesh = object_id(model, mujoco.mjtObj.mjOBJ_MESH, "mug_vis")
+    visual = object_id(model, mujoco.mjtObj.mjOBJ_GEOM, "mug_visual")
+    mesh = int(model.geom_dataid[visual])
     start = int(model.mesh_vertadr[mesh])
     vertices = model.mesh_vert[start : start + int(model.mesh_vertnum[mesh])]
-    radial = np.linalg.norm(vertices[:, :2], axis=1)
-    handle_local_xy = vertices[radial >= np.percentile(radial, 95), :2].mean(axis=0)
-    assert handle_local_xy[1] > 0.03 and abs(handle_local_xy[0]) < 0.005
-    handle_world = rotation[:2, 1]
+    geom_rotation_flat = np.empty(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(geom_rotation_flat, model.geom_quat[visual])
+    vertices = (
+        vertices @ geom_rotation_flat.reshape(3, 3).T
+        + model.geom_pos[visual]
+    )
+    handle_local_xy = vertices[
+        vertices[:, 1] <= np.percentile(vertices[:, 1], 5), :2
+    ].mean(axis=0)
+    handle_local_xy /= np.linalg.norm(handle_local_xy)
+    np.testing.assert_allclose(handle_local_xy, [0.0, -1.0], atol=1e-7, rtol=0)
+    handle_world = -rotation[:2, 1]
     handle_world /= np.linalg.norm(handle_world)
-    ready = np.array([0.25048434, 0.11727796]) - data.xpos[mug, :2]
-    ready /= np.linalg.norm(ready)
-    angle = np.rad2deg(np.arccos(np.clip(np.dot(handle_world, ready), -1.0, 1.0)))
-    assert angle <= 5.0
+    previous_yaw = 1.706530094896234
+    current_yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
+    np.testing.assert_allclose(current_yaw, previous_yaw - np.pi / 2, atol=1e-12)
+    crate = object_id(model, mujoco.mjtObj.mjOBJ_BODY, "drop_bin")
+    toward_crate = data.xpos[crate, :2] - data.xpos[mug, :2]
+    toward_crate /= np.linalg.norm(toward_crate)
+    angle = np.rad2deg(
+        np.arccos(np.clip(np.dot(handle_world, toward_crate), -1.0, 1.0))
+    )
+    assert angle <= 10.0
 
 
 def test_open_wooden_crate_has_bottom_and_four_low_collision_walls() -> None:
@@ -252,7 +286,7 @@ def main() -> None:
         test_wrist_camera_is_optical_only_and_follows_palm,
         test_demo_camera_world_pose_zero_roll_and_full_trajectory_coverage,
         test_only_three_task_objects_are_free_bodies,
-        test_cup_is_upright_and_handle_faces_ready_palm,
+        test_cup_is_upright_and_handle_is_rotated_90_degrees_toward_crate,
         test_open_wooden_crate_has_bottom_and_four_low_collision_walls,
         test_single_overhead_light_and_headlight_contract,
         test_rendering_and_vla_observation_mapping,

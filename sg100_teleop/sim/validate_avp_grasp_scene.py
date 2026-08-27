@@ -143,24 +143,39 @@ def check_task_object_freejoints(model: mujoco.MjModel) -> None:
 
 
 def check_collision_masks(model: mujoco.MjModel) -> None:
-    # finger (including link-2) <-> task objects: ON
-    for object_geom in ("obj_coke_collision", "obj_apple_collision", "mug_coll_0"):
+    object_geoms = (
+        "obj_coke_collision",
+        "obj_apple_collision",
+        *(f"mug_coll_{index}" for index in range(32)),
+    )
+    # The unified task-object class is 2/11.  It accepts finger bit 1,
+    # object bit 2, and RM65 bit 8 while keeping visual geoms at 0/0.
+    for object_geom in object_geoms:
+        object_id = _geom_id(model, object_geom)
+        assert (
+            int(model.geom_contype[object_id]),
+            int(model.geom_conaffinity[object_id]),
+        ) == (2, 11)
         assert _can_collide(model, "index_link3_collision", object_geom)
         assert _can_collide(model, "index_link2_collision", object_geom)
         assert _can_collide(model, "palm_collision", object_geom)
+        assert _can_collide(model, "rm65_visual_3", object_geom)
         assert _can_collide(model, object_geom, "grasp_table_collision")
         assert _can_collide(model, object_geom, "wood_crate_bottom")
+    assert _can_collide(model, "obj_coke_collision", "obj_apple_collision")
+    assert _can_collide(model, "obj_coke_collision", "mug_coll_0")
+    assert _can_collide(model, "obj_apple_collision", "mug_coll_0")
     # finger <-> finger : OFF (no self-collision)
     assert not _can_collide(
         model, "index_link3_collision", "middle_link2_collision"
     ), "finger capsules must not collide with each other"
-    # arm (link meshes) <-> table : ON ; <-> objects/hand : OFF
+    # arm (link meshes) <-> table/objects: ON; <-> hand/arm: OFF.
     assert _can_collide(model, "rm65_visual_3", "grasp_table_collision"), (
         "arm links must collide with the table"
     )
-    assert not _can_collide(
+    assert _can_collide(
         model, "rm65_visual_3", "obj_coke_collision"
-    ), "arm links must NOT collide with task objects"
+    ), "arm links must collide with task objects"
     assert not _can_collide(
         model, "rm65_visual_3", "index_link3_collision"
     ), "arm links must NOT collide with the hand"
@@ -170,8 +185,7 @@ def check_collision_masks(model: mujoco.MjModel) -> None:
 
 
 def check_arm_collision_mask(model: mujoco.MjModel) -> None:
-    """Arm link meshes get their own collision class (8 / 4): collide with the
-    table/crate only, not task objects, hand, or other arm links."""
+    """Arm links retain 8/4; objects opt into that class via affinity 11."""
     for i in range(1, 7):
         name = f"rm65_visual_{i}"
         gid = _geom_id(model, name)
@@ -180,7 +194,7 @@ def check_arm_collision_mask(model: mujoco.MjModel) -> None:
         ca = int(model.geom_conaffinity[gid])
         assert (ct, ca) == (8, 4), (
             f"{name} collision class = ({ct}, {ca}), expected (8, 4) "
-            "[collide with table only]"
+            "[unchanged production arm class]"
         )
 
 
@@ -285,9 +299,9 @@ CHECKS: list[tuple[str, Callable[[mujoco.MjModel], None]]] = [
     ("key geoms present (palm / link-2 / tips / env)", check_geoms),
     ("resolve_robot_layout passes (17 DoF contiguous)", check_layout),
     ("three task objects are free rigid bodies after robot DoFs", check_task_object_freejoints),
-    ("collision bitmasks (finger-object ON, object-table/crate ON, arm-table ON, "
-     "rest OFF)", check_collision_masks),
-    ("arm link collision class == (8, 4) [table only]", check_arm_collision_mask),
+    ("collision bitmasks (object-object/finger/arm/table/crate ON; robot self OFF)",
+     check_collision_masks),
+    ("arm link collision class remains (8, 4)", check_arm_collision_mask),
     ("hand actuator forcerange == [-20, 20]", check_finger_force_range),
     ("three task objects rest on table under gravity (1 s sim)", check_dynamics_stability),
     ("apple settles inside open crate without instability", check_crate_contact_stability),

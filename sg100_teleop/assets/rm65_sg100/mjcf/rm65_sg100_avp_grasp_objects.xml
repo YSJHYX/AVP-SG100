@@ -10,16 +10,16 @@
 
     Each object is ONE flat freejoint body - no nested bodies, because
     the AVP USDZ contract forbids nested runtime bodies.  Collision
-    classes follow the water bottle:
-      object (contype 2 / conaffinity 1) <-> fingers (1/2)  ON
-      object (2/1)                        <-> table  (4/3)  ON
-      object (2/1)                        <-> bin    (4/3)  ON
-      object (2/1)                        <-> arm    (8/4)  OFF
-      object (2/1)                        <-> object (2/1)  OFF (by intent)
-    Objects deliberately do NOT collide with each other (2&1 = 0):
-    they inter-penetrate when pushed together, which keeps the
-    contact count small with many objects on the table / in the bin.
-    Grasping (fingers) and the drop bin / table contacts are ON.
+    classes extend the established task-object type without changing
+    the robot/environment classes:
+      object (contype 2 / conaffinity 11) <-> fingers (1/2)  ON
+      object (2/11)                        <-> table  (4/3)  ON
+      object (2/11)                        <-> bin    (4/3)  ON
+      object (2/11)                        <-> arm    (8/4)  ON
+      object (2/11)                        <-> object (2/11) ON
+    Decimal 11 accepts the existing finger, object, and RM65 bits.  Table
+    and crate contact continues through object contype 2 against their
+    conaffinity 3.  Visual geoms stay non-colliding (0/0).
     Friction and contact match the tuned bottle values (sliding 1.5,
     torsional 0.01 with condim 4, firm solref) so the grasp feel is
     consistent across objects.
@@ -139,7 +139,7 @@
       <geom name="obj_coke_visual" type="mesh" mesh="coke_mesh" material="coke_mat"
             euler="1.57 0 0" mass="0" group="1" contype="0" conaffinity="0" />
       <geom name="obj_coke_collision" type="cylinder" pos="0 0 0.0611"
-            size="0.033 0.0611" mass="0.35" group="3" contype="2" conaffinity="1"
+            size="0.033 0.0611" mass="0.35" group="3" contype="2" conaffinity="11"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
 
@@ -149,145 +149,146 @@
       <geom name="obj_apple_visual" type="mesh" mesh="apple_mesh" material="apple_mat"
             mass="0" group="1" contype="0" conaffinity="0" />
       <geom name="obj_apple_collision" type="sphere" pos="0 0 0.0356"
-            size="0.036" mass="0.15" group="3" contype="2" conaffinity="1"
+            size="0.036" mass="0.15" group="3" contype="2" conaffinity="11"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
 
-    <!-- Ceramic mug: translation unchanged; its compiled-mesh handle points
-         along local +Y.  This yaw aligns that handle with the READY-pose
-         SG100 palm in table XY while retaining a perfectly upright cup. -->
+    <!-- Ceramic mug: translation unchanged; visual inspection plus the narrow
+         low-Y mesh extremity identify the handle as local -Y.  This yaw rotates
+         the prior visible handle -90 degrees toward the crate while retaining
+         a perfectly upright cup. -->
     <body name="obj_mug" pos="0.55 0.15 0.04281"
-          quat="0.667606304 0 0 0.744514488">
+          quat="0.9976979268240651 0 0 0.06781479787599717">
       <freejoint name="obj_mug_free" />
       <inertial pos="0 0 0" mass="0.35" diaginertia="0.0005 0.0005 0.0005" />
       <geom name="mug_visual" type="mesh" mesh="mug_vis" material="mug_mat"
             group="1" contype="0" conaffinity="0" mass="0" />
       <geom name="mug_coll_0" type="mesh" mesh="mug_coll_0" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_1" type="mesh" mesh="mug_coll_1" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_2" type="mesh" mesh="mug_coll_2" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_3" type="mesh" mesh="mug_coll_3" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_4" type="mesh" mesh="mug_coll_4" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_5" type="mesh" mesh="mug_coll_5" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_6" type="mesh" mesh="mug_coll_6" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_7" type="mesh" mesh="mug_coll_7" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_8" type="mesh" mesh="mug_coll_8" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_9" type="mesh" mesh="mug_coll_9" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_10" type="mesh" mesh="mug_coll_10" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_11" type="mesh" mesh="mug_coll_11" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_12" type="mesh" mesh="mug_coll_12" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_13" type="mesh" mesh="mug_coll_13" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_14" type="mesh" mesh="mug_coll_14" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_15" type="mesh" mesh="mug_coll_15" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_16" type="mesh" mesh="mug_coll_16" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_17" type="mesh" mesh="mug_coll_17" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_18" type="mesh" mesh="mug_coll_18" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_19" type="mesh" mesh="mug_coll_19" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_20" type="mesh" mesh="mug_coll_20" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_21" type="mesh" mesh="mug_coll_21" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_22" type="mesh" mesh="mug_coll_22" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_23" type="mesh" mesh="mug_coll_23" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_24" type="mesh" mesh="mug_coll_24" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_25" type="mesh" mesh="mug_coll_25" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_26" type="mesh" mesh="mug_coll_26" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_27" type="mesh" mesh="mug_coll_27" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_28" type="mesh" mesh="mug_coll_28" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_29" type="mesh" mesh="mug_coll_29" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_30" type="mesh" mesh="mug_coll_30" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
       <geom name="mug_coll_31" type="mesh" mesh="mug_coll_31" group="3"
-            contype="2" conaffinity="1" rgba="0.8 0.8 0.8 0"
+            contype="2" conaffinity="11" rgba="0.8 0.8 0.8 0"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1"
             solimp="0.998 0.998 0.001" />
     </body>
