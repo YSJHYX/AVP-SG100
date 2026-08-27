@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<mujoco model="RM65-SG100-realworld-teleop-scene">
+
+  <!--
+    REAL-WORLD AVP teleop scene: robot-only visual twin.
+
+    Purpose: show the digital RM65 + SG100 inside Apple Vision Pro while a
+    human teleoperates the REAL RM65 + SG100.  The real environment (real
+    table, real objects, real room) is passthrough, so this scene carries
+    ONLY the robot:
+
+      * NO workstation_front / demo_camera / wrist_camera  (model.ncam = 0)
+      * NO table, wooden crate, Coke, apple, mug, or any grasp object
+      * NO floor plane, workstation fixture, debug site, or mocap marker
+      * NO world light geometry (RealityKit owns real-world lighting)
+
+    It is NOT the VLA workstation scene and NOT a dataset recording scene;
+    those keep using rm65_sg100_avp_grasp_scene.xml +
+    rm65_sg100_avp_grasp_v8_compat.usdz, which remain untouched.
+
+    The robot definition comes from rm65_sg100_realworld_teleop_robot.xml:
+    the current production rm65_sg100_avp_grasp_robot.xml with only the
+    embedded wrist_camera removed, so joint/actuator/body names, meshes,
+    collision geoms, and joint zero/reference semantics are all identical
+    to production.  The realworld_ready keyframe below snapshots the actual
+    pre-grasp IK startup state used by run_avp_arm_hand_sim.py; it does not
+    redefine any joint reference.
+
+    Physics options are copied verbatim from
+    rm65_sg100_avp_grasp_scene.xml so the model compiles with the same
+    robot dynamics; there is simply nothing else in the world to touch.
+  -->
+
+  <!--
+    Main-file option wins over the included robot's option; identical
+    values to rm65_sg100_avp_grasp_scene.xml.
+  -->
+  <option
+    timestep="0.002"
+    integrator="implicitfast"
+    gravity="0 0 -9.81"
+    noslip_iterations="3"
+  />
+  <compiler angle="radian" />
+
+  <!--
+    Viewer-only lighting: one non-geometric directional <light> so the
+    robot is visible in the MuJoCo viewer / debug previews.  Verified
+    against the production pipeline: the export_avp_mujoco_usdz.py stage
+    contains only geometry + materials (the V8 USDZ, exported from a scene
+    that also authors lights, has zero light prims), so this light can
+    never become a visible USDZ object.  No fixture geometry is authored.
+  -->
+
+  <include file="rm65_sg100_realworld_teleop_robot.xml"/>
+
+  <worldbody>
+    <!--
+      Minimum viewer illumination (mirrors the grasp scene's overhead
+      light): diffuse/ambient balance only, shadow casting disabled
+      because MuJoCo map-based shadows produce false black bands on the
+      dense SG100 CAD shells.  Non-geometric, no dynamics.
+    -->
+    <light
+      name="teleop_viewer_key"
+      directional="true"
+      pos="0.30 0.00 2.20"
+      dir="0 0 -1"
+      ambient="0.42 0.42 0.42"
+      diffuse="0.58 0.58 0.58"
+      specular="0.08 0.08 0.08"
+      castshadow="false"
+    />
+  </worldbody>
+
+  <!--
+    Actual V8 runner startup posture, in this model's verified joint order:
+      joint_1..joint_6,
+      thumb_j1..thumb_j3,
+      index_j1..index_j3,
+      middle_j1..middle_j2,
+      little_j1..little_j3.
+
+    Values are radians.  RM65 is the deterministic pre-grasp IK solution
+    around STARTUP_ANCHOR_FALLBACK_M; SG100 starts open at its unchanged
+    official zero coordinates.
+  -->
+  <keyframe>
+    <key
+      name="realworld_ready"
+      qpos="
+        0.34818753987135775
+       -1.3614850477620644
+       -2.286025521790937
+       -0.10246395780782178
+        2.0744881064029075
+       -0.04958859629068264
+        0 0 0 0 0 0 0 0 0 0 0
+      "
+    />
+  </keyframe>
+
+</mujoco>

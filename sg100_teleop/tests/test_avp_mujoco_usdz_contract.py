@@ -26,6 +26,11 @@ ASSET_ROOT = ROOT / "sg100_teleop/assets/rm65_sg100"
 SCENE_XML = ASSET_ROOT / "mjcf/rm65_sg100_avp_grasp_scene.xml"
 OLD_ROBOT_USDZ = ASSET_ROOT / "usdz/rm65_sg100_sim_compat.usdz"
 V8_COMPAT_USDZ = ASSET_ROOT / "usdz/rm65_sg100_avp_grasp_v8_compat.usdz"
+REALWORLD_XML = ASSET_ROOT / "mjcf/rm65_sg100_realworld_teleop_scene.xml"
+REALWORLD_COMPAT_USDZ = (
+    ASSET_ROOT / "usdz/rm65_sg100_realworld_teleop_compat.usdz"
+)
+REALWORLD_READY_KEYFRAME = "realworld_ready"
 
 Q_ARM_READY = np.array(
     [0.32488, -0.76769, 0.97621, 0.22463, -1.80649, -0.12430],
@@ -161,13 +166,15 @@ def _handle_direction(points: np.ndarray, body_origin: np.ndarray) -> np.ndarray
     return direction / np.linalg.norm(direction)
 
 
-def _assert_body_world_transforms(stage, model, data) -> float:
+def _assert_body_world_transforms(
+    stage, model, data, body_names=V8_BODIES
+) -> float:
     from pxr import UsdGeom
 
     geometry = _stage_geometry(stage)
     cache = UsdGeom.XformCache()
     max_error = 0.0
-    for body_name in V8_BODIES:
+    for body_name in body_names:
         body_id = _body_id(model, body_name)
         matrix = cache.GetLocalToWorldTransform(geometry.GetChild(body_name))
         position_error = np.max(
@@ -389,6 +396,82 @@ def test_runtime_accepts_the_prebuilt_v8_package() -> None:
     assert result.stdout.strip() == str(V8_COMPAT_USDZ.resolve())
 
 
+def test_realworld_ready_usdz_contract() -> None:
+    from pxr import Usd, UsdGeom
+    from sg100_teleop.tools.export_avp_mujoco_usdz import (
+        audit_compat_stage,
+        export_compat_usdz,
+        validate_usdz_package,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="test_avp_realworld_export_") as directory:
+        output = Path(directory) / "realworld.usdz"
+        audit = export_compat_usdz(
+            REALWORLD_XML,
+            output,
+            initial_keyframe=REALWORLD_READY_KEYFRAME,
+        )
+        assert audit.initial_keyframe == REALWORLD_READY_KEYFRAME
+        assert audit.runtime_body_names == list(ROBOT_BODIES)
+        assert len(audit.body_paths) == 19
+        assert len(audit.kept_renderables) == 21
+        assert not audit.ownership_collisions
+        assert not audit.nested_runtime_bodies
+        assert not audit.physics_prims
+        assert not audit.world_static_renderables
+        assert not audit.excluded_world_renderables
+        assert max(record.transform_error for record in audit.kept_renderables) <= 1e-8
+
+    package = validate_usdz_package(REALWORLD_COMPAT_USDZ)
+    assert not package["resolved_assets"]
+    assert not package["unresolved_assets"]
+    with zipfile.ZipFile(REALWORLD_COMPAT_USDZ) as archive:
+        assert archive.testzip() is None
+        assert archive.namelist() == ["avp_compat.usdc"]
+
+    stage = Usd.Stage.Open(str(REALWORLD_COMPAT_USDZ))
+    assert stage is not None and stage.GetDefaultPrim()
+    assert UsdGeom.GetStageUpAxis(stage) == "Z"
+    assert UsdGeom.GetStageMetersPerUnit(stage) == 1.0
+    geometry = _stage_geometry(stage)
+    assert tuple(child.GetName() for child in geometry.GetChildren()) == ROBOT_BODIES
+    paths, collisions, nested, physics = audit_compat_stage(stage, list(ROBOT_BODIES))
+    assert set(paths) == set(ROBOT_BODIES)
+    assert not collisions and not nested and not physics
+
+    model = mujoco.MjModel.from_xml_path(str(REALWORLD_XML))
+    data = mujoco.MjData(model)
+    keyframe_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_KEY, REALWORLD_READY_KEYFRAME
+    )
+    assert keyframe_id >= 0
+    mujoco.mj_resetDataKeyframe(model, data, keyframe_id)
+    mujoco.mj_forward(model, data)
+    _assert_body_world_transforms(stage, model, data, ROBOT_BODIES)
+
+    zero_data = mujoco.MjData(model)
+    mujoco.mj_forward(model, zero_data)
+    usd_link6 = np.asarray(
+        UsdGeom.XformCache()
+        .GetLocalToWorldTransform(geometry.GetChild("link_6"))
+        .ExtractTranslation()
+    )
+    assert np.linalg.norm(usd_link6 - zero_data.xpos[model.body("link_6").id]) > 0.5
+
+    renderable_names = {
+        prim.GetName()
+        for prim in stage.Traverse()
+        if prim.GetTypeName() in {"Mesh", "Cube", "Capsule", "Cylinder"}
+    }
+    expected_robot_visuals = {
+        *(f"rm65_visual_{index}" for index in range(7)),
+        *SG100_VISUAL_FACE_COUNTS,
+    }
+    assert renderable_names == expected_robot_visuals
+    assert not any(prim.IsA(UsdGeom.Camera) for prim in stage.Traverse())
+    assert not any("Light" in prim.GetTypeName() for prim in stage.Traverse())
+
+
 def main() -> None:
     test_v8_source_contract()
     print("V8 MJCF compile/physics/camera contract: PASS")
@@ -398,6 +481,8 @@ def main() -> None:
     print("prebuilt V8 package/visual/transform/handle contract: PASS")
     test_runtime_accepts_the_prebuilt_v8_package()
     print("AVP prebuilt-package runtime validation: PASS")
+    test_realworld_ready_usdz_contract()
+    print("realworld grasp-ready USDZ contract: PASS")
 
 
 if __name__ == "__main__":

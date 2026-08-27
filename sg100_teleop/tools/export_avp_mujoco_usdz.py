@@ -64,6 +64,7 @@ class ExportAudit:
     ownership_collisions: dict[str, list[str]]
     nested_runtime_bodies: list[tuple[str, str]]
     physics_prims: list[str]
+    initial_keyframe: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True)
@@ -216,6 +217,19 @@ def _strip_physics(prim) -> None:
 
 def _matrix_max_error(lhs, rhs) -> float:
     return max(abs(float(lhs[row][column]) - float(rhs[row][column])) for row in range(4) for column in range(4))
+
+
+def _mujoco_body_world_transform(data, body_id: int, Gf):
+    """Return a MuJoCo body world pose as a row-vector USD transform."""
+
+    rotation = np.asarray(data.xmat[body_id], dtype=np.float64).reshape(3, 3)
+    position = np.asarray(data.xpos[body_id], dtype=np.float64)
+    return Gf.Matrix4d(
+        rotation[0, 0], rotation[1, 0], rotation[2, 0], 0.0,
+        rotation[0, 1], rotation[1, 1], rotation[2, 1], 0.0,
+        rotation[0, 2], rotation[1, 2], rotation[2, 2], 0.0,
+        position[0], position[1], position[2], 1.0,
+    )
 
 
 def _compiled_mesh_local_transform(model, geom_id: int, usd_mesh, mujoco, Gf):
@@ -416,6 +430,7 @@ def export_compat_usdz(
     *,
     keep_intermediate: bool = False,
     intermediate_dir: str | Path | None = None,
+    initial_keyframe: str | None = None,
     verbose: bool = False,
 ) -> ExportAudit:
     """Convert MJCF, flatten runtime visual ownership, and package USDZ."""
@@ -441,6 +456,18 @@ def export_compat_usdz(
 
     model = mujoco.MjModel.from_xml_path(str(xml_path))
     body_names = runtime_body_names(model)
+    initial_data = None
+    if initial_keyframe is not None:
+        keyframe_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_KEY, initial_keyframe
+        )
+        if keyframe_id < 0:
+            raise ValueError(
+                f"MuJoCo keyframe {initial_keyframe!r} does not exist in {xml_path}"
+            )
+        initial_data = mujoco.MjData(model)
+        mujoco.mj_resetDataKeyframe(model, initial_data, keyframe_id)
+        mujoco.mj_forward(model, initial_data)
 
     owned_temporary_dir = None
     if intermediate_dir is None:
@@ -543,7 +570,19 @@ def export_compat_usdz(
             destination_body_path = destination_geometry.GetPath().AppendChild(valid_body_name)
             destination_body = UsdGeom.Xform.Define(output_stage, destination_body_path).GetPrim()
             destination_body.SetDisplayName(body_name)
-            body_relative, _ = source_cache.ComputeRelativeTransform(source_body, source_geometry)
+            if initial_data is None:
+                body_relative, _ = source_cache.ComputeRelativeTransform(
+                    source_body, source_geometry
+                )
+            else:
+                body_id = mujoco.mj_name2id(
+                    model, mujoco.mjtObj.mjOBJ_BODY, body_name
+                )
+                if body_id < 0:
+                    raise RuntimeError(f"MuJoCo body not found: {body_name}")
+                body_relative = _mujoco_body_world_transform(
+                    initial_data, body_id, Gf
+                )
             UsdGeom.Xformable(destination_body).AddTransformOp().Set(body_relative)
             destination_body_paths[body_name] = str(destination_body_path)
 
@@ -571,7 +610,10 @@ def export_compat_usdz(
                 _strip_physics(destination_visual)
                 mesh_fit_error = 0.0
                 mesh_correction = False
-                expected_world = flat_cache.GetLocalToWorldTransform(source_visual)
+                if initial_data is None:
+                    expected_world = flat_cache.GetLocalToWorldTransform(source_visual)
+                else:
+                    expected_world = visual_relative * body_relative
                 if destination_visual.IsA(UsdGeom.Mesh):
                     geom_id = mujoco.mj_name2id(
                         model, mujoco.mjtObj.mjOBJ_GEOM, source_visual.GetName()
@@ -591,8 +633,10 @@ def export_compat_usdz(
                         destination_xformable.ClearXformOpOrder()
                         destination_xformable.AddTransformOp().Set(compiled_local)
                         mesh_correction = True
-                        expected_world = compiled_local * flat_cache.GetLocalToWorldTransform(
-                            flat_body
+                        expected_world = compiled_local * (
+                            flat_cache.GetLocalToWorldTransform(flat_body)
+                            if initial_data is None
+                            else body_relative
                         )
                         points = np.asarray(
                             UsdGeom.Mesh(destination_visual).GetPointsAttr().Get(),
@@ -657,7 +701,11 @@ def export_compat_usdz(
             destination_world = output_cache.GetLocalToWorldTransform(destination_prim)
             record.transform_error = _matrix_max_error(source_world, destination_world)
             expected_extent = expected_world_extents.get(record.destination_path)
-            if expected_extent is None:
+            if initial_data is not None and expected_extent is None:
+                expected_extent = _extent(
+                    destination_prim, Usd.TimeCode.Default(), UsdGeom
+                )
+            elif expected_extent is None:
                 expected_extent = _extent(source_prim, Usd.TimeCode.Default(), UsdGeom)
             record.bbox_extent_ratio = _extent_ratio(
                 expected_extent, _extent(destination_prim, Usd.TimeCode.Default(), UsdGeom)
@@ -691,6 +739,7 @@ def export_compat_usdz(
             ownership_collisions=ownership_collisions,
             nested_runtime_bodies=nested,
             physics_prims=physics_prims,
+            initial_keyframe=initial_keyframe,
         )
         if verbose:
             print(audit.to_json())
@@ -724,6 +773,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--keep-intermediate", action="store_true", help="Keep converter and rewritten USD files"
     )
+    parser.add_argument(
+        "--initial-keyframe",
+        help=(
+            "MuJoCo keyframe whose named body world poses become the initial "
+            "AVP display transforms"
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="Print the full JSON audit")
     return parser
 
@@ -734,6 +790,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.xml,
         args.output,
         keep_intermediate=args.keep_intermediate,
+        initial_keyframe=args.initial_keyframe,
         verbose=args.verbose,
     )
     print(f"Generated: {audit.output_path}")
@@ -743,6 +800,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Ownership collisions: {len(audit.ownership_collisions)}")
     print(f"Nested runtime bodies: {len(audit.nested_runtime_bodies)}")
     print(f"World static renderables: {len(audit.world_static_renderables)}")
+    print(f"Initial keyframe: {audit.initial_keyframe or 'model default'}")
     print_hierarchy(audit.output_path)
     return 0
 
