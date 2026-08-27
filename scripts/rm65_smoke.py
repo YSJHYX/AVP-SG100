@@ -88,11 +88,13 @@ def _read_arm_state(arm: RoboticArm) -> dict:
     tag, state = arm.rm_get_current_arm_state()
     if tag != 0:
         _fail("rm_get_current_arm_state", tag)
-    pose = state.get("pose", {})
-    position = pose.get("position", [float("nan")] * 3)
-    quat = pose.get("quat", [float("nan")] * 4)
+    # SDK 1.1.6 returns a flat dict: {"joint": [...],
+    # "pose": [x, y, z, rx, ry, rz] (euler in deg), "err": {...}}.
+    pose = state.get("pose", [])
+    position = pose[:3] if len(pose) >= 3 else [float("nan")] * 3
+    euler = pose[3:6] if len(pose) >= 6 else [float("nan")] * 3
     print(f"[STATE] TCP position (m): {[round(v, 4) for v in position]}")
-    print(f"[STATE] TCP quaternion (wxyz): {[round(v, 4) for v in quat]}")
+    print(f"[STATE] TCP euler (deg, rx ry rz): {[round(v, 3) for v in euler]}")
     print(f"[STATE] controller error code: {state.get('err')}")
     return state
 
