@@ -579,6 +579,112 @@ def build_arg_parser():
         ),
     )
 
+    # ========================================================
+    # Real RM65 backend (v3 RM65_真机迁移方案_v3.md §B2.3).
+    # The sim default keeps the current behaviour unchanged.
+    # ========================================================
+
+    parser.add_argument(
+        "--arm-backend",
+        choices=("sim", "real"),
+        default="sim",
+        help=(
+            "Arm execution backend: 'sim' drives MuJoCo actuators "
+            "(current behaviour); 'real' streams joint targets to the "
+            "RM65 controller over CANFD and drives MuJoCo as a "
+            "feedback-followed kinematic twin (default: sim)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-ip",
+        default=None,
+        help="RM65 controller IP for --arm-backend real (e.g. 192.168.1.18)",
+    )
+
+    parser.add_argument(
+        "--arm-port",
+        type=int,
+        default=8080,
+        help="RM65 controller TCP port (default: 8080)",
+    )
+
+    parser.add_argument(
+        "--arm-follow",
+        choices=("low", "filter", "high"),
+        default="low",
+        help=(
+            "rm_movej_canfd follow mode: low (follow=False), filter "
+            "(follow=True + trajectory_mode=2), high (follow=True raw); "
+            "see v3 §A2.2 (default: low)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-radio",
+        type=int,
+        default=0,
+        help="rm_movej_canfd smoothing coefficient for filter mode (default: 0)",
+    )
+
+    parser.add_argument(
+        "--arm-send-hz",
+        type=float,
+        default=100.0,
+        help="Real backend CANFD sender rate in Hz (default: 100)",
+    )
+
+    parser.add_argument(
+        "--arm-safety-profile",
+        type=int,
+        choices=(10, 25, 50),
+        default=10,
+        help=(
+            "Software safety profile scaling the real-arm limiter: "
+            "10 -> qdot 0.5 / qddot 2.0, 25 -> 1.25 / 5.0, "
+            "50 -> 2.5 / 10.0 (rad, rad/s, rad/s^2) (default: 10)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-tool-profile",
+        choices=("flange_only", "sg100_attached"),
+        default="flange_only",
+        help="Tool profile for the real arm (default: flange_only)",
+    )
+
+    parser.add_argument(
+        "--arm-target-timeout-ms",
+        type=int,
+        default=150,
+        help="Real backend stale-target watchdog in ms (default: 150)",
+    )
+
+    parser.add_argument(
+        "--arm-feedback-timeout-ms",
+        type=int,
+        default=200,
+        help="Real backend stale-feedback watchdog in ms (default: 200)",
+    )
+
+    parser.add_argument(
+        "--arm-max-follow-error-deg",
+        type=float,
+        default=20.0,
+        help=(
+            "Gross cmd-vs-actual position mismatch bound in deg for "
+            "the real backend. Primary liveness check is velocity-based "
+            "dead-arm detection; ordinary low-follow lag never reaches "
+            "this bound (default: 20)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-verbose",
+        action="store_true",
+        help="Print real backend events and timing statistics",
+    )
+
     parser.add_argument(
         "--attach",
         nargs=4,
@@ -646,6 +752,31 @@ def main():
     if args.tracking_timeout <= 0.0:
         raise ValueError(
             "--tracking-timeout must be > 0"
+        )
+
+    if args.arm_backend == "real" and not args.arm_ip:
+        raise ValueError(
+            "--arm-backend real requires --arm-ip"
+        )
+
+    if args.arm_send_hz <= 0.0:
+        raise ValueError(
+            "--arm-send-hz must be > 0"
+        )
+
+    if args.arm_target_timeout_ms <= 0:
+        raise ValueError(
+            "--arm-target-timeout-ms must be > 0"
+        )
+
+    if args.arm_feedback_timeout_ms <= 0:
+        raise ValueError(
+            "--arm-feedback-timeout-ms must be > 0"
+        )
+
+    if args.arm_max_follow_error_deg <= 0.0:
+        raise ValueError(
+            "--arm-max-follow-error-deg must be > 0"
         )
 
     if not np.isfinite(args.video_fps) or args.video_fps <= 0.0:
@@ -882,25 +1013,96 @@ def main():
         tcp_body_name=TCP_BODY,
     )
 
-    startup_arm_q = compute_startup_arm_q(
-        model,
-        data,
-        ik_solver,
-    )
+    # ========================================================
+    # Real RM65 backend (v3 §B2.3 / §A4).
+    #
+    # Created before the startup pose so real mode anchors every
+    # downstream initial value (q_arm_goal, posture anchor, command
+    # filters, twin state) to the actual arm configuration.  The
+    # bottle pre-grasp startup IK is skipped: on the real arm the
+    # robot starts wherever it physically is.
+    # ========================================================
 
-    if startup_arm_q is None:
-        startup_arm_q = (
-            RM65_TELEOP_READY_Q.copy()
+    real_arm_backend = None
+
+    if args.arm_backend == "real":
+        from sg100_teleop.robot.rm65_real import RM65RealBackend
+
+        safety_profiles = {
+            10: (0.5, 2.0),
+            25: (1.25, 5.0),
+            50: (2.5, 10.0),
+        }
+        qdot_max, qddot_max = safety_profiles[args.arm_safety_profile]
+
+        def real_arm_event(name: str, detail: str) -> None:
+            if args.arm_verbose or name in (
+                "connected",
+                "disarm",
+                "send_failure",
+            ):
+                print(f"[REAL-ARM] {name}: {detail}")
+
+        real_arm_backend = RM65RealBackend(
+            args.arm_ip,
+            args.arm_port,
+            send_hz=args.arm_send_hz,
+            follow=args.arm_follow,
+            radio=args.arm_radio,
+            qdot_max_rad_s=qdot_max,
+            qddot_max_rad_s2=qddot_max,
+            target_timeout_s=args.arm_target_timeout_ms * 1e-3,
+            feedback_timeout_s=args.arm_feedback_timeout_ms * 1e-3,
+            gross_follow_error_rad=np.deg2rad(
+                args.arm_max_follow_error_deg
+            ),
+            on_event=real_arm_event,
+        )
+        real_arm_backend.connect()
+        real_arm_backend.start()
+
+        print(
+            "[REAL-ARM] backend started "
+            f"(follow={args.arm_follow}, {args.arm_send_hz} Hz, "
+            f"PROFILE_{args.arm_safety_profile}, "
+            f"tool={args.arm_tool_profile})"
         )
         print(
-            "startup pose      : pre-grasp IK "
-            "unreachable, using teleop-ready"
+            "[REAL-ARM] keys: C = calibrate anchor | "
+            "A = ARM / DISARM streaming | Ctrl-C = stop+disconnect"
+        )
+        print(
+            "[REAL-ARM] streaming is DISABLED until you press A"
+        )
+
+    if real_arm_backend is not None:
+        startup_arm_q = (
+            real_arm_backend.joint_state().q_rad.copy()
+        )
+        print(
+            "startup pose      : real arm actual q = "
+            f"{np.round(startup_arm_q, 5).tolist()}"
         )
     else:
-        print(
-            "startup pose      : pre-grasp, "
-            f"q = {np.round(startup_arm_q, 5).tolist()}"
+        startup_arm_q = compute_startup_arm_q(
+            model,
+            data,
+            ik_solver,
         )
+
+        if startup_arm_q is None:
+            startup_arm_q = (
+                RM65_TELEOP_READY_Q.copy()
+            )
+            print(
+                "startup pose      : pre-grasp IK "
+                "unreachable, using teleop-ready"
+            )
+        else:
+            print(
+                "startup pose      : pre-grasp, "
+                f"q = {np.round(startup_arm_q, 5).tolist()}"
+            )
 
     # ========================================================
     # Initialize simulation state
@@ -1524,6 +1726,25 @@ def main():
     def on_viewer_key(keycode: int) -> None:
         if keycode in (ord("C"), ord("c")):
             request_neutral_calibration()
+
+        elif keycode in (ord("A"), ord("a")) and (
+            real_arm_backend is not None
+        ):
+            # v3 §A4.2: calibration (C) and arm-enable (A) are separate
+            # actions.  Disarm order follows §A3.5: quiesce the sender
+            # first, then command the decelerated stop.
+            if real_arm_backend.enabled:
+                real_arm_backend.set_enabled(False)
+                real_arm_backend.stop_smooth()
+                print(
+                    "[REAL-ARM] DISARMED (A); "
+                    "sender disabled, slow stop commanded"
+                )
+            else:
+                real_arm_backend.set_enabled(True)
+                print(
+                    "[REAL-ARM] ARMED (A); streaming enabled"
+                )
 
         # ========================================================
     # Main runtime loop
@@ -2347,6 +2568,18 @@ def main():
                     and not tracking_lost_printed
                 ):
                     if teleop_arming.disarm_for_tracking_timeout():
+                        # Real arm: quiesce the sender first, then
+                        # command the decelerated stop (v3 §A3.5).
+                        if (
+                            real_arm_backend is not None
+                            and real_arm_backend.enabled
+                        ):
+                            real_arm_backend.set_enabled(False)
+                            real_arm_backend.stop_smooth()
+                            print(
+                                "[REAL-ARM] DISARMED (tracking "
+                                "timeout); slow stop commanded"
+                            )
                         # Drop the mapper object so the old wrist anchor cannot
                         # be used after tracking reacquisition.
                         wrist_mapper = AVPWristRelativeMapper(
@@ -2432,40 +2665,90 @@ def main():
                     # high-rate q_hand_cmd
                     # ---------------------------------------------
 
-                    q_arm_cmd = (
-                        arm_command_filter.update(
-                            q_arm_goal,
-                            physics_dt,
+                    if real_arm_backend is not None:
+                        # ==========================================
+                        # Real backend path (v3 §A5.3 kinematic twin)
+                        #
+                        # - publish the 60 Hz IK goal; the backend
+                        #   limiter owns real-arm rate limiting with
+                        #   its measured sender dt (the sim
+                        #   ArmCommandFilter is bypassed to avoid
+                        #   double filtering),
+                        # - arm joints follow real feedback,
+                        # - hand joints follow the filtered retarget
+                        #   targets,
+                        # - no mj_step: the twin is kinematic, so the
+                        #   calibration anchor read from the twin
+                        #   equals actual-q + software FK (§A6.2).
+                        # ==========================================
+
+                        real_arm_backend.send_joint_target(
+                            q_arm_goal
                         )
-                    )
 
-                    q_hand_cmd = (
-                        hand_command_filter.update(
-                            q_hand_goal,
-                            physics_dt,
+                        q_hand_cmd = (
+                            hand_command_filter.update(
+                                q_hand_goal,
+                                physics_dt,
+                            )
                         )
-                    )
 
-                    write_robot_controls(
-                        data,
-                        robot_layout,
-                        q_arm_cmd,
-                        q_hand_cmd,
-                    )
+                        feedback = (
+                            real_arm_backend.joint_state()
+                        )
+                        if feedback is not None:
+                            data.qpos[
+                                robot_layout.arm_qpos_indices
+                            ] = feedback.q_rad
+
+                        data.qpos[
+                            robot_layout.hand_qpos_indices
+                        ] = q_hand_cmd
+
+                        mujoco.mj_forward(
+                            model,
+                            data,
+                        )
+
+                        state_recorder.maybe_record(
+                            data
+                        )
+
+                    else:
+                        q_arm_cmd = (
+                            arm_command_filter.update(
+                                q_arm_goal,
+                                physics_dt,
+                            )
+                        )
+
+                        q_hand_cmd = (
+                            hand_command_filter.update(
+                                q_hand_goal,
+                                physics_dt,
+                            )
+                        )
+
+                        write_robot_controls(
+                            data,
+                            robot_layout,
+                            q_arm_cmd,
+                            q_hand_cmd,
+                        )
 
 
-                    # ---------------------------------------------
-                    # Advance MuJoCo by one physics timestep.
-                    # ---------------------------------------------
+                        # ---------------------------------------------
+                        # Advance MuJoCo by one physics timestep.
+                        # ---------------------------------------------
 
-                    mujoco.mj_step(
-                        model,
-                        data,
-                    )
+                        mujoco.mj_step(
+                            model,
+                            data,
+                        )
 
-                    state_recorder.maybe_record(
-                        data
-                    )
+                        state_recorder.maybe_record(
+                            data
+                        )
 
                     physics_accumulator -= (
                         physics_dt
@@ -2597,6 +2880,19 @@ def main():
                         ),
                     )
 
+                    if real_arm_backend is not None:
+                        stats = real_arm_backend.sender_stats
+                        if stats.get("count", 0) > 0:
+                            print(
+                                "real sender      :",
+                                f"n={int(stats['count'])} "
+                                f"mean={stats['mean_s'] * 1e3:.2f}ms "
+                                f"p95={stats['p95_s'] * 1e3:.2f}ms "
+                                f"p99={stats['p99_s'] * 1e3:.2f}ms "
+                                f"max={stats['max_s'] * 1e3:.2f}ms "
+                                f"misses={int(stats['deadline_misses'])}",
+                            )
+
                     print(
                         "hand qpos       :",
                         np.round(
@@ -2674,6 +2970,14 @@ def main():
         print()
 
     finally:
+        if real_arm_backend is not None:
+            # v3 §A3.5 order on exit: quiesce, slow stop, disconnect.
+            try:
+                real_arm_backend.set_enabled(False)
+                real_arm_backend.stop_smooth()
+            finally:
+                real_arm_backend.disconnect()
+                print("[REAL-ARM] backend disconnected")
         recording_path = state_recorder.stop()
         print(
             "MuJoCo recording :",

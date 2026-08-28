@@ -126,9 +126,13 @@ def run_wiggle(arm: RoboticArm, joint: int, amplitude_deg: float, speed_percent:
     index = joint - 1
     if not 0 <= index < RM65_DOF:
         raise SystemExit(f"[FAIL] --joint must be 1..{RM65_DOF}, got {joint}")
+    previous = start
 
     for direction in (+1.0, -1.0):
-        target = start.copy()
+        # Chain from the previous target so the second move returns the
+        # joint to start (up by +amp, then back down by -amp), instead of
+        # leaving it at start - amp.
+        target = previous.copy()
         target[index] += direction * amplitude_deg
         print(
             f"[MOVE] joint {joint} -> {target[index]:.3f} deg "
@@ -144,6 +148,7 @@ def run_wiggle(arm: RoboticArm, joint: int, amplitude_deg: float, speed_percent:
         print(f"[MOVE] following error: {error:.3f} deg")
         if error > 1.0:
             print("[WARN] following error above 1 deg; check speed setting")
+        previous = target
 
     print("[OK] wiggle complete; arm back at the start pose")
     return 0
