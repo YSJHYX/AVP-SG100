@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<mujoco model="RM65-SG100-demo-hammer-peg-assembly-objects">
+
+  <!--
+    DEMO 01 task objects and fixtures - Hammer Peg Assembly.
+
+    Scanned-object provenance (see ../scanned_objects/THIRD_PARTY.md):
+      * Cole_Hardware_Hammer_Black - Google Scanned Objects via
+        kevinzakka/mujoco_scanned_objects, CC-BY 4.0.  Raw units are
+        metres, mesh scale 1.0 (no correction applied).  The mesh is
+        visual-only; contact comes from primitive proxies.
+
+    Collision classes follow the frozen V8 task-object convention:
+      object (contype 2 / conaffinity 11) <-> fingers (1/2)   ON
+      object (2/11) <-> table/fixtures (4/3)                  ON
+      object (2/11) <-> arm (8/4)                             ON
+      object (2/11) <-> object (2/11)                         ON
+    All task bodies are flat worldbody children (no nested
+    runtime bodies), matching the AVP USDZ contract.
+
+    Hammer scanned-geometry reference (mesh local frame, metres):
+      overall AABB   x -0.1464 .. 0.1453, y -0.0388 .. 0.0212, z 0 .. 0.0961
+      handle         along +X, oval ~20 x 28 mm, effective grasp
+                     length ~200 mm, centre line rises z 0.017 -> 0.044
+      head           cylinder, axis local +Z, diameter ~58 mm,
+                     height 96 mm, centre (0.105, -0.009, 0.048),
+                     flat strike faces at local z = 0 and z = 0.096.
+    The keyframe rests the mallet with the local -Z strike face down,
+    so a power grasp on the horizontal handle immediately presents a
+    face-down striking surface.
+
+    Peg fixture (all primitives, static): a base plate plus a split
+    pedestal whose 30 mm slot receives the peg shaft.  Slot inner
+    faces sit 3 mm clear of the d24 shaft on each side - visually a
+    guide, kinematically redundant with the slide joint, so nothing
+    can wedge.  Shaft bottom stays above the base plate over the
+    whole 40 mm travel.
+
+    Peg: d24 shaft + d48 strike cap (48 mm effective strike area),
+    slide joint on -Z (qpos = insertion depth, 0 .. 40 mm).
+    Exposed above the pedestal top: 45 mm at start, 5 mm at full
+    insertion.  frictionloss 6.0 N > 0.9 N weight, so it never
+    self-inserts (measured drift < 0.001 mm over 3 s); a 0.5 m/s
+    mallet tap drives it ~19 mm per hit, so 2-3 controlled strikes
+    reach full insertion.  Success threshold slide >= 0.030 (75%).
+  -->
+
+  <asset>
+    <texture type="2d" name="hammer_tex"
+             file="../scanned_objects/Cole_Hardware_Hammer_Black/texture.png" />
+    <material name="hammer_mat" texture="hammer_tex"
+              specular="0.35" shininess="0.4" />
+    <mesh name="hammer_mesh"
+          file="../scanned_objects/Cole_Hardware_Hammer_Black/model.obj" />
+  </asset>
+
+  <worldbody>
+
+    <!-- ======================================================
+         Tool rest: one flat rubber pad.  Loose placement only -
+         no precision slot (task spec PART 28).  The keyframe rests
+         the mallet head face and grip cap on this pad.
+         ====================================================== -->
+    <body name="hammer_tool_rest" pos="0.40 -0.12 0">
+      <geom name="tool_rest_pad" type="box" pos="0 0 0.005"
+            size="0.230 0.048 0.005" group="1"
+            rgba="0.16 0.16 0.18 1"
+            contype="4" conaffinity="3"
+            friction="1.0 0.01 0.0001" condim="4" solref="0.005 1" />
+    </body>
+
+    <!-- ======================================================
+         Hammer: flat freejoint body.  Visual scanned mesh plus
+         primitive collision proxies (handle capsule + head
+         cylinder) that stay aligned with the scan.
+         Mass 0.40 kg - light mallet class, SG100-friendly.
+         ====================================================== -->
+    <body name="demo_hammer" pos="0.400 -0.120 0.010">
+      <freejoint name="demo_hammer_free" />
+      <inertial pos="0.050 -0.009 0.038" mass="0.40"
+                diaginertia="0.00052 0.0036 0.0036" />
+      <geom name="hammer_visual" type="mesh" mesh="hammer_mesh"
+            material="hammer_mat" mass="0" group="1"
+            contype="0" conaffinity="0" />
+      <!-- handle: capsule along the scanned centre line -->
+      <geom name="hammer_handle_collision" type="capsule"
+            fromto="-0.140 -0.009 0.021  0.060 -0.009 0.042"
+            size="0.0125" group="3"
+            contype="2" conaffinity="11"
+            friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
+      <!-- head: cylinder proxy, axis = local Z exactly like the scan -->
+      <geom name="hammer_head_collision" type="cylinder"
+            pos="0.105 -0.009 0.048" size="0.029 0.048"
+            group="3"
+            contype="2" conaffinity="11"
+            friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
+    </body>
+
+    <!-- ======================================================
+         Peg fixture: static, primitive-only.  Base plate plus a
+         split pedestal with a 30 mm through-slot (open toward the
+         robot side and the top) - the peg stays visible from
+         workstation_front and wrist_camera along its whole travel.
+         ====================================================== -->
+    <body name="peg_fixture" pos="0.52 0.20 0">
+      <geom name="peg_fixture_base" type="box" pos="0 0 0.006"
+            size="0.100 0.070 0.006" group="1"
+            rgba="0.47 0.50 0.55 1"
+            contype="4" conaffinity="3"
+            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
+      <geom name="peg_fixture_pedestal_pY" type="box" pos="0 0.041 0.051"
+            size="0.060 0.026 0.039" group="1"
+            rgba="0.40 0.43 0.48 1"
+            contype="4" conaffinity="3"
+            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
+      <geom name="peg_fixture_pedestal_nY" type="box" pos="0 -0.041 0.051"
+            size="0.060 0.026 0.039" group="1"
+            rgba="0.40 0.43 0.48 1"
+            contype="4" conaffinity="3"
+            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
+      <geom name="peg_fixture_backing" type="box" pos="0.060 0 0.051"
+            size="0.010 0.067 0.039" group="1"
+            rgba="0.36 0.39 0.44 1"
+            contype="4" conaffinity="3"
+            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
+    </body>
+
+    <!-- ======================================================
+         Assembly peg: flat slide-joint body.  qpos is the
+         insertion depth (axis -Z, 0 .. 0.040).  d24 x 60 shaft +
+         d48 x 12 strike cap.
+         ====================================================== -->
+    <body name="demo_peg" pos="0.52 0.20 0.075">
+      <joint name="demo_peg_slide" type="slide" pos="0 0 0" axis="0 0 -1"
+             range="0 0.040" damping="5" frictionloss="6.0"
+             actuatorfrcrange="-40 40" />
+      <inertial pos="0 0 0.033" mass="0.09"
+                diaginertia="0.00003 0.00003 0.000006" />
+      <geom name="peg_shaft" type="cylinder" pos="0 0 0.030"
+            size="0.012 0.030" group="1"
+            rgba="0.92 0.45 0.05 1"
+            contype="2" conaffinity="11"
+            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
+      <geom name="peg_strike_cap" type="cylinder" pos="0 0 0.066"
+            size="0.024 0.006" group="1"
+            rgba="0.75 0.77 0.80 1"
+            contype="2" conaffinity="11"
+            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
+    </body>
+
+  </worldbody>
+
+</mujoco>

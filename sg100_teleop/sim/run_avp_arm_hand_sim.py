@@ -61,7 +61,9 @@ from sg100_teleop.tracking.avp_wrist_mapper import AVPWristRelativeMapper, make_
 
 DEFAULT_MODEL = (
     "sg100_teleop/assets/rm65_sg100/"
-    "mjcf/rm65_sg100_avp_grasp_scene.xml"
+    # "mjcf/rm65_sg100_avp_grasp_scene.xml"
+    # "mjcf/rm65_sg100_demo_hammer_peg_assembly_scenes.xml"
+    # "mjcf/rm65_sg100_demo_drawer_retrieval_and_loading_scene.xml"
 )
 
 DEFAULT_CALIBRATION = (

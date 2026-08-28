@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<mujoco model="RM65-SG100-demo-drawer-retrieval-and-loading-scene">
+
+  <!--
+    DEMO 02 - Drawer Retrieval & Tray Loading.
+
+    Derived from the frozen V8 production scene
+    rm65_sg100_avp_grasp_scene.xml; identical robot include, world
+    options, cameras, light and table (see DEMO 01 scene header for
+    the preserved-contract list and DEMO_SCENES.md for details).
+
+    demo_ready keyframe qpos layout (25 values):
+      [ 0..16] robot 17 joints - V8 grasp-ready startup solution,
+               hand fully open (V8 startup semantics).
+      [17]     demo_drawer_slide = 0 (closed).
+      [18..24] demo_drawer_item freejoint pose inside the drawer.
+  -->
+
+  <option
+    timestep="0.002"
+    integrator="implicitfast"
+    gravity="0 0 -9.81"
+    noslip_iterations="3"
+  />
+  <compiler angle="radian" />
+
+  <visual>
+    <global offwidth="1280" offheight="720" />
+    <headlight active="0" />
+  </visual>
+
+  <include file="rm65_sg100_avp_grasp_robot.xml"/>
+  <include file="rm65_sg100_demo_drawer_retrieval_and_loading_objects.xml"/>
+
+  <worldbody>
+
+    <!-- Visual-only neutral charcoal workstation floor.  Frozen V8. -->
+    <geom
+      name="workstation_floor_visual"
+      type="plane"
+      size="0 0 0.001"
+      pos="0.30 0.15 -0.041"
+      rgba="0.075 0.080 0.085 1"
+      contype="0"
+      conaffinity="0"
+      group="1"
+    />
+
+    <!-- Fixed VLA head/eye camera.  Frozen V8 pose and fovy. -->
+    <camera
+      name="workstation_front"
+      mode="fixed"
+      pos="-0.050000000 -0.073461236 0.900000000"
+      xyaxes="0.000000000 -1.000000000 0.000000000 0.808212783 0.000000000 0.588890565"
+      fovy="50"
+    />
+
+    <!-- World-fixed presentation camera.  Frozen V8 pose and fovy. -->
+    <camera
+      name="demo_camera"
+      mode="fixed"
+      pos="1.500000000 -0.050000000 1.400000000"
+      xyaxes="0.129339184 0.991600411 0.000000000 -0.665525418 0.086807663 0.741309886"
+      fovy="60"
+    />
+
+    <!-- Single near-vertical overhead light.  Frozen V8. -->
+    <light
+      name="workstation_overhead"
+      directional="true"
+      pos="0.30 0.15 2.20"
+      dir="0 0 -1"
+      ambient="0.42 0.42 0.42"
+      diffuse="0.58 0.58 0.58"
+      specular="0.08 0.08 0.08"
+      castshadow="false"
+    />
+
+    <!-- Big table = robot mount + workspace surface.  Frozen V8. -->
+    <body
+      name="grasp_table"
+      pos="0.30 0.15 -0.02"
+    >
+      <geom
+        name="grasp_table_collision"
+        type="box"
+        size="0.450 0.500 0.020"
+        rgba="0.42 0.43 0.44 1"
+        contype="4"
+        conaffinity="3"
+        friction="0.8 0.005 0.0001"
+        solref="0.005 1"
+      />
+    </body>
+
+  </worldbody>
+
+  <keyframe>
+    <key
+      name="demo_ready"
+      qpos="
+        0.34818753987135775 -1.3614850477620644 -2.286025521790937
+        -0.10246395780782178 2.0744881064029075 -0.049588596290682636
+        0 0 0 0 0 0 0 0 0 0 0
+        0
+        0.600 0.180 0.039 1 0 0 0
+      "
+    />
+  </keyframe>
+
+</mujoco>
