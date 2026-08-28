@@ -40,7 +40,7 @@ MJCF_DIR = (
 
 DEMO_SCENES = {
     "01": "rm65_sg100_demo_hammer_peg_assembly_scene.xml",
-    "02": "rm65_sg100_demo_drawer_retrieval_and_loading_scene.xml",
+    "02": "rm65_sg100_demo_drawer_loading_and_closing_scene.xml",
     "03": "rm65_sg100_demo_maintenance_kit_packing_scene.xml",
 }
 
@@ -67,14 +67,13 @@ PEG_TRAVEL_M = 0.040
 PEG_SUCCESS_TRAVEL_M = 0.030          # >= 75 % insertion
 DRAWER_TRAVEL_M = 0.150
 DRAWER_OPEN_THRESHOLD_M = 0.120      # >= 80 % open
+DRAWER_CLOSE_THRESHOLD_M = 0.030     # <= 20 % travel = closed
 TRAY_CENTRE_XY = (0.33, -0.22)
 TRAY_HALF_XY = (0.105, 0.075)
-ZONE_A_CENTRE_XY = (0.32, -0.12)
-ZONE_A_RADIUS_M = 0.0575
-ZONE_B_CENTRE_XY = (0.515, -0.115)
-ZONE_B_HALF_XY = (0.080, 0.055)
-ZONE_C_CENTRE_XY = (0.42, -0.295)
-ZONE_C_HALF_XY = (0.160, 0.044)
+ZONE_A_CENTRE_XY = (0.32, -0.12)      # box zone (world)
+ZONE_A_HALF_XY = (0.090, 0.060)
+ZONE_B_CENTRE_XY = (0.42, -0.295)     # screwdriver slot (world)
+ZONE_B_HALF_XY = (0.160, 0.044)
 ZONE_C_YAW_TOLERANCE_DEG = 20.0
 
 
@@ -137,28 +136,43 @@ def evaluate_demo01(model, data) -> dict:
 # Demo 02 - Drawer Retrieval & Tray Loading
 # ------------------------------------------------------------------
 
-def evaluate_demo02(model, data) -> dict:
+def evaluate_demo02(model, data, *, ever_opened=None) -> dict:
+    """V2 Drawer Loading & Closing metrics.
+
+    PHASE 1 drawer opened (>= 80% travel, tracked by the caller via
+    ``ever_opened`` or read from the current state), PHASE 2 tape
+    COM inside the drawer's usable interior (drawer-LOCAL frame -
+    the region travels with the drawer), PHASE 3 drawer closed
+    (<= 20% travel) with the tape still inside.
+    """
     drawer_q = float(
-        data.qpos[
-            _joint_qposadr(model, "demo_drawer_slide")
-        ]
+        data.qpos[_joint_qposadr(model, "demo_drawer_slide")]
     )
     item_pos = _body_xpos_of(model, data, "demo_drawer_item")
-    in_tray = bool(
-        abs(item_pos[0] - TRAY_CENTRE_XY[0]) < TRAY_HALF_XY[0]
-        and abs(item_pos[1] - TRAY_CENTRE_XY[1]) < TRAY_HALF_XY[1]
-        and 0.005 < item_pos[2] < 0.12
+    drawer_pos = _body_xpos_of(model, data, "demo_drawer")
+
+    local_x = item_pos[0] - drawer_pos[0]
+    local_y = item_pos[1] - drawer_pos[1]
+    inside_drawer = bool(
+        -0.091 < local_x < 0.078
+        and abs(local_y) < 0.126
+        and 0.030 < item_pos[2] < 0.150
     )
-    stage1 = drawer_q >= DRAWER_OPEN_THRESHOLD_M
-    # "drawer ever opened" is tracked by the caller (max over time);
-    # from a single state the instantaneous value is reported.
+    opened_now = drawer_q >= DRAWER_OPEN_THRESHOLD_M
+    was_opened = bool(opened_now if ever_opened is None
+                      else ever_opened)
+    closed_now = drawer_q <= DRAWER_CLOSE_THRESHOLD_M
     return {
         "drawer_open_m": drawer_q,
         "drawer_open_fraction": drawer_q / DRAWER_TRAVEL_M,
-        "stage1_drawer_open": bool(stage1),
+        "phase1_drawer_opened": was_opened,
         "item_position_m": item_pos.tolist(),
-        "stage2_item_in_tray": in_tray,
-        "task_success": bool(stage1 and in_tray),
+        "item_drawer_local_m": [local_x, local_y, item_pos[2]],
+        "phase2_item_inside_drawer": inside_drawer,
+        "phase3_drawer_closed": bool(closed_now),
+        "task_success": bool(
+            was_opened and inside_drawer and closed_now
+        ),
     }
 
 
@@ -167,44 +181,38 @@ def evaluate_demo02(model, data) -> dict:
 # ------------------------------------------------------------------
 
 def evaluate_demo03(model, data) -> dict:
+    """V2 two-object kit metrics: box in zone A, screwdriver in
+    zone B with the tool-axis yaw within tolerance."""
     pa = _body_xpos_of(model, data, "kit_object_a")
-    pb = _body_xpos_of(model, data, "kit_object_b")
-    pc_body = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_BODY, "kit_object_c"
+    pb_body = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, "kit_object_b"
     )
-    pc = data.xpos[pc_body].copy()
-    # yaw of the tool axis (body local +X) vs the zone-C slot axis (+X)
-    tool_axis_world = data.xmat[pc_body].reshape(3, 3)[:, 0]
-    yaw_rad = np.arctan2(tool_axis_world[1], tool_axis_world[0])
-    yaw_deg = float(np.degrees(yaw_rad))
+    pb = data.xpos[pb_body].copy()
+    # yaw of the tool axis (body local +X) vs the zone-B slot axis (+X)
+    tool_axis_world = data.xmat[pb_body].reshape(3, 3)[:, 0]
+    yaw_deg = float(np.degrees(
+        np.arctan2(tool_axis_world[1], tool_axis_world[0])
+    ))
 
     zone_a = bool(
-        np.hypot(pa[0] - ZONE_A_CENTRE_XY[0],
-                 pa[1] - ZONE_A_CENTRE_XY[1])
-        < ZONE_A_RADIUS_M
-        and 0.005 < pa[2] < 0.20
+        abs(pa[0] - ZONE_A_CENTRE_XY[0]) < ZONE_A_HALF_XY[0]
+        and abs(pa[1] - ZONE_A_CENTRE_XY[1]) < ZONE_A_HALF_XY[1]
+        and 0.005 < pa[2] < 0.25
     )
     zone_b = bool(
         abs(pb[0] - ZONE_B_CENTRE_XY[0]) < ZONE_B_HALF_XY[0]
         and abs(pb[1] - ZONE_B_CENTRE_XY[1]) < ZONE_B_HALF_XY[1]
-        and 0.005 < pb[2] < 0.25
-    )
-    zone_c = bool(
-        abs(pc[0] - ZONE_C_CENTRE_XY[0]) < ZONE_C_HALF_XY[0]
-        and abs(pc[1] - ZONE_C_CENTRE_XY[1]) < ZONE_C_HALF_XY[1]
-        and 0.002 < pc[2] < 0.10
+        and 0.002 < pb[2] < 0.10
     )
     yaw_ok = abs(yaw_deg) <= ZONE_C_YAW_TOLERANCE_DEG
     return {
         "object_a_position_m": pa.tolist(),
         "object_b_position_m": pb.tolist(),
-        "object_c_position_m": pc.tolist(),
-        "object_c_yaw_deg": yaw_deg,
+        "object_b_yaw_deg": yaw_deg,
         "zone_a_membership": zone_a,
         "zone_b_membership": zone_b,
-        "zone_c_membership": zone_c,
-        "object_c_yaw_ok": yaw_ok,
-        "task_success": bool(zone_a and zone_b and zone_c and yaw_ok),
+        "object_b_yaw_ok": yaw_ok,
+        "task_success": bool(zone_a and zone_b and yaw_ok),
     }
 
 
@@ -230,18 +238,18 @@ DEMO_WAYPOINTS = {
     "01": (
         Waypoint(
             "hammer_pregrasp",
-            (0.34, -0.13, 0.09),
-            "palm 60 mm above the handle grasp centre",
+            (0.34, -0.13, 0.12),
+            "palm above the raised handle grasp centre",
         ),
         Waypoint(
             "hammer_grasp",
-            (0.34, -0.13, 0.045),
-            "power-grasp contact height on the handle",
+            (0.34, -0.13, 0.077),
+            "power-grasp contact height on the raised handle",
         ),
         Waypoint(
             "hammer_lift",
-            (0.34, -0.13, 0.20),
-            "lifted clear of the tool rest",
+            (0.34, -0.13, 0.22),
+            "lifted clear of the cradle",
         ),
         Waypoint(
             "hammer_prestrike",
@@ -255,72 +263,102 @@ DEMO_WAYPOINTS = {
         ),
         Waypoint(
             "hammer_return",
-            (0.34, -0.13, 0.10),
-            "back above the tool rest",
+            (0.34, -0.13, 0.13),
+            "back above the cradle",
         ),
     ),
     "02": (
         Waypoint(
             "handle_pregrasp",
-            (0.458, 0.18, 0.105),
-            "above the closed-drawer bar handle",
+            (0.458, 0.18, 0.19),
+            "above the bar handle, hand open",
         ),
         Waypoint(
             "handle_grasp",
-            (0.458, 0.18, 0.055),
-            "hook grasp on the handle bar",
+            (0.458, 0.18, 0.145),
+            "hook grasp on the horizontal bar",
         ),
         Waypoint(
             "drawer_open",
-            (0.33, 0.18, 0.055),
+            (0.33, 0.18, 0.145),
             "handle retracted to full open",
         ),
         Waypoint(
-            "object_pregrasp",
-            (0.45, 0.18, 0.16),
-            "above the exposed tape measure",
+            "table_object_pregrasp",
+            (0.30, -0.18, 0.14),
+            "above the tape on the table",
         ),
         Waypoint(
-            "object_grasp",
-            (0.45, 0.18, 0.105),
+            "table_object_grasp",
+            (0.30, -0.18, 0.08),
             "power grasp on the tape body",
         ),
         Waypoint(
-            "tray_goal",
-            (0.33, -0.22, 0.12),
-            "above the goal tray target",
+            "table_object_lift",
+            (0.30, -0.18, 0.18),
+            "lifted clear of the table",
+        ),
+        Waypoint(
+            "drawer_load_prepose",
+            (0.47, 0.18, 0.20),
+            "above the open drawer cavity",
+        ),
+        Waypoint(
+            "drawer_load",
+            (0.47, 0.18, 0.11),
+            "tape lowered into the drawer",
+        ),
+        Waypoint(
+            "handle_regrasp",
+            (0.35, 0.18, 0.145),
+            "re-approach the opened handle",
+        ),
+        Waypoint(
+            "drawer_close",
+            (0.458, 0.18, 0.145),
+            "push the drawer fully closed",
         ),
     ),
     "03": (
         Waypoint(
-            "object_a_grasp",
-            (0.31, 0.30, 0.12),
-            "power grasp on the bottle",
+            "box_pregrasp",
+            (0.44, 0.34, 0.20),
+            "above the standing box",
         ),
         Waypoint(
-            "object_a_goal",
-            (0.32, -0.12, 0.12),
-            "above zone A",
-        ),
-        Waypoint(
-            "object_b_grasp",
-            (0.41, 0.32, 0.13),
+            "box_grasp",
+            (0.44, 0.34, 0.13),
             "pinch grasp on the box mid-height",
         ),
         Waypoint(
-            "object_b_goal",
-            (0.515, -0.115, 0.13),
-            "above zone B",
+            "box_goal",
+            (0.32, -0.12, 0.14),
+            "above zone A",
         ),
         Waypoint(
-            "object_c_grasp",
-            (0.50, 0.175, 0.10),
-            "tripod grasp over the screwdriver grip",
+            "screwdriver_pregrasp",
+            (0.54, 0.20, 0.16),
+            "above the screwdriver grip",
         ),
         Waypoint(
-            "object_c_goal",
-            (0.42, -0.295, 0.10),
-            "above zone C slot",
+            "screwdriver_grasp",
+            (0.54, 0.20, 0.10),
+            "tripod grasp on the cushion grip",
+        ),
+        Waypoint(
+            "screwdriver_lift",
+            (0.54, 0.20, 0.20),
+            "lifted clear",
+        ),
+        Waypoint(
+            "screwdriver_reorient",
+            (0.44, 0.05, 0.20),
+            "mid-carry rotation point toward the slot axis",
+        ),
+        Waypoint(
+            "screwdriver_goal",
+            (0.42, -0.295, 0.12),
+            "above zone B slot",
         ),
     ),
 }

@@ -1,42 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<mujoco model="RM65-SG100-demo-drawer-retrieval-and-loading-objects">
+<mujoco model="RM65-SG100-demo-drawer-loading-and-closing-objects">
 
   <!--
-    DEMO 02 task objects and fixtures - Drawer Retrieval & Tray Loading.
+    DEMO 02 V2 task objects and fixtures - Drawer Loading & Closing.
+
+    V2 semantic change (AVP field test): the old retrieve-from-drawer
+    flow is DEPRECATED.  Reaching inside the drawer cavity was not
+    teleop-friendly.  The new flow:
+
+      OPEN the drawer by its handle -> RELEASE -> PICK the tape
+      measure from the TABLE -> CARRY -> LOAD it into the drawer
+      -> RELEASE -> REGRASP the handle -> CLOSE the drawer.
 
     Scanned-object provenance (see ../scanned_objects/THIRD_PARTY.md):
       * SNAIL_MEASURING_TAPE - Google Scanned Objects via
-        kevinzakka/mujoco_scanned_objects, CC-BY 4.0.  Raw units are
+        kevinzakka/mujoco_scanned_objects, CC-BY 4.0.  Raw units
         metres, mesh scale 1.0.  Visual mesh only; collision is one
-        rounded-box primitive proxy.
+        rounded-box primitive proxy (64 x 195 x 66 mm).
 
-    Scanned geometry (mesh local frame, metres):
-      raw AABB  x -0.0311..0.0328, y -0.0973..0.0971, z 0..0.0657
-      -> 64 x 195 x 66 mm rounded tape-measure body, lying flat as
-         scanned, long axis +Y.  Grasp width 64 mm with generous
-         finger clearance inside the drawer.
+    Drawer hierarchy (V2 USDZ rigid-assembly contract): ONE moving
+    body "demo_drawer" with ONE prismatic joint "demo_drawer_slide"
+    owns every moving geom - bottom, four walls, two handle posts
+    and the horizontal bar handle - as a single rigid assembly.
+    Only the root translates; children keep fixed relative
+    transforms in every drawer state (closed / half / full open).
+
+    Horizontal handle (AVP field-test fix): the bar's longitudinal
+    axis is parallel to the table's Y axis (the drawer-front
+    horizontal), mounted on two short posts - an industrial drawer
+    pull, no floating cylinder.  Bar centre world z = 0.130 (upper
+    front), chosen to clear the frozen V8 grasp-ready hand pocket
+    (measured >= 16 mm to the nearest ready fingertip).
 
     Collision classes follow the frozen V8 convention (see DEMO 01
-    objects header).  Cabinet, drawer and tray are fixture class
-    (4/3); the tape is a free task object (2/11).  The drawer and
-    tray are flat single bodies (no nested runtime bodies).
-
-    Cabinet: open-top shop-cabinet unit, static, primitive panels.
-      outer 250 (X) x 320 (Y) x 150 (Z) at (0.62, 0.18)
-      - back panel, two side walls, base skirt; top stays open so
-        the SG100 can descend into the drawer cavity and both V8
-        observation cameras see the interior object.
-    Drawer: single prismatic slide joint on -X (qpos = open depth,
-      0 .. 0.15 m), damping 8, frictionloss 4 N -> closed stable,
-      smooth pull, no spring-back, holds any opened position.
-    Handle: horizontal bar capsule, length 140 mm, diameter 30 mm,
-      48 mm clear of the drawer front, mounted low (bar centre
-      z = 0.0415 world) so the frozen V8 grasp-ready hand pose clears it
-      by ~18 mm - four-finger hook / wrap plus thumb closure
-      without entering any narrow recess.
-    Tray: open shallow industrial tray at (0.33, -0.22), generous
-      target zone, no lid, no precision pocket.
+    objects header).  Cabinet, drawer and the (removed-in-V2)
+    fixtures are class 4/3; the tape is a free task object 2/11.
+    All bodies are flat worldbody children.
   -->
 
   <asset>
@@ -51,7 +51,9 @@
   <worldbody>
 
     <!-- ======================================================
-         Static cabinet: back + sides + base skirt, open top.
+         Static cabinet: back + sides + base skirt, open top so
+         the SG100 can descend into the drawer to load it and both
+         V8 observation cameras see the interior.
          ====================================================== -->
     <body name="drawer_cabinet" pos="0.62 0.18 0">
       <geom name="cabinet_base" type="box" pos="0 0 0.008"
@@ -77,16 +79,17 @@
     </body>
 
     <!-- ======================================================
-         Sliding drawer: one body, one prismatic joint.  Closed
-         pose qpos=0; body frame sits at the closed position.
-         Bottom plate top face at z = 0.024.  Front face at
-         local x = -0.110.
+         Moving drawer: ONE rigid body, ONE prismatic joint.
+         qpos = open depth along -X, 0 (closed) .. 0.150 m.
+         damping 8, frictionloss 4 N: closed stable, smooth pull
+         and push, holds any position, no spring-back.
+         Every moving geom below is a child of this body.
          ====================================================== -->
     <body name="demo_drawer" pos="0.62 0.18 0.0165">
       <joint name="demo_drawer_slide" type="slide" pos="0 0 0"
              axis="-1 0 0" range="0 0.150" damping="8"
              frictionloss="4" actuatorfrcrange="-80 80" />
-      <inertial pos="-0.02 0 0.06" mass="1.20"
+      <inertial pos="-0.02 0 0.075" mass="1.20"
                 diaginertia="0.020 0.015 0.028" />
       <!-- bottom plate -->
       <geom name="drawer_bottom" type="box" pos="0 0 0.011"
@@ -110,37 +113,43 @@
             rgba="0.50 0.47 0.42 1"
             contype="4" conaffinity="3"
             friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <!-- front face with recessed panel look -->
+      <!-- front face -->
       <geom name="drawer_front" type="box" pos="-0.105 0 0.070"
             size="0.009 0.140 0.070" group="1"
             rgba="0.46 0.43 0.38 1"
             contype="4" conaffinity="3"
             friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <!-- bar handle: length 140 mm, d30, 48 mm clear of the front -->
+      <!-- horizontal bar handle: d30 x 130 mm along drawer-local Y
+           (= table Y), bar centre local z 0.1135 (world 0.130),
+           45 mm clear of the drawer front face -->
       <geom name="drawer_handle" type="capsule"
-            fromto="-0.162 -0.070 0.025  -0.162 0.070 0.025"
+            fromto="-0.150 -0.065 0.120  -0.150 0.065 0.120"
             size="0.015" group="1"
             rgba="0.20 0.21 0.23 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
       <geom name="drawer_handle_post_pY" type="box"
-            pos="-0.138 0.070 0.025" size="0.024 0.007 0.007"
-            group="1" rgba="0.20 0.21 0.23 1"
+            pos="-0.130 0.062 0.113" size="0.020 0.007 0.021"
+            group="1" rgba="0.24 0.25 0.27 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
       <geom name="drawer_handle_post_nY" type="box"
-            pos="-0.138 -0.070 0.025" size="0.024 0.007 0.007"
-            group="1" rgba="0.20 0.21 0.23 1"
+            pos="-0.130 -0.062 0.113" size="0.020 0.007 0.021"
+            group="1" rgba="0.24 0.25 0.27 1"
             contype="4" conaffinity="3"
             friction="1.2 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
 
     <!-- ======================================================
-         Drawer item: scanned tape measure, flat freejoint body.
-         Lying flat as scanned (long axis +Y), sitting on the
-         drawer bottom toward the front third of the cavity.
+         Task object: tape measure starts ON THE TABLE at
+         (0.30, -0.18), lying flat as scanned (long axis +Y).
+         Far from the READY hand pocket, mid-workspace, clear of
+         the table edges, fully visible from workstation_front.
+         The goal is the OPEN drawer's interior (usability region
+         ~0.42..0.53 x 0.115..0.245 at full open) - see the
+         validation module constants.
          ====================================================== -->
-    <body name="demo_drawer_item" pos="0.60 0.18 0.039">
+    <body name="demo_drawer_item" pos="0.30 -0.18 0.0005">
       <freejoint name="demo_drawer_item_free" />
       <inertial pos="0.001 0 0.033" mass="0.25"
                 diaginertia="0.00045 0.0009 0.0006" />
@@ -152,43 +161,6 @@
             group="3"
             contype="2" conaffinity="11"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
-    </body>
-
-    <!-- ======================================================
-         Goal tray: open shallow industrial tray.  Target zone is
-         the full inner cavity - generous, no precision pocket.
-         ====================================================== -->
-    <body name="goal_tray" pos="0.33 -0.22 0">
-      <geom name="tray_bottom" type="box" pos="0 0 0.006"
-            size="0.115 0.085 0.006" group="1"
-            rgba="0.28 0.30 0.33 1"
-            contype="4" conaffinity="3"
-            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <geom name="tray_wall_pX" type="box" pos="0.110 0 0.020"
-            size="0.005 0.085 0.014" group="1"
-            rgba="0.33 0.36 0.39 1"
-            contype="4" conaffinity="3"
-            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <geom name="tray_wall_nX" type="box" pos="-0.110 0 0.020"
-            size="0.005 0.085 0.014" group="1"
-            rgba="0.33 0.36 0.39 1"
-            contype="4" conaffinity="3"
-            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <geom name="tray_wall_pY" type="box" pos="0 0.080 0.020"
-            size="0.105 0.005 0.014" group="1"
-            rgba="0.33 0.36 0.39 1"
-            contype="4" conaffinity="3"
-            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <geom name="tray_wall_nY" type="box" pos="0 -0.080 0.020"
-            size="0.105 0.005 0.014" group="1"
-            rgba="0.33 0.36 0.39 1"
-            contype="4" conaffinity="3"
-            friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <!-- visual target marking only: no collision -->
-      <geom name="tray_target_mark" type="plane"
-            pos="0 0 0.0125" size="0.070 0.050 0.001" group="1"
-            rgba="0.85 0.55 0.10 1"
-            contype="0" conaffinity="0" />
     </body>
 
   </worldbody>

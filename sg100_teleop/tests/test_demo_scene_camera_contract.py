@@ -27,9 +27,9 @@ DEMO_SCENES = {
     "demo01_hammer_peg_assembly": (
         MJCF / "rm65_sg100_demo_hammer_peg_assembly_scene.xml"
     ),
-    "demo02_drawer_retrieval": (
+    "demo02_drawer_loading": (
         MJCF
-        / "rm65_sg100_demo_drawer_retrieval_and_loading_scene.xml"
+        / "rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
     ),
     "demo03_maintenance_kit_packing": (
         MJCF / "rm65_sg100_demo_maintenance_kit_packing_scene.xml"

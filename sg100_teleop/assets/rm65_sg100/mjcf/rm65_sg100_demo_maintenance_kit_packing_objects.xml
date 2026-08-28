@@ -3,51 +3,42 @@
 <mujoco model="RM65-SG100-demo-maintenance-kit-packing-objects">
 
   <!--
-    DEMO 03 task objects and fixtures - Maintenance Kit Packing.
+    DEMO 03 V2 task objects and fixtures - Maintenance Kit Packing.
 
-    Three scanned objects with clearly different geometry force three
-    visibly different SG100 grasp strategies inside one sequence:
+    V2 (AVP field test): the round bottle is REMOVED - three objects
+    crowded the READY hand and blurred the grasp-strategy story.
+    Two objects remain, staged on opposite sides of the workspace
+    with clear approach corridors:
 
-      OBJECT A  Black_Elderberry_Syrup_54_oz_Gaia_Herbs
-        round bottle, 57 x 59 x 145 mm standing as scanned ->
-        whole-hand / power grasp (four-finger wrap + thumb
-        opposition), coarse orientation only.
-      OBJECT B  ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box
-        medium rectangular box, 122 x 49 x 169 mm standing as
-        scanned -> multi-finger pinch / lateral grasp across the
-        49 mm faces (thumb vs index+middle), coarse orientation.
-      OBJECT C  Craftsman_Grip_Screwdriver_Phillips_Cushion
-        elongated tool, 260 x 36 x 38 mm, cushion grip 29-36 mm
-        over ~112 mm effective length -> tripod / elongated-object
-        grasp (thumb + index + middle around the grip), and the
-        kit slot demands a coarse yaw alignment (~90 deg carry
-        rotation, tolerance 20 deg).
+      OBJECT A  ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box
+        rectangular package 122 x 49 x 169 mm standing at
+        (0.44, 0.34) -> multi-finger pinch / lateral grasp.
+      OBJECT B  Craftsman_Grip_Screwdriver_Phillips_Cushion
+        elongated tool 260 x 36 x 38 mm lying along +Y at
+        (0.54, 0.13), cushion grip (29-36 mm across, 112 mm long)
+        toward +Y -> tripod / elongated-object grasp, plus a
+        coarse carry rotation into the slot (yaw <= 20 deg).
 
-    All three are Google Scanned Objects via
+    READY-hand clearance (measured with mj_geomDistance): every
+    retained object keeps >= 40 mm surface distance to all SG100
+    fingertip and palm contact geoms in the demo_ready keyframe.
+
+    Kit tray: TWO-zone industrial tray at (0.42, -0.19),
+    440 x 330 mm outer.  Zone A rectangular (box target), zone B
+    elongated slot along X (screwdriver target, coarse yaw).
+    Dividers are 8 mm low strips; zone paints are visual-only -
+    no closed pockets, no invisible walls.
+
+    Both objects are Google Scanned Objects via
     kevinzakka/mujoco_scanned_objects (CC-BY 4.0, see
     ../scanned_objects/THIRD_PARTY.md).  Raw units metres, mesh
-    scale 1.0.  Visual meshes only; collision from primitive
-    proxies aligned to the scans.
-
-    Kit tray: open two-row industrial tray at (0.42, -0.19),
-    440 x 330 mm outer, three marked zones with generous clearance
-    (zone A d115 vs bottle d58; zone B 160 x 110 vs box 122 x 49;
-    zone C 320 x 125 vs screwdriver 260 x 38).  Dividers are 8 mm
-    low strips - readable as zones, never blocking placement.  No
-    closed pockets, no invisible walls.
-
-    Collision classes follow the frozen V8 convention (see DEMO 01
-    objects header).  All bodies are flat worldbody children.
+    scale 1.0.  Visual meshes only; collision from aligned
+    primitive proxies.  Collision classes follow the frozen V8
+    convention (see DEMO 01 objects header); all bodies are flat
+    worldbody children.
   -->
 
   <asset>
-    <texture type="2d" name="syrup_tex"
-             file="../scanned_objects/Black_Elderberry_Syrup_54_oz_Gaia_Herbs/texture.png" />
-    <material name="syrup_mat" texture="syrup_tex"
-              specular="0.5" shininess="0.5" />
-    <mesh name="syrup_mesh"
-          file="../scanned_objects/Black_Elderberry_Syrup_54_oz_Gaia_Herbs/model.obj" />
-
     <texture type="2d" name="kitbox_tex"
              file="../scanned_objects/ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box/texture.png" />
     <material name="kitbox_mat" texture="kitbox_tex"
@@ -66,77 +57,56 @@
   <worldbody>
 
     <!-- ======================================================
-         OBJECT A - round syrup bottle (power grasp target).
+         OBJECT A - rectangular package (pinch grasp target),
+         standing as scanned on the left-rear side.
          ====================================================== -->
-    <body name="kit_object_a" pos="0.31 0.30 0.0005">
+    <body name="kit_object_a" pos="0.44 0.34 0.0005">
       <freejoint name="kit_object_a_free" />
-      <inertial pos="0 0 0.0725" mass="0.42"
-                diaginertia="0.00082 0.00082 0.00018" />
-      <geom name="kit_object_a_visual" type="mesh" mesh="syrup_mesh"
-            material="syrup_mat" mass="0" group="1"
-            contype="0" conaffinity="0" />
-      <geom name="kit_object_a_collision" type="cylinder"
-            pos="0 0 0.0725" size="0.029 0.0725" group="3"
-            contype="2" conaffinity="11"
-            friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
-    </body>
-
-    <!-- ======================================================
-         OBJECT B - medium rectangular box (pinch grasp target).
-         ====================================================== -->
-    <body name="kit_object_b" pos="0.41 0.32 0.0005">
-      <freejoint name="kit_object_b_free" />
       <inertial pos="0 0 0.0845" mass="0.55"
                 diaginertia="0.00142 0.00199 0.00079" />
-      <geom name="kit_object_b_visual" type="mesh" mesh="kitbox_mesh"
+      <geom name="kit_object_a_visual" type="mesh" mesh="kitbox_mesh"
             material="kitbox_mat" mass="0" group="1"
             contype="0" conaffinity="0" />
-      <geom name="kit_object_b_collision" type="box"
+      <geom name="kit_object_a_collision" type="box"
             pos="0 0 0.0845" size="0.061 0.0245 0.0845" group="3"
             contype="2" conaffinity="11"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
 
     <!-- ======================================================
-         OBJECT C - elongated screwdriver (tripod grasp target).
-         Body yaw +90 deg lays the scanned +X tool axis along
-         world +Y: grip toward +Y, shaft toward -Y.
+         OBJECT B - elongated screwdriver (tripod grasp target),
+         lying along +Y on the right side, grip toward +Y.
          ====================================================== -->
-    <body name="kit_object_c" pos="0.50 0.24 0"
-          quat="0.7071067811865476 0 0 -0.7071067811865476">
-      <freejoint name="kit_object_c_free" />
+    <body name="kit_object_b" pos="0.54 0.130664 -0.002911"
+          quat="0.706563 0.027734 -0.027734 0.706563">
+      <freejoint name="kit_object_b_free" />
       <inertial pos="0 0 0.019" mass="0.13"
                 diaginertia="0.00062 0.000015 0.00062" />
-      <geom name="kit_object_c_visual" type="mesh" mesh="screwdriver_mesh"
+      <geom name="kit_object_b_visual" type="mesh" mesh="screwdriver_mesh"
             material="screwdriver_mat" mass="0" group="1"
             contype="0" conaffinity="0" />
       <!-- cushion grip capsule (29-36 mm across, 94 mm long) -->
-      <geom name="kit_object_c_grip_collision" type="capsule"
+      <geom name="kit_object_b_grip_collision" type="capsule"
             fromto="0.018 0 0.019  0.112 0 0.017" size="0.0175"
             group="3" contype="2" conaffinity="11"
             friction="1.5 0.01 0.0001" condim="4" solref="0.005 1" />
       <!-- shaft capsule (7 mm shaft, carried not grasped) -->
-      <geom name="kit_object_c_shaft_collision" type="capsule"
+      <geom name="kit_object_b_shaft_collision" type="capsule"
             fromto="-0.128 0 0.019  0.022 0 0.019" size="0.006"
             group="3" contype="2" conaffinity="11"
             friction="1.0 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
 
     <!-- ======================================================
-         Kit tray: open, two rows, three marked zones.
-         Row 1 (y ~ -0.10): zone A circle + zone B rectangle.
-         Row 2 (y ~ -0.28): zone C elongated slot along X.
-         Zone paints are visual-only planes; dividers and walls
-         are low fixture-class strips.
+         TWO-zone kit tray (V2): row 1 = zone A (box), row 2 =
+         zone B (screwdriver slot along X).
          ====================================================== -->
     <body name="kit_tray" pos="0.42 -0.19 0">
-      <!-- tray floor -->
       <geom name="kit_tray_bottom" type="box" pos="0 0 0.005"
             size="0.215 0.160 0.005" group="1"
             rgba="0.26 0.28 0.31 1"
             contype="4" conaffinity="3"
             friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <!-- perimeter walls, 28 mm high -->
       <geom name="kit_tray_wall_pX" type="box" pos="0.210 0 0.019"
             size="0.005 0.160 0.014" group="1"
             rgba="0.31 0.34 0.37 1"
@@ -157,22 +127,17 @@
             rgba="0.31 0.34 0.37 1"
             contype="4" conaffinity="3"
             friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
-      <!-- low divider between the two rows -->
       <geom name="kit_tray_divider" type="box" pos="0 -0.055 0.014"
             size="0.205 0.004 0.009" group="1"
             rgba="0.35 0.38 0.41 1"
             contype="4" conaffinity="3"
             friction="0.8 0.005 0.0001" condim="4" solref="0.005 1" />
       <!-- zone paints (visual only) -->
-      <geom name="kit_zone_a_mark" type="cylinder"
-            pos="-0.10 0.07 0.0115" size="0.0575 0.0005"
-            group="1" rgba="0.85 0.55 0.10 1"
-            contype="0" conaffinity="0" />
-      <geom name="kit_zone_b_mark" type="plane"
-            pos="0.095 0.075 0.0115" size="0.080 0.055 0.001"
+      <geom name="kit_zone_a_mark" type="plane"
+            pos="-0.10 0.07 0.0115" size="0.090 0.060 0.001"
             group="1" rgba="0.20 0.60 0.85 1"
             contype="0" conaffinity="0" />
-      <geom name="kit_zone_c_mark" type="plane"
+      <geom name="kit_zone_b_mark" type="plane"
             pos="0 -0.105 0.0115" size="0.160 0.044 0.001"
             group="1" rgba="0.35 0.75 0.35 1"
             contype="0" conaffinity="0" />

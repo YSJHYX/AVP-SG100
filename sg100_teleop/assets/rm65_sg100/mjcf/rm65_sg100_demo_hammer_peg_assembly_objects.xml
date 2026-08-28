@@ -58,14 +58,32 @@
   <worldbody>
 
     <!-- ======================================================
-         Tool rest: one flat rubber pad.  Loose placement only -
-         no precision slot (task spec PART 28).  The keyframe rests
-         the mallet head face and grip cap on this pad.
+         V2 LOW TOOL CRADLE (AVP field-test fix): two support
+         piers, nothing under the grip zone.
+
+           support A  70 x 70 mm pier under the mallet head face,
+                      top face z = 0.040
+           support B  45 x 40 mm pier under the grip-end handle,
+                      top face z = 0.0445 (matches the rising
+                      handle centre line)
+
+         The 115 mm grip zone BETWEEN the piers (hammer-local x
+         -0.09..+0.025) hangs completely OPEN: handle underside
+         51-64 mm above the table (grasp-point raise vs V1 ~36 mm),
+         so SG100 fingers wrap from below and the sides with room
+         to spare, no table or pier contact.  The head-face disc and
+         the grip cap rest flat on the piers - no precision slot,
+         still a loose tool rest.
          ====================================================== -->
     <body name="hammer_tool_rest" pos="0.40 -0.12 0">
-      <geom name="tool_rest_pad" type="box" pos="0 0 0.005"
-            size="0.230 0.048 0.005" group="1"
+      <geom name="cradle_head_support" type="box" pos="0.045 -0.009 0.020"
+            size="0.035 0.035 0.020" group="1"
             rgba="0.16 0.16 0.18 1"
+            contype="4" conaffinity="3"
+            friction="1.0 0.01 0.0001" condim="4" solref="0.005 1" />
+      <geom name="cradle_handle_support" type="box" pos="-0.185 -0.009 0.02225"
+            size="0.0225 0.020 0.02225" group="1"
+            rgba="0.13 0.13 0.15 1"
             contype="4" conaffinity="3"
             friction="1.0 0.01 0.0001" condim="4" solref="0.005 1" />
     </body>
@@ -76,7 +94,8 @@
          cylinder) that stay aligned with the scan.
          Mass 0.40 kg - light mallet class, SG100-friendly.
          ====================================================== -->
-    <body name="demo_hammer" pos="0.400 -0.120 0.010">
+    <body name="demo_hammer" pos="0.339998 -0.119996 0.038549"
+          quat="0.999958 -0.000257 -0.009136 -0.0000176">
       <freejoint name="demo_hammer_free" />
       <inertial pos="0.050 -0.009 0.038" mass="0.40"
                 diaginertia="0.00052 0.0036 0.0036" />

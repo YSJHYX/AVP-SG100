@@ -1,0 +1,362 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="RM65-SG100-demo-robot">
+  <!--
+    DEMO-scene robot for the V8 demo scene suite (AVP field-test V2).
+
+    Derived from the frozen production robot
+    rm65_sg100_avp_grasp_robot.xml.  Geometry, hierarchy, joints,
+    actuators, masses, inertias, meshes, the wrist_camera sensor
+    and every body transform are IDENTICAL to production.  The ONLY
+    differences are the SG100 hand contact-geom frictions: the four
+    distal fingertip capsules previously carried MuJoCo DEFAULT
+    friction (sliding 1.0, priority 0 - so the palm/proximal pad
+    values could not win contact mixing there), which let small
+    objects slip in the AVP field test.  Every hand contact geom
+    now uses sliding 1.4 / torsional 0.01 / rolling 0.001 with
+    priority 1 (rubber-pad class, within the <= 1.5 policy
+    ceiling).  Production V8 keeps its own XML and values
+    unchanged.
+  -->
+  <!--
+    AVP teleop + grasp robot.
+
+    Derived from rm65_sg100_grasp_robot.xml (same 17-DoF kinematic tree,
+    same joint/actuator names and order so resolve_robot_layout still passes),
+    with three additions baked in so the scene is usable via plain
+    MjModel.from_xml_path (no MjSpec mutation needed):
+
+      1. palm_collision  - palm backstop box on sg100_base_link
+                           (values from run_grasp_demo.py PALM_* constants).
+      2. *_link2_collision capsules on thumb_link2 / index_link2 /
+         little_llink2 (middle_link2 already has one), mirroring the
+         fingertip (*_link3) collision design.
+      3. forcerange="-20 20" on the 11 hand position actuators, baking in
+         the compliant FINGER_FORCE_N = 20.0 that run_grasp_demo.py sets
+         in Python.
+  -->
+  <!--
+    gravity matches rm65_sg100_avp_grasp_scene.xml on purpose: this file is
+    purpose-built for that scene, so agreeing here removes any ambiguity
+    about include-merge precedence for the singleton <option>.
+  -->
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81" />
+  <compiler angle="radian" />
+  <asset>
+    <mesh name="base_link" content_type="model/stl" file="../../RM65-B/meshes/base_link.STL" />
+    <mesh name="link_1" content_type="model/stl" file="../../RM65-B/meshes/link_1.STL" />
+    <mesh name="link_2" content_type="model/stl" file="../../RM65-B/meshes/link_2.STL" />
+    <mesh name="link_3" content_type="model/stl" file="../../RM65-B/meshes/link_3.STL" />
+    <mesh name="link_4" content_type="model/stl" file="../../RM65-B/meshes/link_4.STL" />
+    <mesh name="link_5" content_type="model/stl" file="../../RM65-B/meshes/link_5.STL" />
+    <mesh name="link_6" content_type="model/stl" file="../../RM65-B/meshes/link_6.STL" />
+    <!--
+      SG100 render geometry uses the original CAD-resolution STL exports.
+      The former meshes_mujoco copies were destructively simplified: several
+      193,892-face links and the 481,705-face palm were capped at 80,000
+      faces, lost 85-89% of their surface area, and acquired inconsistent
+      winding.  That produced holes and disconnected triangular fragments in
+      camera renders.  These meshes remain visual-only below; contact still
+      comes exclusively from the existing palm box and finger capsules.
+    -->
+    <!-- The 481,705-face palm exceeds MuJoCo's 200k-face STL limit.  It is
+         losslessly partitioned by connected CAD shells; no faces are
+         decimated, duplicated, transformed, or used for contact. -->
+    <mesh name="sg100_base_link_visual_part1" content_type="model/stl" file="../../sg100/meshes_visual/base_link_visual_part1.STL" />
+    <mesh name="sg100_base_link_visual_part2" content_type="model/stl" file="../../sg100/meshes_visual/base_link_visual_part2.STL" />
+    <mesh name="sg100_base_link_visual_part3" content_type="model/stl" file="../../sg100/meshes_visual/base_link_visual_part3.STL" />
+    <mesh name="sg100_thumb_link1" content_type="model/stl" file="../../sg100/meshes/thumb_link1.STL" />
+    <mesh name="sg100_thumb_link2" content_type="model/stl" file="../../sg100/meshes/thumb_link2.STL" />
+    <mesh name="sg100_thumb_link3" content_type="model/stl" file="../../sg100/meshes/thumb_link3.STL" />
+    <mesh name="sg100_index_link1" content_type="model/stl" file="../../sg100/meshes/index_link1.STL" />
+    <mesh name="sg100_index_link2" content_type="model/stl" file="../../sg100/meshes/index_link2.STL" />
+    <mesh name="sg100_index_link3" content_type="model/stl" file="../../sg100/meshes/index_link3.STL" />
+    <mesh name="sg100_middle_link1" content_type="model/stl" file="../../sg100/meshes/middle_link1.STL" />
+    <mesh name="sg100_middle_link2" content_type="model/stl" file="../../sg100/meshes/middle_link2.STL" />
+    <mesh name="sg100_little_link1" content_type="model/stl" file="../../sg100/meshes/little_link1.STL" />
+    <mesh name="sg100_little_llink2" content_type="model/stl" file="../../sg100/meshes/little_llink2.STL" />
+    <mesh name="sg100_little_linik3" content_type="model/stl" file="../../sg100/meshes/little_linik3.STL" />
+  </asset>
+  <worldbody>
+    <!--
+      Keep the fixed RM65 pedestal as a real MuJoCo body so the AVP pose
+      stream can place it with the rest of the robot scene.  This body has
+      no joint and therefore adds no qpos/DoF.
+    -->
+    <body name="base_link">
+      <geom type="mesh" rgba="1 1 1 1" mesh="base_link" name="rm65_visual_0" group="1" contype="0" conaffinity="0" />
+      <body name="link_1" pos="0 0 0.2405">
+      <inertial pos="0.000941 0.007803 -0.10744" quat="0.997511 -0.0583785 0.00606547 -0.0390687" mass="1.51" diaginertia="0.00266445 0.00233888 0.00165429" />
+      <joint name="joint_1" pos="0 0 0" axis="0 0 1" range="-3.106 3.106" actuatorfrcrange="-60 60" damping="0.1" armature="0.01" />
+      <geom type="mesh" rgba="1 1 1 1" mesh="link_1" name="rm65_visual_1" group="1" contype="8" conaffinity="4" />
+      <body name="link_2" quat="0.499998 0.5 -0.5 0.500002">
+        <inertial pos="0.183722 0.000103 -0.001665" quat="0.457963 0.540039 0.527633 0.469288" mass="1.653" diaginertia="0.0147139 0.0144956 0.00145099" />
+        <joint name="joint_2" pos="0 0 0" axis="0 0 1" range="-2.2689 2.2689" actuatorfrcrange="-60 60" damping="0.1" armature="0.01" />
+        <geom type="mesh" rgba="1 1 1 1" mesh="link_2" name="rm65_visual_2" group="1" contype="8" conaffinity="4" />
+        <body name="link_3" pos="0.256 0 0" quat="0.707105 0 0 0.707108">
+          <inertial pos="2.9e-05 -0.090105 0.004039" quat="0.440332 0.546035 -0.554361 0.447925" mass="0.726" diaginertia="0.00137906 0.00135087 0.000312565" />
+          <joint name="joint_3" pos="0 0 0" axis="0 0 1" range="-2.356 2.356" actuatorfrcrange="-30 30" damping="0.1" armature="0.01" />
+          <geom type="mesh" rgba="1 1 1 1" mesh="link_3" name="rm65_visual_3" group="1" contype="8" conaffinity="4" />
+          <body name="link_4" pos="0 -0.21 0" quat="0.707105 0.707108 0 0">
+            <inertial pos="7e-06 -0.009486 -0.008041" quat="0.997996 0.0631732 0.00130193 -0.00341789" mass="0.671" diaginertia="0.000690229 0.000554914 0.000423747" />
+            <joint name="joint_4" pos="0 0 0" axis="0 0 1" range="-3.106 3.106" actuatorfrcrange="-10 10" damping="0.1" armature="0.01" />
+            <geom type="mesh" rgba="1 1 1 1" mesh="link_4" name="rm65_visual_4" group="1" contype="8" conaffinity="4" />
+            <body name="link_5" quat="0.707105 -0.707108 0 0">
+              <inertial pos="3.2e-05 -0.083769 0.002326" quat="0.438163 0.534713 -0.558183 0.458833" mass="0.647" diaginertia="0.000843948 0.000834034 0.000259551" />
+              <joint name="joint_5" pos="0 0 0" axis="0 0 1" range="-2.234 2.234" actuatorfrcrange="-10 10" damping="0.1" armature="0.01" />
+              <geom type="mesh" rgba="1 1 1 1" mesh="link_5" name="rm65_visual_5" group="1" contype="8" conaffinity="4" />
+              <body name="link_6" pos="0 -0.144 0" quat="0.707105 0.707108 0 0">
+                <inertial pos="-0.000569 0.00029 -0.010569" quat="0.000385102 0.70742 5.61484e-05 0.706793" mass="0.104" diaginertia="5.52e-05 3.604e-05 3.043e-05" />
+                <joint name="joint_6" pos="0 0 0" axis="0 0 1" range="-6.28 6.28" actuatorfrcrange="-10 10" damping="0.1" armature="0.01" />
+                <geom type="mesh" rgba="1 1 1 1" mesh="link_6" name="rm65_visual_6" group="1" contype="8" conaffinity="4" />
+                <body name="sg100_base_link" pos="0 0 0" quat="1 0 0 0">
+                  <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_base_link_visual_part1" name="sg100_base_link_visual_part1" group="1" contype="0" conaffinity="0" mass="0" />
+                  <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_base_link_visual_part2" name="sg100_base_link_visual_part2" group="1" contype="0" conaffinity="0" mass="0" />
+                  <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_base_link_visual_part3" name="sg100_base_link_visual_part3" group="1" contype="0" conaffinity="0" mass="0" />
+                  <!--
+                    Palm backstop (baked from run_grasp_demo.py PALM_* defaults).
+                    Same collision class as the finger capsules so it presses
+                    the bottle into the closing fingers.
+
+                    Friction pads: the real SG100 carries rubber/silicone
+                    friction tape on the palm and finger contact faces.
+                    All hand grip geoms use sliding mu = 1.2 (rubber pad on
+                    dry PET/aluminum, typical 1.0-1.4) with priority = 1 so
+                    the pad value wins contact mixing against every
+                    counterpart regardless of the other geom's friction.
+                    Torsional/rolling coefficients document intent for a
+                    future condim >= 4 (unused at condim 3).
+                  -->
+                  <geom
+                    name="palm_collision"
+                    type="box"
+                    pos="0 -0.03 0.05"
+                    size="0.045 0.035 0.010"
+                    quat="0.5 0.5 0.5 -0.5"
+                    contype="1"
+                    conaffinity="2"
+                    friction="1.4 0.01 0.001"
+                    priority="1"
+                    group="3"
+                    rgba="0 1 0 0"
+                  />
+                  <!--
+                    v7 medium wrist-camera bracket.  In sg100_base_link,
+                    +Z points toward the fingers, -Y is the outward palm
+                    normal, and +X is the thumb side.  The thin fixed bracket
+                    carries the optical centre to (0.016859,-0.160165,0), a
+                    16.1 cm palm-origin radius.  This is the user-approved
+                    initial v6 palm-normal viewing ray shortened by 29 mm:
+                    the camera remains clearly displaced from the hand while
+                    the bracket becomes medium length instead of a long pole.
+
+                    The target is derived from recorded FK: at the approach
+                    frame, the midpoint between the object's palm-local
+                    centre and the four distal-link centroid defines the open
+                    grasp centre; that point is blended 60/40 with the
+                    physical palm_collision centre.  The resulting
+                    (0.0172354,-0.0546254,0.0980463) target is not tied to one
+                    finger and projects exactly to image centre.  The local
+                    view ray is (+0.00261,+0.73263,+0.68062), looking from
+                    the palm-normal extension into the palm cavity and
+                    distally toward the grasp volume, not at the wrist origin
+                    or one selected finger.
+
+                    Production VLA data uses the optical transform only: no
+                    camera housing, bracket, extension, collision proxy, or
+                    camera-head mass is authored.  The fixed camera remains a
+                    direct sg100_base_link child, so it follows the hand while
+                    preserving the frozen v7 optical centre, orientation, and
+                    field of view exactly.
+                  -->
+                  <camera
+                    name="wrist_camera"
+                    pos="0.016859 -0.160165 0.000"
+                    xyaxes="0.999993640 -0.003566422 0.000000000 -0.002427369 -0.680613254 0.732638865"
+                    fovy="75"
+                  />
+                  <body name="thumb_link1" pos="0.0315 -0.0318581 0.0384">
+                    <inertial pos="0.0120772 0.00239257 0.0136728" quat="0.896107 -0.329025 0.284087 -0.0896036" mass="0.0113388" diaginertia="1.6811e-06 1.39718e-06 7.75511e-07" />
+                    <joint name="thumb_j1" pos="0 0 0" axis="0 0 -1" range="0 2.182" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_thumb_link1" name="thumb_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="thumb_link2" pos="0.024 0.0155 0.0176" quat="0.707105 0.707108 0 0">
+                      <inertial pos="0.0216506 0.0124999 0.0140779" quat="0.353533 0.353574 0.612361 0.612384" mass="0.0389603" diaginertia="5.64004e-06 4.9655e-06 2.66961e-06" />
+                      <joint name="thumb_j2" pos="0 0 0" axis="0 0 1" range="-2.61 0" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_thumb_link2" name="thumb_link2_visual" group="1" contype="0" conaffinity="0" />
+                      <!-- proximal-phalanx collision (mirrors the distal capsule) -->
+                      <geom
+                        name="thumb_link2_collision"
+                        type="capsule"
+                        fromto="0.002 0 0.014  0.040 0.024 0.013"
+                        size="0.010"
+                        contype="1"
+                        conaffinity="2"
+                        friction="1.4 0.01 0.001"
+                        priority="1"
+                        group="3"
+                        rgba="0 1 1 0"
+                      />
+                      <body name="thumb_link3" pos="0.0433013 0.025 0.001">
+                        <inertial pos="0.021338 0.0152598 0.014052" quat="0.230056 0.345925 0.588117 0.693923" mass="0.03917" diaginertia="4.86657e-06 4.6047e-06 2.51865e-06" />
+                        <joint name="thumb_j3" pos="0 0 0" axis="0 0 1" range="-1.048 1.57" damping="0.002" armature="0.001" />
+                        <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_thumb_link3" name="thumb_link3_visual" group="1" contype="0" conaffinity="0" />
+                        <geom
+                          name="thumb_link3_collision"
+                          type="capsule"
+                          fromto="
+                            0.00180389 -0.00043058 0.02101590
+                            0.03740222  0.02736901 0.01309300
+                          "
+                          size="0.010"
+                          contype="1"
+                          conaffinity="2"
+                          group="3"
+                          rgba="0 1 1 0"
+                        
+                          friction="1.4 0.01 0.001"
+                          priority="1"
+                      />
+                      </body>
+                    </body>
+                  </body>
+                  <body name="index_link1" pos="0.0315 -0.020758 0.086" quat="0.707105 0.707108 0 0">
+                    <inertial pos="-0.00192286 0.0160766 0.0160014" quat="0.270343 0.788631 -0.399873 0.380891" mass="0.0164783" diaginertia="2.89253e-06 2.46445e-06 1.31555e-06" />
+                    <joint name="index_j1" pos="0 0 0" axis="0 0 -1" range="0 1.57" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_index_link1" name="index_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="index_link2" pos="-0.0155 0.024 0.0281" quat="0.707107 0 0.707107 0">
+                      <inertial pos="1.07915e-07 0.025 0.0140779" quat="0.707107 0.707107 2.37384e-05 -2.37384e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06" />
+                      <joint name="index_j2" pos="0 0 0" axis="0 0 1" range="0 2.18" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_index_link2" name="index_link2_visual" group="1" contype="0" conaffinity="0" />
+                      <!-- proximal-phalanx collision (mirrors the distal capsule) -->
+                      <geom
+                        name="index_link2_collision"
+                        type="capsule"
+                        fromto="0.001 0.005 0.014 -0.005 0.046 0.013"
+                        size="0.010"
+                        contype="1"
+                        conaffinity="2"
+                        friction="1.4 0.01 0.001"
+                        priority="1"
+                        group="3"
+                        rgba="0 1 1 0"
+                      />
+                      <body name="index_link3" pos="0 0.05 0.001">
+                        <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551103" mass="0.0391696" diaginertia="4.86645e-06 4.6046e-06 2.51862e-06" />
+                        <joint name="index_j3" pos="0 0 0" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001" />
+                        <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_index_link3" name="index_link3_visual" group="1" contype="0" conaffinity="0" />
+                        <geom
+                          name="index_link3_collision"
+                          type="capsule"
+                          fromto="
+                            0.00127144  0.00134666 0.02101985
+                          -0.00499901  0.04607576 0.01309114
+                          "
+                          size="0.010"
+                          contype="1"
+                          conaffinity="2"
+                          group="3"
+                          rgba="0 1 1 0"
+                        
+                          friction="1.4 0.01 0.001"
+                          priority="1"
+                      />
+                      </body>
+                    </body>
+                  </body>
+                  <body name="middle_link1" pos="-0.018 -0.048858 0.1135" quat="0.499998 0.5 0.500002 0.5">
+                    <inertial pos="1.08016e-07 0.025 0.0140779" quat="0.707107 0.707107 2.38073e-05 -2.38073e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06" />
+                    <joint name="middle_j1" pos="0 0 0" axis="0 0 -1" range="-2.18 0" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_middle_link1" name="middle_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="middle_link2" pos="0 0.05 0.001">
+                      <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551105" mass="0.0391696" diaginertia="4.86646e-06 4.6047e-06 2.51862e-06" />
+                      <joint name="middle_j2" pos="0 0 0" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_middle_link2" name="middle_link2_visual" group="1" contype="0" conaffinity="0" />
+                      <geom
+                        name="middle_link2_collision"
+                        type="capsule"
+                        fromto="
+                          0.00127289  0.00134706 0.02102113
+                        -0.00500004  0.04607541 0.01309079
+                        "
+                        size="0.010"
+                        contype="1"
+                        conaffinity="2"
+                        friction="1.4 0.01 0.001"
+                        priority="1"
+                        group="3"
+                        rgba="0 1 1 0"
+                      />
+                    </body>
+                  </body>
+                  <body name="little_link1" pos="-0.0315 -0.0207581 0.08" quat="0.707107 0.707107 0 0">
+                    <inertial pos="-0.00664761 0.0164128 0.0160729" quat="0.247593 0.789347 -0.391604 0.402834" mass="0.0161726" diaginertia="2.83334e-06 2.43857e-06 1.28303e-06" />
+                    <joint name="little_j1" pos="0 0 0" axis="0 0 -1" range="-3.14 0" damping="0.002" armature="0.001" />
+                    <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_little_link1" name="little_link1_visual" group="1" contype="0" conaffinity="0" />
+                    <body name="little_llink2" pos="-0.0205 0.024 0.0281" quat="0.707107 0 0.707107 0">
+                      <inertial pos="1.08016e-07 0.025 0.0140779" quat="0.707107 0.707107 2.38073e-05 -2.38073e-05" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06" />
+                      <joint name="little_j2" pos="0 0 0" axis="0 0 1" range="0 2.18" damping="0.002" armature="0.001" />
+                      <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_little_llink2" name="little_llink2_visual" group="1" contype="0" conaffinity="0" />
+                      <!-- proximal-phalanx collision (mirrors the distal capsule) -->
+                      <geom
+                        name="little_llink2_collision"
+                        type="capsule"
+                        fromto="0.001 0.005 0.014 -0.005 0.046 0.013"
+                        size="0.010"
+                        contype="1"
+                        conaffinity="2"
+                        friction="1.4 0.01 0.001"
+                        priority="1"
+                        group="3"
+                        rgba="0 1 1 0"
+                      />
+                      <body name="little_linik3" pos="0 0.05 0.001">
+                        <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.005511" mass="0.0391696" diaginertia="4.86646e-06 4.6047e-06 2.51862e-06" />
+                        <joint name="little_j3" pos="0 0 0" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001" />
+                        <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_little_linik3" name="little_linik3_visual" group="1" contype="0" conaffinity="0" />
+                        <geom
+                          name="little_linik3_collision"
+                          type="capsule"
+                          fromto="
+                            0.00127238  0.00134698 0.02102116
+                          -0.00499969  0.04607548 0.01309076
+                          "
+                          size="0.010"
+                          contype="1"
+                          conaffinity="2"
+                          group="3"
+                          rgba="0 1 1 0"
+                        
+                          friction="1.4 0.01 0.001"
+                          priority="1"
+                      />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="joint_1_pos" joint="joint_1" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_2_pos" joint="joint_2" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_3_pos" joint="joint_3" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_4_pos" joint="joint_4" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_5_pos" joint="joint_5" kp="50" dampratio="1" inheritrange="1" />
+    <position name="joint_6_pos" joint="joint_6" kp="50" dampratio="1" inheritrange="1" />
+    <position name="thumb_j1_pos" joint="thumb_j1" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="thumb_j2_pos" joint="thumb_j2" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="thumb_j3_pos" joint="thumb_j3" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="index_j1_pos" joint="index_j1" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="index_j2_pos" joint="index_j2" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="index_j3_pos" joint="index_j3" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="middle_j1_pos" joint="middle_j1" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="middle_j2_pos" joint="middle_j2" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="little_j1_pos" joint="little_j1" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="little_j2_pos" joint="little_j2" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+    <position name="little_j3_pos" joint="little_j3" kp="2.0" dampratio="1.0" inheritrange="1" forcerange="-20 20" />
+  </actuator>
+</mujoco>
