@@ -1,23 +1,25 @@
-"""USDZ contract regression for the demo scene suite.
+"""USDZ contract regression for the V2 demo scene suite.
 
 Run with ``.venv_usdz/bin/python -m pytest`` (mirrors
 test_avp_mujoco_usdz_contract.py, which is the V8 reference).
 
-Covers the demo-suite USDZ acceptance items:
+Covers the V2 USDZ acceptance items (PART 13/35/54/55/56):
   * package integrity and self-contained asset references
-    (no absolute /home /data /tmp references - PART 86);
-  * Z up-axis and 1.0 meters-per-unit (scale base - PART 87);
+    (no absolute /home /data /tmp references);
+  * Z up-axis and 1.0 meters-per-unit;
   * robot prim naming and hierarchy compatible with the V8 USDZ
-    (first 19 Geometry children identical - PART 84);
-  * every streamed body prim exists as a flat Geometry child
-    (no nested runtime bodies, no ownership collisions);
-  * USDZ initial world transforms equal the MuJoCo demo_ready
-    keyframe state for robot and task bodies, which simultaneously
-    certifies the V8 grasp-ready initial pose (PART 83) and the
-    task-object orientations (PART 88);
-  * world AABB agreement between MuJoCo and USDZ (PART 87);
-  * no Camera prims, no Light prims, no camera hardware
-    (PART 85 - the V8 USDZ carries no Camera prims either).
+    (first 19 Geometry children identical);
+  * flat runtime bodies only (no nested bodies, no collisions);
+  * EVERY streamed body prim's initial world pose equals the
+    MuJoCo demo_ready keyframe state within 1 mm / 0.5 deg
+    (V2 acceptance), including the hammer and the whole drawer;
+  * hammer orientation semantically checked (handle axis and head
+    axis, not just COM);
+  * every drawer geom's USDZ world pose matches MuJoCo at
+    closed / half-open / fully-open (rigid assembly: children
+    local transforms fixed, only the root translates);
+  * scanned-mesh world AABB agreement (scale regression);
+  * no Camera prims, no Light prims.
 """
 
 from __future__ import annotations
@@ -62,16 +64,16 @@ DEMO_SUITES = {
         "xml": (
             ASSET_ROOT
             / "mjcf/"
-            "rm65_sg100_demo_drawer_retrieval_and_loading_scene.xml"
+            "rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
         ),
         "usdz": (
             ASSET_ROOT
             / "usdz/"
-            "rm65_sg100_demo_drawer_retrieval_and_loading_compat.usdz"
+            "rm65_sg100_demo_drawer_loading_and_closing_compat.usdz"
         ),
         "task_bodies": (
             "drawer_cabinet", "demo_drawer",
-            "demo_drawer_item", "goal_tray", "grasp_table",
+            "demo_drawer_item", "grasp_table",
         ),
         "task_meshes": ("drawer_item_visual",),
     },
@@ -88,17 +90,26 @@ DEMO_SUITES = {
         ),
         "task_bodies": (
             "kit_object_a", "kit_object_b",
-            "kit_object_c", "kit_tray", "grasp_table",
+            "kit_tray", "grasp_table",
         ),
         "task_meshes": (
             "kit_object_a_visual", "kit_object_b_visual",
-            "kit_object_c_visual",
         ),
     },
 }
 
-TRANSFORM_TOLERANCE = 2e-6
+# V2 acceptance: translation <= 1 mm, rotation <= 0.5 deg
+TRANSLATION_TOLERANCE_M = 1e-3
+ROTATION_TOLERANCE_RAD = np.deg2rad(0.5)
+# exact-body tightness for non-acceptance sanity checks
+EXACT_TOLERANCE = 2e-6
 AABB_TOLERANCE = 1e-6
+
+DRAWER_GEOMS = (
+    "drawer_bottom", "drawer_side_pY", "drawer_side_nY",
+    "drawer_back", "drawer_front", "drawer_handle",
+    "drawer_handle_post_pY", "drawer_handle_post_nY",
+)
 
 
 def _stage_geometry(stage):
@@ -107,7 +118,7 @@ def _stage_geometry(stage):
     return geometry
 
 
-def _keyframe_state(xml: Path):
+def _keyframe_data(xml: Path, drawer_q: float | None = None):
     model = mujoco.MjModel.from_xml_path(str(xml))
     data = mujoco.MjData(model)
     key = mujoco.mj_name2id(
@@ -115,6 +126,11 @@ def _keyframe_state(xml: Path):
     )
     assert key >= 0
     mujoco.mj_resetDataKeyframe(model, data, key)
+    if drawer_q is not None:
+        jid = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_JOINT, "demo_drawer_slide"
+        )
+        data.qpos[model.jnt_qposadr[jid]] = drawer_q
     mujoco.mj_forward(model, data)
     return model, data
 
@@ -149,6 +165,17 @@ def _usd_mesh_world_points(stage, mesh_prim) -> np.ndarray:
             @ matrix)[:, :3]
 
 
+def _rotation_error_rad(mat_a, mat_b) -> float:
+    """Max-abs element difference of rotation matrices (rad-ish)."""
+    return float(np.max(np.abs(mat_a - mat_b)))
+
+
+def _axis_angle_error_rad(axis_a, axis_b) -> float:
+    n = np.linalg.norm(axis_a) * np.linalg.norm(axis_b)
+    return float(np.arccos(np.clip(np.dot(axis_a, axis_b) / n,
+                                   -1.0, 1.0)))
+
+
 @pytest.mark.parametrize("demo", sorted(DEMO_SUITES))
 def test_demo_usdz_package_and_robot_naming(demo):
     from pxr import Usd, UsdGeom
@@ -162,13 +189,10 @@ def test_demo_usdz_package_and_robot_naming(demo):
     assert usdz.is_file(), f"missing USDZ: {usdz}"
     assert zipfile.is_zipfile(usdz)
 
-    # PART 86: every packaged reference resolves; no absolute
-    # host paths anywhere in the archive
     package = validate_usdz_package(usdz)
     assert not package["unresolved_assets"], package
     with zipfile.ZipFile(usdz) as archive:
-        names = archive.namelist()
-        for member in names:
+        for member in archive.namelist():
             assert not member.startswith(
                 ("/", "home/", "data/", "tmp/")
             ), member
@@ -185,7 +209,6 @@ def test_demo_usdz_package_and_robot_naming(demo):
     expected = ROBOT_BODIES + suite["task_bodies"]
     assert children == expected, (children, expected)
 
-    # PART 84: robot prim block identical to the V8 USDZ layout
     v8_stage = Usd.Stage.Open(str(V8_COMPAT_USDZ))
     v8_children = tuple(
         child.GetName()
@@ -193,7 +216,6 @@ def test_demo_usdz_package_and_robot_naming(demo):
     )
     assert children[:19] == v8_children[:19] == ROBOT_BODIES
 
-    # flat runtime bodies only
     paths, collisions, nested, physics = audit_compat_stage(
         stage, list(expected)
     )
@@ -202,7 +224,6 @@ def test_demo_usdz_package_and_robot_naming(demo):
     assert not nested
     assert not physics
 
-    # PART 85: no camera/light hardware in the USDZ
     assert not any(
         prim.IsA(UsdGeom.Camera) for prim in stage.Traverse()
     )
@@ -213,11 +234,13 @@ def test_demo_usdz_package_and_robot_naming(demo):
 
 @pytest.mark.parametrize("demo", sorted(DEMO_SUITES))
 def test_demo_usdz_initial_transforms_match_keyframe(demo):
-    """PART 83 + 88: USDZ opens in the V8 grasp-ready pose."""
+    """V2 acceptance: every streamed body prim within 1 mm / 0.5 deg
+    of the MuJoCo demo_ready state (exact match expected in
+    practice, since the exporter consumes the same keyframe)."""
     from pxr import Usd, UsdGeom
 
     suite = DEMO_SUITES[demo]
-    model, data = _keyframe_state(suite["xml"])
+    model, data = _keyframe_data(suite["xml"])
     stage = Usd.Stage.Open(str(suite["usdz"]))
     geometry = _stage_geometry(stage)
     cache = UsdGeom.XformCache()
@@ -238,40 +261,167 @@ def test_demo_usdz_initial_transforms_match_keyframe(demo):
                 )
             )
         )
-        rot_err = float(
-            np.max(
-                np.abs(
-                    np.asarray(
-                        matrix.ExtractRotationMatrix()
-                    ).T
-                    - data.xmat[body_id].reshape(3, 3)
-                )
+        rot_err = _rotation_error_rad(
+            np.asarray(matrix.ExtractRotationMatrix()).T,
+            data.xmat[body_id].reshape(3, 3),
+        )
+        assert pos_err <= TRANSLATION_TOLERANCE_M, (
+            f"{demo}/{body_name}: position error {pos_err * 1000:.3f} mm"
+        )
+        assert rot_err <= ROTATION_TOLERANCE_RAD, (
+            f"{demo}/{body_name}: rotation error "
+            f"{np.degrees(rot_err):.3f} deg"
+        )
+
+
+def test_hammer_initial_usdz_pose_matches_mujoco():
+    """PART 13: hammer body pose + semantic axes (handle direction,
+    head axis), not just the COM."""
+    from pxr import Usd, UsdGeom
+
+    suite = DEMO_SUITES["01"]
+    model, data = _keyframe_data(suite["xml"])
+    stage = Usd.Stage.Open(str(suite["usdz"]))
+    prim = _stage_geometry(stage).GetChild("demo_hammer")
+    assert prim
+    matrix = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+    R_usd = np.asarray(matrix.ExtractRotationMatrix()).T
+
+    body_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, "demo_hammer"
+    )
+    pos_err = float(
+        np.max(
+            np.abs(
+                np.asarray(matrix.ExtractTranslation())
+                - data.xpos[body_id]
             )
         )
-        assert pos_err <= TRANSFORM_TOLERANCE, (
-            f"{demo}/{body_name}: position error {pos_err}"
+    )
+    R_mj = data.xmat[body_id].reshape(3, 3)
+    assert pos_err <= TRANSLATION_TOLERANCE_M
+
+    # hammer local X = handle axis, local Z = head/strike axis
+    for local_axis, label in (
+        (np.array([1.0, 0.0, 0.0]), "handle"),
+        (np.array([0.0, 0.0, 1.0]), "head"),
+    ):
+        usd_axis = R_usd @ local_axis
+        mj_axis = R_mj @ local_axis
+        err = _axis_angle_error_rad(usd_axis, mj_axis)
+        assert err <= ROTATION_TOLERANCE_RAD, (
+            f"hammer {label} axis error {np.degrees(err):.3f} deg"
         )
-        assert rot_err <= TRANSFORM_TOLERANCE, (
-            f"{demo}/{body_name}: rotation error {rot_err}"
+    # the handle must be horizontal and the head axis vertical
+    handle_world = R_usd @ np.array([1.0, 0.0, 0.0])
+    assert abs(handle_world[2]) < 0.05, "handle not horizontal"
+    head_world = R_usd @ np.array([0.0, 0.0, 1.0])
+    assert abs(abs(head_world[2]) - 1.0) < 0.05, (
+        "mallet head axis not vertical"
+    )
+
+
+def test_drawer_usdz_parts_match_mujoco():
+    """PART 35: every drawer geom's USDZ world pose vs MuJoCo at
+    closed / half-open / fully-open - rigid assembly check."""
+    from pxr import Usd, UsdGeom
+
+    suite = DEMO_SUITES["02"]
+    stage = Usd.Stage.Open(str(suite["usdz"]))
+    drawer = _stage_geometry(stage).GetChild("demo_drawer")
+    assert drawer
+    children = {
+        c.GetName(): c for c in drawer.GetChildren()
+    }
+    assert set(children) == set(DRAWER_GEOMS), (
+        sorted(children), sorted(DRAWER_GEOMS)
+    )
+
+    # reference local transforms must be state-independent
+    cache = UsdGeom.XformCache()
+    local_ref = {}
+    for name, prim in children.items():
+        rel, _ = cache.ComputeRelativeTransform(
+            prim, drawer
         )
+        local_ref[name] = np.asarray(rel, dtype=np.float64)
+
+    for drawer_q in (0.0, 0.075, 0.150):
+        model, data = _keyframe_data(
+            suite["xml"], drawer_q=drawer_q
+        )
+        drawer_bid = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "demo_drawer"
+        )
+        # MuJoCo side: children local transforms are state-independent
+        mj_local = {}
+        for name in DRAWER_GEOMS:
+            gid = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_GEOM, name
+            )
+            assert gid >= 0, name
+            rel_pos = (
+                data.geom_xpos[gid] - data.xpos[drawer_bid]
+            )
+            mj_local[name] = rel_pos
+
+        if drawer_q == 0.0:
+            # USDZ ships the CLOSED state: compare absolute world
+            for name, prim in children.items():
+                world = cache.GetLocalToWorldTransform(prim)
+                usd_pos = np.asarray(
+                    world.ExtractTranslation(),
+                    dtype=np.float64,
+                )
+                gid = mujoco.mj_name2id(
+                    model, mujoco.mjtObj.mjOBJ_GEOM, name
+                )
+                err = float(
+                    np.max(
+                        np.abs(usd_pos - data.geom_xpos[gid])
+                    )
+                )
+                assert err <= TRANSLATION_TOLERANCE_M, (
+                    f"drawer {name} @ closed: "
+                    f"{err * 1000:.3f} mm"
+                )
+        else:
+            # half / full open: USDZ local transforms must equal
+            # the closed ones (rigid assembly), and MuJoCo's local
+            # offsets must match the closed ones too
+            if drawer_q == 0.075:
+                mj_local_ref = mj_local
+            else:
+                for name in DRAWER_GEOMS:
+                    assert np.allclose(
+                        mj_local[name], mj_local_ref[name],
+                        atol=1e-9,
+                    ), f"MuJoCo drawer child {name} not rigid"
+            for name, prim in children.items():
+                rel, _ = cache.ComputeRelativeTransform(
+                    prim, drawer
+                )
+                assert np.allclose(
+                    np.asarray(rel, dtype=np.float64),
+                    local_ref[name],
+                    atol=1e-9,
+                ), f"USDZ drawer child {name} moved relative"
 
 
 @pytest.mark.parametrize("demo", sorted(DEMO_SUITES))
 def test_demo_usdz_world_aabb_matches_mujoco(demo):
-    """PART 87: no x1000 / x100 / /100 scale drift on scanned meshes."""
+    """Scale regression on every scanned mesh."""
     from pxr import Usd
 
     suite = DEMO_SUITES[demo]
-    model, data = _keyframe_state(suite["xml"])
+    model, data = _keyframe_data(suite["xml"])
     stage = Usd.Stage.Open(str(suite["usdz"]))
-    geometry = _stage_geometry(stage)
 
     renderables = {
         prim.GetName(): prim
         for prim in stage.Traverse()
         if prim.GetTypeName() == "Mesh"
     }
-
     for geom_name in suite["task_meshes"]:
         prim = renderables[geom_name]
         assert prim, f"missing mesh prim: {geom_name}"

@@ -34,7 +34,7 @@
     <headlight active="0" />
   </visual>
 
-  <include file="rm65_sg100_avp_grasp_robot.xml"/>
+  <include file="rm65_sg100_demo_robot.xml"/>
   <include file="rm65_sg100_demo_hammer_peg_assembly_objects.xml"/>
 
   <worldbody>
@@ -119,6 +119,12 @@
     keyframe so plain MjModel.from_xml_path users land in the same
     posture run_avp_arm_hand_sim.py computes at runtime.
 
+    V2 initial-state contract: the hammer freejoint's XML default
+    qpos (body pos/quat) EQUALS its demo_ready keyframe entry, so
+    the XML-default state, the keyframe state, and every USDZ
+    export path (prebuilt or passthrough) agree on the hammer's
+    initial pose.
+
     qpos layout (25 values):
       [ 0..16] robot 17 joints, V8 order - the arm solution is the
                runtime startup IK result for the V8 scene (identical
@@ -135,7 +141,7 @@
         0.34818753987135775 -1.3614850477620644 -2.286025521790937
         -0.10246395780782178 2.0744881064029075 -0.049588596290682636
         0 0 0 0 0 0 0 0 0 0 0
-        0.340031 -0.119991 0.006999 0.999808 0.001306 -0.019533 -0.000028
+        0.339998 -0.119996 0.038549 0.999958 -0.000257 -0.009136 -0.0000176
         0
       "
     />

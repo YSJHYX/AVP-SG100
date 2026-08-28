@@ -3,19 +3,28 @@
 <mujoco model="RM65-SG100-demo-maintenance-kit-packing-scene">
 
   <!--
-    DEMO 03 - Maintenance Kit Packing.
+    DEMO 03 V2 - Maintenance Kit Packing (two objects).
 
     Derived from the frozen V8 production scene
-    rm65_sg100_avp_grasp_scene.xml; identical robot include, world
-    options, cameras, light and table (see DEMO 01 scene header for
-    the preserved-contract list and DEMO_SCENES.md for details).
+    rm65_sg100_avp_grasp_scene.xml; identical world options,
+    cameras, light and table (see DEMO 01 scene header for the
+    preserved-contract list and DEMO_SCENES.md for details).
+    Uses the demo-suite robot include (hand contact friction fix).
 
-    demo_ready keyframe qpos layout (38 values):
+    V2 (AVP field test): the round bottle is removed; the box and
+    the screwdriver are staged on opposite sides with clear
+    approach corridors and >= 40 mm READY-hand clearance.
+
+    demo_ready keyframe qpos layout (31 values):
       [ 0..16] robot 17 joints - V8 grasp-ready startup solution,
                hand fully open (V8 startup semantics).
-      [17..23] kit_object_a freejoint pose (round bottle).
-      [24..30] kit_object_b freejoint pose (rectangular box).
-      [31..37] kit_object_c freejoint pose (screwdriver, yaw +90).
+      [17..23] kit_object_a freejoint pose (rectangular box).
+      [24..30] kit_object_b freejoint pose (screwdriver, yaw +90).
+
+    V2 initial-state contract: both freejoint bodies' XML default
+    qpos (body pos/quat) EQUAL their demo_ready keyframe entries,
+    so the XML-default state, the keyframe state, and every USDZ
+    export path agree on the initial poses.
   -->
 
   <option
@@ -31,7 +40,7 @@
     <headlight active="0" />
   </visual>
 
-  <include file="rm65_sg100_avp_grasp_robot.xml"/>
+  <include file="rm65_sg100_demo_robot.xml"/>
   <include file="rm65_sg100_demo_maintenance_kit_packing_objects.xml"/>
 
   <worldbody>
@@ -104,9 +113,8 @@
         0.34818753987135775 -1.3614850477620644 -2.286025521790937
         -0.10246395780782178 2.0744881064029075 -0.049588596290682636
         0 0 0 0 0 0 0 0 0 0 0
-        0.310 0.300 0.0005 1 0 0 0
-        0.410 0.320 0.0005 1 0 0 0
-        0.500 0.239336 -0.002911 0.706563 -0.027734 -0.027734 -0.706563
+        0.440 0.340 0.0005 1 0 0 0
+        0.540 0.130664 -0.002911 0.706563 0.027734 -0.027734 0.706563
       "
     />
   </keyframe>

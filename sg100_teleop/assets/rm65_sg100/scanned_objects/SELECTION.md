@@ -20,9 +20,9 @@ Five were selected; totals stay inside the 4-6 model budget.
 |---|---|---|---|
 | Cole_Hardware_Hammer_Black | 292 x 60 x 96 | HAND_TOOL / HAMMER_OR_MALLET | **SELECTED** (DEMO 01 mallet: handle 200 mm x ~25 mm oval, head Ø58 x 96, faces +-Z) |
 | SNAIL_MEASURING_TAPE | 64 x 195 x 66 | COMPACT_OBJECT | **SELECTED** (DEMO 02 drawer item: 64 mm grasp width, flat bottom, no roll) |
-| Black_Elderberry_Syrup_54_oz_Gaia_Herbs | 60 x 59 x 145 | CYLINDRICAL | **SELECTED** (DEMO 03 A: round d58 body, 145 tall - power-grasp wrap) |
-| ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box | 122 x 49 x 169 | RECTANGULAR | **SELECTED** (DEMO 03 B: 49 mm pinch faces, plain pack - parts-box look) |
-| Craftsman_Grip_Screwdriver_Phillips_Cushion | 260 x 36 x 38 | ELONGATED / HAND_TOOL | **SELECTED** (DEMO 03 C: cushion grip 29-36 mm x 112 mm, shaft never grasped) |
+| Black_Elderberry_Syrup_54_oz_Gaia_Herbs | 60 x 59 x 145 | CYLINDRICAL | **REMOVED FROM DEMO V2** (was DEMO 03 A; the bottle was dropped when Demo 03 went to two objects - assets deleted from the repo) |
+| ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box | 122 x 49 x 169 | RECTANGULAR | **SELECTED** (DEMO 03 A since V2: 49 mm pinch faces, plain pack - parts-box look) |
+| Craftsman_Grip_Screwdriver_Phillips_Cushion | 260 x 36 x 38 | ELONGATED / HAND_TOOL | **SELECTED** (DEMO 03 B: cushion grip 29-36 mm x 112 mm, shaft never grasped) |
 | HeavyDuty_Flashlight | 78 x 78 x 229 | ELONGATED | rejected: 44-76 mm body too chunky vs screwdriver's clean 30 mm grip |
 | Don_Franciscos_Gourmet_Coffee (12 oz) | 103 x 103 x 141 | CYLINDRICAL | rejected: Ø103 too wide for SG100 wrap (palm ~90 mm) |
 | Nescafe_Tasters_Choice (7 oz) | 97 x 79 x 186 | CYLINDRICAL | rejected: oval 97 x 79, tippy standing |

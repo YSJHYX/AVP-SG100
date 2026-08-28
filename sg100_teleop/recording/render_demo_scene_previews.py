@@ -1,7 +1,6 @@
 """Render demo-scene preview PNGs from each scene's demo_ready
-keyframe and from scripted task-representative states.
+keyframe and from scripted task-representative states (V2).
 
-Part of the demo scene suite deliverables (preview requirements).
 Renders are pure mj_forward visualisation - no physics is re-run
 for the keyframe views; the task-representative views teleport the
 task objects to waypoint poses (documented in DEMO_SCENES.md).
@@ -44,6 +43,14 @@ READY_ARM = np.array(
         -0.049588596290682636,
     ]
 )
+HAND_CLOSED = np.array(
+    [0.55, -0.75, 0.45, 0.9, 1.35, 0.5, -0.7, 0.9, 1.0, -0.35, 0.8]
+)
+# V2 settled hammer pose on the cradle (== keyframe == body pos)
+HAMMER_REST = [
+    0.339998, -0.119996, 0.038549,
+    0.999958, -0.000257, -0.009136, -0.0000176,
+]
 
 
 def _qadr(model, joint):
@@ -53,9 +60,10 @@ def _qadr(model, joint):
     return int(model.jnt_qposadr[jid])
 
 
-def _render_set(model, data, renderer, out_dir: Path, tag: str):
+def _render_set(model, data, renderer, out_dir: Path, tag: str,
+                cameras=CAMERAS):
     out_dir.mkdir(parents=True, exist_ok=True)
-    for cam in CAMERAS:
+    for cam in cameras:
         renderer.update_scene(data, camera=cam)
         img = renderer.render()
         if cam == "workstation_front":
@@ -65,207 +73,161 @@ def _render_set(model, data, renderer, out_dir: Path, tag: str):
         else:
             name = f"demo_{tag}.png"
         Image.fromarray(img).save(out_dir / name)
-    print(f"  wrote {tag}: 3 cameras")
+    print(f"  wrote {tag}")
 
 
-def _demo01(renderer):
-    xml = MJCF / "rm65_sg100_demo_hammer_peg_assembly_scene.xml"
-    out = OUT_ROOT / "hammer_peg_assembly"
+def _load(xml):
     model = mujoco.MjModel.from_xml_path(str(xml))
     data = mujoco.MjData(model)
     layout = resolve_robot_layout(model)
     key = mujoco.mj_name2id(
         model, mujoco.mjtObj.mjOBJ_KEY, "demo_ready"
     )
+
+    def load():
+        mujoco.mj_resetDataKeyframe(model, data, key)
+        data.ctrl[layout.arm_actuator_ids] = READY_ARM
+        data.ctrl[layout.hand_actuator_ids] = 0.0
+        return data
+
+    return model, data, layout, load
+
+
+def _demo01(renderer):
+    model, data, layout, load = _load(
+        MJCF / "rm65_sg100_demo_hammer_peg_assembly_scene.xml"
+    )
+    out = OUT_ROOT / "hammer_peg_assembly"
     hammer_j = _qadr(model, "demo_hammer_free")
     peg_q = _qadr(model, "demo_peg_slide")
 
-    def load(arm=None):
-        mujoco.mj_resetDataKeyframe(model, data, key)
-        data.ctrl[layout.arm_actuator_ids] = (
-            arm if arm is not None else READY_ARM
-        )
-        data.ctrl[layout.hand_actuator_ids] = 0.0
-
-    # READY
-    load()
-    mujoco.mj_forward(model, data)
+    load(); mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "ready")
 
-    # hammer lifted into a power grasp (hand closed onto the handle,
-    # hammer raised mid-air) - hand joints closed for the visual
+    # raised power grasp on the cradle handle
     load()
-    # place hand over the handle grasp point via arm q from the IK
-    # audit (approximate representative posture), fingers flexed
-    data.qpos[layout.hand_qpos_indices] = np.array(
-        [0.55, -0.75, 0.45, 0.9, 1.35, 0.5,
-         -0.7, 0.9, 1.0, -0.35, 0.8]
-    )
-    data.qpos[hammer_j:hammer_j + 7] = [
-        0.34, -0.129, 0.20, 0.999809, 0.0, -0.019533, 0.0,
-    ]
+    data.qpos[layout.hand_qpos_indices] = HAND_CLOSED
+    data.qpos[hammer_j:hammer_j + 7] = HAMMER_REST
     mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "hammer_grasp")
 
-    # pre-strike: mallet face aligned above the peg
+    # pre-strike above the peg, then strike contact
     load()
     data.qpos[hammer_j:hammer_j + 7] = [
         0.415, 0.209, 0.205, 1, 0, 0, 0,
     ]
     mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "hammer_prestrike")
-
-    # strike contact
-    load()
-    data.qpos[hammer_j:hammer_j + 7] = [
-        0.415, 0.209, 0.152, 1, 0, 0, 0,
-    ]
+    data.qpos[hammer_j + 2] = 0.152
     mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "hammer_strike")
 
     # peg before / after (full insertion)
-    load()
-    mujoco.mj_forward(model, data)
+    load(); mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "peg_before")
     data.qpos[peg_q] = 0.040
-    data.qpos[hammer_j:hammer_j + 7] = [
-        0.34, -0.129, 0.05, 0.999809, 0.0, -0.019533, 0.0,
-    ]
+    data.qpos[hammer_j:hammer_j + 7] = HAMMER_REST
     mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "peg_after")
 
 
 def _demo02(renderer):
-    xml = (
+    model, data, layout, load = _load(
         MJCF
-        / "rm65_sg100_demo_drawer_retrieval_and_loading_scene.xml"
+        / "rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
     )
-    out = OUT_ROOT / "drawer_retrieval_and_loading"
-    model = mujoco.MjModel.from_xml_path(str(xml))
-    data = mujoco.MjData(model)
-    layout = resolve_robot_layout(model)
-    key = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_KEY, "demo_ready"
-    )
+    out = OUT_ROOT / "drawer_loading_and_closing"
     drawer_q = _qadr(model, "demo_drawer_slide")
     item_j = _qadr(model, "demo_drawer_item_free")
 
-    def load():
-        mujoco.mj_resetDataKeyframe(model, data, key)
-        data.ctrl[layout.arm_actuator_ids] = READY_ARM
-        data.ctrl[layout.hand_actuator_ids] = 0.0
-
-    load()
+    # closed + ready, then hook grasp on the handle
+    load(); mujoco.mj_forward(model, data)
+    _render_set(model, data, renderer, out, "drawer_closed_ready")
+    data.qpos[layout.hand_qpos_indices] = HAND_CLOSED
     mujoco.mj_forward(model, data)
-    _render_set(model, data, renderer, out, "ready")
-    _render_set(model, data, renderer, out, "drawer_closed")
+    _render_set(model, data, renderer, out, "drawer_handle_grasp")
 
-    # open
+    # fully open
     data.qpos[drawer_q] = 0.15
     mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "drawer_open")
 
-    # object grasped out of the open drawer (lifted mid-air)
-    data.qpos[item_j:item_j + 7] = [
-        0.45, 0.18, 0.16, 1, 0, 0, 0,
-    ]
-    data.qpos[layout.hand_qpos_indices] = np.array(
-        [0.55, -0.75, 0.45, 0.9, 1.35, 0.5,
-         -0.7, 0.9, 1.0, -0.35, 0.8]
-    )
+    # tape grasped on the table (hand closed over it)
+    data.qpos[layout.hand_qpos_indices] = HAND_CLOSED
     mujoco.mj_forward(model, data)
-    _render_set(model, data, renderer, out, "drawer_object_grasp")
+    _render_set(model, data, renderer, out, "table_object_grasp")
 
-    # object in tray
+    # tape lowered into the open drawer
     data.qpos[item_j:item_j + 7] = [
-        0.33, -0.22, 0.0345, 1, 0, 0, 0,
+        0.47, 0.18, 0.060, 1, 0, 0, 0,
     ]
     mujoco.mj_forward(model, data)
-    _render_set(model, data, renderer, out, "tray_goal")
+    _render_set(model, data, renderer, out, "drawer_loading")
+    data.qpos[item_j:item_j + 3] = [0.47, 0.18, 0.0405]
+    mujoco.mj_forward(model, data)
+    _render_set(model, data, renderer, out, "drawer_loaded")
+
+    # closed with the tape inside
+    data.qpos[drawer_q] = 0.0
+    data.qpos[item_j:item_j + 3] = [0.65, 0.18, 0.0405]
+    data.qpos[layout.hand_qpos_indices] = 0
+    mujoco.mj_forward(model, data)
+    _render_set(model, data, renderer, out, "drawer_closed_final")
 
 
 def _demo03(renderer):
-    xml = (
+    model, data, layout, load = _load(
         MJCF / "rm65_sg100_demo_maintenance_kit_packing_scene.xml"
     )
     out = OUT_ROOT / "maintenance_kit_packing"
-    model = mujoco.MjModel.from_xml_path(str(xml))
-    data = mujoco.MjData(model)
-    layout = resolve_robot_layout(model)
-    key = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_KEY, "demo_ready"
-    )
     qa = _qadr(model, "kit_object_a_free")
     qb = _qadr(model, "kit_object_b_free")
-    qc = _qadr(model, "kit_object_c_free")
 
-    closed = np.array(
-        [0.55, -0.75, 0.45, 0.9, 1.35, 0.5,
-         -0.7, 0.9, 1.0, -0.35, 0.8]
-    )
-
-    def load():
-        mujoco.mj_resetDataKeyframe(model, data, key)
-        data.ctrl[layout.arm_actuator_ids] = READY_ARM
-        data.ctrl[layout.hand_actuator_ids] = 0.0
-
-    load()
-    mujoco.mj_forward(model, data)
+    load(); mujoco.mj_forward(model, data)
     _render_set(model, data, renderer, out, "ready")
-    _render_set(model, data, renderer, out, "kit_initial")
+    _render_set(model, data, renderer, out, "maintenance_initial")
 
-    # A grasped (lifted), B/C still on table
+    # box grasped mid-air
     load()
-    data.qpos[qa:qa + 7] = [0.31, 0.30, 0.16, 1, 0, 0, 0]
-    data.qpos[layout.hand_qpos_indices] = closed
+    data.qpos[qa:qa + 7] = [0.44, 0.34, 0.16, 1, 0, 0, 0]
+    data.qpos[layout.hand_qpos_indices] = HAND_CLOSED
     mujoco.mj_forward(model, data)
-    _render_set(model, data, renderer, out, "object_a_grasp")
+    _render_set(model, data, renderer, out, "box_grasp")
 
-    # A packed, B grasped
-    load()
-    data.qpos[qa:qa + 7] = [0.32, -0.12, 0.0105, 1, 0, 0, 0]
-    data.qpos[qb:qb + 7] = [0.41, 0.32, 0.16, 1, 0, 0, 0]
-    data.qpos[layout.hand_qpos_indices] = closed
-    mujoco.mj_forward(model, data)
-    _render_set(model, data, renderer, out, "object_b_grasp")
-
-    # A + B packed, C grasped (rotated toward slot axis)
+    # box packed, screwdriver grasped
     load()
     data.qpos[qa:qa + 7] = [0.32, -0.12, 0.0105, 1, 0, 0, 0]
-    data.qpos[qb:qb + 7] = [
-        0.515, -0.115, 0.0105, 1, 0, 0, 0,
-    ]
-    data.qpos[qc:qc + 7] = [
-        0.42, -0.295, 0.13, 1, 0, 0, 0,
-    ]
-    data.qpos[layout.hand_qpos_indices] = closed
+    data.qpos[qb:qb + 7] = [0.54, 0.20, 0.16, 1, 0, 0, 0]
+    data.qpos[layout.hand_qpos_indices] = HAND_CLOSED
     mujoco.mj_forward(model, data)
-    _render_set(model, data, renderer, out, "object_c_grasp")
+    _render_set(model, data, renderer, out, "screwdriver_grasp")
+
+    # box packed, screwdriver mid-carry rotated toward the slot
+    load()
+    data.qpos[qa:qa + 7] = [0.32, -0.12, 0.0105, 1, 0, 0, 0]
+    data.qpos[qb:qb + 7] = [0.44, 0.05, 0.20, 1, 0, 0, 0]
+    data.qpos[layout.hand_qpos_indices] = HAND_CLOSED
+    mujoco.mj_forward(model, data)
+    _render_set(model, data, renderer, out, "screwdriver_reorient")
 
     # complete kit
     load()
     data.qpos[qa:qa + 7] = [0.32, -0.12, 0.0105, 1, 0, 0, 0]
-    data.qpos[qb:qb + 7] = [
-        0.515, -0.115, 0.0105, 1, 0, 0, 0,
-    ]
-    data.qpos[qc:qc + 7] = [
-        0.42, -0.295, 0.0071, 1, 0, 0, 0,
-    ]
+    data.qpos[qb:qb + 7] = [0.42, -0.295, 0.0071, 1, 0, 0, 0]
     mujoco.mj_forward(model, data)
-    _render_set(model, data, renderer, out, "kit_complete")
+    _render_set(model, data, renderer, out, "maintenance_complete")
 
 
 def main() -> int:
-    # any scene compiles the renderer target; use DEMO 01
     xml = MJCF / "rm65_sg100_demo_hammer_peg_assembly_scene.xml"
     model = mujoco.MjModel.from_xml_path(str(xml))
     renderer = mujoco.Renderer(model, HEIGHT, WIDTH)
 
-    print("DEMO 01 - hammer_peg_assembly")
+    print("DEMO 01 V2 - hammer_peg_assembly")
     _demo01(renderer)
-    print("DEMO 02 - drawer_retrieval_and_loading")
+    print("DEMO 02 V2 - drawer_loading_and_closing")
     _demo02(renderer)
-    print("DEMO 03 - maintenance_kit_packing")
+    print("DEMO 03 V2 - maintenance_kit_packing")
     _demo03(renderer)
     return 0
 

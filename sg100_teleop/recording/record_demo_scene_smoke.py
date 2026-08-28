@@ -233,6 +233,7 @@ class Puppet:
 # ------------------------------------------------------------------
 
 def record_demo01():
+    """V2: hammer rests raised on the two-pier cradle."""
     xml = (
         MJCF / "rm65_sg100_demo_hammer_peg_assembly_scene.xml"
     )
@@ -240,75 +241,86 @@ def record_demo01():
     p = Puppet(xml, out)
 
     p.hold(0.5)
-    p.move_arm((0.34, -0.13, 0.09), 0.8)
-    p.move_arm((0.34, -0.13, 0.045), 0.8, close_hand=True)
+    p.move_arm((0.34, -0.13, 0.12), 0.8)          # pregrasp (raised)
+    p.move_arm((0.34, -0.13, 0.077), 0.8, close_hand=True)
     p.weld("demo_hammer_free")
     p.hold(0.3)
-    p.move_arm((0.34, -0.13, 0.20), 0.8)          # lift
+    p.move_arm((0.34, -0.13, 0.22), 0.8)          # lift off the cradle
     p.move_arm((0.415, 0.209, 0.22), 1.0)         # pre-strike
     for tap in range(3):
-        p.move_arm((0.415, 0.209, 0.165), 0.25)
-        p.move_arm((0.415, 0.209, 0.150), 0.25)
-        p.move_arm((0.415, 0.209, 0.175), 0.25)
+        p.move_arm((0.415, 0.209, 0.180), 0.25)
+        p.move_arm((0.415, 0.209, 0.155), 0.25)
+        p.move_arm((0.415, 0.209, 0.185), 0.25)
         # scripted peg progress after each tap (kinematic smoke)
         p.drive_joint("demo_peg_slide", 0.014 * (tap + 1))
-    p.move_arm((0.34, -0.13, 0.20), 0.8)
-    p.move_arm((0.34, -0.13, 0.09), 0.8)
+    p.move_arm((0.34, -0.13, 0.22), 0.8)
+    p.move_arm((0.34, -0.13, 0.13), 0.8)          # back above the cradle
+    p.move_arm((0.34, -0.12, 0.09), 0.6)
     p.set_hand(HAND_OPEN)
     p.unweld("demo_hammer_free")
-    p.hold(0.3)
+    p.hold(0.4)                                    # settle onto the piers
     p.move_arm((0.36, 0.02, 0.14), 0.8)
     p.hold(0.5)
     return p.finish()
 
 
 def record_demo02():
+    """V2: Drawer Loading & Closing - open, load the tape, close."""
     xml = (
         MJCF
-        / "rm65_sg100_demo_drawer_retrieval_and_loading_scene.xml"
+        / "rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
     )
-    out = OUT_ROOT / "drawer_retrieval_and_loading"
+    out = OUT_ROOT / "drawer_loading_and_closing"
     p = Puppet(xml, out)
 
     p.hold(0.5)
-    # park clear, then approach the handle
-    p.move_arm((0.40, 0.18, 0.16), 0.8)
-    p.move_arm((0.458, 0.18, 0.105), 0.8)
-    p.move_arm((0.458, 0.18, 0.06), 0.8, close_hand=True)
-    p.weld("demo_drawer_item_free")  # no-op for the item yet
-    p.unweld("demo_drawer_item_free")
+    # hook the horizontal bar handle
+    p.move_arm((0.458, 0.18, 0.19), 0.8)
+    p.move_arm((0.458, 0.18, 0.145), 0.8, close_hand=True)
+    p.hold(0.2)
     # pull: drawer follows a scripted open profile while the hand
-    # retracts with the handle
+    # retracts with the bar
     for i in range(1, 25):
         s = i / 24.0
         p.drive_joint("demo_drawer_slide", 0.15 * s)
-        p.move_arm((0.458 - 0.128 * s, 0.18, 0.06), 1.0 / 30.0)
+        p.move_arm((0.458 - 0.128 * s, 0.18, 0.145), 1.0 / 30.0)
     p.hold(0.3)
-    # release handle, regrasp the tape
+    # release the handle, fetch the tape from the table
     p.set_hand(HAND_OPEN)
-    p.move_arm((0.45, 0.18, 0.16), 0.8)
-    p.move_arm((0.45, 0.18, 0.105), 0.8, close_hand=True)
+    p.move_arm((0.40, 0.05, 0.20), 0.8)
+    p.move_arm((0.30, -0.18, 0.14), 0.9)
+    p.move_arm((0.30, -0.18, 0.08), 0.7, close_hand=True)
     p.weld("demo_drawer_item_free")
     p.hold(0.3)
-    p.move_arm((0.45, 0.18, 0.20), 0.8)
-    p.move_arm((0.33, -0.22, 0.16), 1.0)
-    p.move_arm((0.33, -0.22, 0.09), 0.6)
+    p.move_arm((0.30, -0.18, 0.18), 0.7)
+    p.move_arm((0.47, 0.18, 0.20), 1.0)           # over the cavity
+    p.move_arm((0.47, 0.18, 0.11), 0.7)           # into the drawer
     p.set_hand(HAND_OPEN)
     p.unweld("demo_drawer_item_free")
-    p.hold(0.4)
+    p.hold(0.4)                                    # tape settles inside
+    p.move_arm((0.47, 0.18, 0.20), 0.7)
+    # re-hook the opened handle and push closed
+    p.move_arm((0.35, 0.18, 0.145), 0.9, close_hand=True)
+    for i in range(1, 25):
+        s = i / 24.0
+        p.drive_joint("demo_drawer_slide", 0.15 * (1.0 - s))
+        p.move_arm((0.33 + 0.128 * s, 0.18, 0.145), 1.0 / 30.0)
+    p.hold(0.3)
+    p.set_hand(HAND_OPEN)
     p.move_arm((0.36, 0.0, 0.16), 0.8)
     p.hold(0.5)
     return p.finish()
 
 
 def record_demo03():
+    """V2: exactly two task objects (box + screwdriver)."""
     xml = (
         MJCF / "rm65_sg100_demo_maintenance_kit_packing_scene.xml"
     )
     out = OUT_ROOT / "maintenance_kit_packing"
     p = Puppet(xml, out)
 
-    def cycle(joint, grasp_xy, grasp_z, goal_xy, goal_z, lift=0.18):
+    def cycle(joint, grasp_xy, grasp_z, goal_xy, goal_z, lift=0.20):
         p.move_arm((grasp_xy[0], grasp_xy[1], grasp_z + 0.07), 0.7)
         p.move_arm(
             (grasp_xy[0], grasp_xy[1], grasp_z), 0.7, close_hand=True
@@ -326,16 +338,12 @@ def record_demo03():
 
     p.hold(0.5)
     cycle(
-        "kit_object_a_free", (0.31, 0.30), 0.11,
-        (0.32, -0.12), 0.085,
+        "kit_object_a_free", (0.44, 0.34), 0.13,
+        (0.32, -0.12), 0.0125,
     )
     cycle(
-        "kit_object_b_free", (0.41, 0.32), 0.12,
-        (0.515, -0.115), 0.085,
-    )
-    cycle(
-        "kit_object_c_free", (0.50, 0.175), 0.10,
-        (0.42, -0.295), 0.035,
+        "kit_object_b_free", (0.54, 0.20), 0.10,
+        (0.42, -0.295), 0.008,
     )
     p.move_arm((0.36, 0.0, 0.16), 0.8)
     p.hold(0.6)

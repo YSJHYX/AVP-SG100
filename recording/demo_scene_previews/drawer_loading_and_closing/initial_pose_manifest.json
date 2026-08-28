@@ -1,0 +1,98 @@
+{
+  "demo": "02",
+  "scene": "rm65_sg100_demo_drawer_loading_and_closing_scene.xml",
+  "state": "demo_ready keyframe (== XML-default task state)",
+  "bodies": {
+    "base_link": {
+      "position_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "link_6": {
+      "position_m": [
+        0.270139,
+        0.111778,
+        0.110001
+      ],
+      "quaternion_wxyz": [
+        -0.153587,
+        0.690222,
+        0.153586,
+        0.690229
+      ]
+    },
+    "sg100_base_link": {
+      "position_m": [
+        0.270139,
+        0.111778,
+        0.110001
+      ],
+      "quaternion_wxyz": [
+        -0.153587,
+        0.690222,
+        0.153586,
+        0.690229
+      ]
+    },
+    "drawer_cabinet": {
+      "position_m": [
+        0.62,
+        0.18,
+        0.0
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "demo_drawer": {
+      "position_m": [
+        0.62,
+        0.18,
+        0.0165
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "demo_drawer_item": {
+      "position_m": [
+        0.3,
+        -0.18,
+        0.0005
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "grasp_table": {
+      "position_m": [
+        0.3,
+        0.15,
+        -0.02
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+}

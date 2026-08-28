@@ -1,20 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 
-<mujoco model="RM65-SG100-demo-drawer-retrieval-and-loading-scene">
+<mujoco model="RM65-SG100-demo-drawer-loading-and-closing-scene">
 
   <!--
-    DEMO 02 - Drawer Retrieval & Tray Loading.
+    DEMO 02 V2 - Drawer Loading & Closing.
 
     Derived from the frozen V8 production scene
-    rm65_sg100_avp_grasp_scene.xml; identical robot include, world
-    options, cameras, light and table (see DEMO 01 scene header for
-    the preserved-contract list and DEMO_SCENES.md for details).
+    rm65_sg100_avp_grasp_scene.xml; identical world options,
+    cameras, light and table (see DEMO 01 scene header for the
+    preserved-contract list and DEMO_SCENES.md for details).
+    Uses the demo-suite robot include (hand contact friction fix).
 
     demo_ready keyframe qpos layout (25 values):
       [ 0..16] robot 17 joints - V8 grasp-ready startup solution,
                hand fully open (V8 startup semantics).
       [17]     demo_drawer_slide = 0 (closed).
-      [18..24] demo_drawer_item freejoint pose inside the drawer.
+      [18..24] demo_drawer_item freejoint pose on the table.
+
+    V2 initial-state contract: the tape freejoint's XML default
+    qpos (body pos/quat) EQUALS its demo_ready keyframe entry, so
+    the XML-default state, the keyframe state, and every USDZ
+    export path agree on the initial pose.  The drawer's qpos0
+    (0 = closed) already matches.
   -->
 
   <option
@@ -30,8 +37,8 @@
     <headlight active="0" />
   </visual>
 
-  <include file="rm65_sg100_avp_grasp_robot.xml"/>
-  <include file="rm65_sg100_demo_drawer_retrieval_and_loading_objects.xml"/>
+  <include file="rm65_sg100_demo_robot.xml"/>
+  <include file="rm65_sg100_demo_drawer_loading_and_closing_objects.xml"/>
 
   <worldbody>
 
@@ -104,7 +111,7 @@
         -0.10246395780782178 2.0744881064029075 -0.049588596290682636
         0 0 0 0 0 0 0 0 0 0 0
         0
-        0.600 0.180 0.039 1 0 0 0
+        0.300 -0.180 0.0005 1 0 0 0
       "
     />
   </keyframe>

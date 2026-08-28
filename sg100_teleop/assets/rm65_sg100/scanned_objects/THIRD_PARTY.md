@@ -50,7 +50,7 @@ MuJoCo contact stability (see each demo objects XML header).
 | collision proxy | handle capsule + head cylinder (Ø58 x 96, axis local Z) |
 | mass / density change | explicit inertial 0.40 kg, hand-tuned diaginertia |
 
-### OBJECT 2 - demo_drawer_item (DEMO 02, Drawer Retrieval)
+### OBJECT 2 - demo_drawer_item (DEMO 02, Drawer Loading & Closing)
 
 | field | value |
 |---|---|
@@ -68,33 +68,23 @@ MuJoCo contact stability (see each demo objects XML header).
 | collision proxy | single box 64 x 195 x 66 mm |
 | mass / density change | explicit inertial 0.25 kg |
 
-### OBJECT 3 - kit_object_a (DEMO 03, Maintenance Kit Packing)
+### OBJECT 3 - syrup bottle - REMOVED FROM DEMO V2
+
+`Black_Elderberry_Syrup_54_oz_Gaia_Herbs` (CC-BY 4.0,
+`models/Black_Elderberry_Syrup_54_oz_Gaia_Herbs/` @
+`6ff8d275cebfd5b47e49685e3cfbe64b20e49a3c`) was used as DEMO 03's
+round bottle (V1 task alias `kit_object_a`, cylinder proxy d58,
+0.42 kg).  **Demo V2 removes it** - the scene was reduced to two
+task objects (box + screwdriver) for grasp contrast and workspace
+legibility, and the asset directory was deleted from the repo.
+No syrup-bottle files ship in V2; this entry remains as the
+attribution/dispatch record only.
+
+### OBJECT 4 - kit_object_a (DEMO 03)
 
 | field | value |
 |---|---|
-| task alias | `kit_object_a` (round bottle, power grasp) |
-| original name | `Black_Elderberry_Syrup_54_oz_Gaia_Herbs` |
-| upstream path | `models/Black_Elderberry_Syrup_54_oz_Gaia_Herbs/` |
-| upstream commit | `6ff8d275cebfd5b47e49685e3cfbe64b20e49a3c` |
-| license | CC-BY 4.0 (obj/png) |
-| files copied | `model.obj`, `texture.png` |
-| raw AABB | 60.2 x 46.7 x 109.0 mm -> see note |
-| raw unit | metres |
-| applied scale | 1.0 (none) |
-| final AABB in scene | 60.2 x 46.7 x 109.0 mm |
-| mesh transform in body | identity |
-| collision proxy | cylinder r 29 mm, half-height 72.5 mm |
-| mass / density change | explicit inertial 0.42 kg |
-
-Note: the bottle scan is 57 x 59 mm in cross-section (nearly round);
-the 60.2 x 46.7 AABB includes the flattened label overhang.  The
-cylinder proxy (d58) matches the bottle body.
-
-### OBJECT 4 - kit_object_b (DEMO 03)
-
-| field | value |
-|---|---|
-| task alias | `kit_object_b` (rectangular box, pinch grasp) |
+| task alias | `kit_object_a` (rectangular box, pinch grasp; renamed from V1 `kit_object_b`) |
 | original name | `ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box` |
 | upstream path | `models/ReadytoUse_Rolled_Fondant_Pure_White_24_oz_box/` |
 | upstream commit | `6ff8d275cebfd5b47e49685e3cfbe64b20e49a3c` |
@@ -108,11 +98,11 @@ cylinder proxy (d58) matches the bottle body.
 | collision proxy | box 122 x 49 x 169 mm |
 | mass / density change | explicit inertial 0.55 kg |
 
-### OBJECT 5 - kit_object_c (DEMO 03)
+### OBJECT 5 - kit_object_b (DEMO 03)
 
 | field | value |
 |---|---|
-| task alias | `kit_object_c` (elongated tool, tripod grasp) |
+| task alias | `kit_object_b` (elongated tool, tripod grasp; renamed from V1 `kit_object_c`) |
 | original name | `Craftsman_Grip_Screwdriver_Phillips_Cushion` |
 | upstream path | `models/Craftsman_Grip_Screwdriver_Phillips_Cushion/` |
 | upstream commit | `6ff8d275cebfd5b47e49685e3cfbe64b20e49a3c` |
@@ -122,6 +112,6 @@ cylinder proxy (d58) matches the bottle body.
 | raw unit | metres |
 | applied scale | 1.0 (none) |
 | final AABB in scene | 260.4 x 36.3 x 37.9 mm |
-| mesh transform in body | body yaw -90 deg lays local +X along world -Y |
+| mesh transform in body | body quat = settled rest pose (local +X along world -Y, small rest tilt); body pos == keyframe == USDZ |
 | collision proxy | grip capsule (d35 x 94) + shaft capsule (d12) |
 | mass / density change | explicit inertial 0.13 kg |

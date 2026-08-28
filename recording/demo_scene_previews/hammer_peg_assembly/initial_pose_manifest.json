@@ -1,0 +1,111 @@
+{
+  "demo": "01",
+  "scene": "rm65_sg100_demo_hammer_peg_assembly_scene.xml",
+  "state": "demo_ready keyframe (== XML-default task state)",
+  "bodies": {
+    "base_link": {
+      "position_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "link_6": {
+      "position_m": [
+        0.270139,
+        0.111778,
+        0.110001
+      ],
+      "quaternion_wxyz": [
+        -0.153587,
+        0.690222,
+        0.153586,
+        0.690229
+      ]
+    },
+    "sg100_base_link": {
+      "position_m": [
+        0.270139,
+        0.111778,
+        0.110001
+      ],
+      "quaternion_wxyz": [
+        -0.153587,
+        0.690222,
+        0.153586,
+        0.690229
+      ]
+    },
+    "demo_hammer": {
+      "position_m": [
+        0.339998,
+        -0.119996,
+        0.038549
+      ],
+      "quaternion_wxyz": [
+        0.999958,
+        -0.000257,
+        -0.009136,
+        -1.8e-05
+      ]
+    },
+    "demo_peg": {
+      "position_m": [
+        0.52,
+        0.2,
+        0.075
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "peg_fixture": {
+      "position_m": [
+        0.52,
+        0.2,
+        0.0
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "hammer_tool_rest": {
+      "position_m": [
+        0.4,
+        -0.12,
+        0.0
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "grasp_table": {
+      "position_m": [
+        0.3,
+        0.15,
+        -0.02
+      ],
+      "quaternion_wxyz": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+}
