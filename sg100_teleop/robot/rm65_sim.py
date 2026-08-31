@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from sg100_teleop.robot.arm_backend import ArmBackend
-from sg100_teleop.robot.arm_state import ARM_DOF, ArmState
+from sg100_teleop.robot.arm_state import ARM_DOF, ArmCommandSent, ArmState
 
 # Default RM65-B joint limits, matching the MJCF assets
 # (sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_sim.xml joint_1..6
@@ -41,6 +41,7 @@ class RM65SimBackend(ArmBackend):
         self._layout = layout
         self._enabled = True
         self._sequence = 0
+        self._command_events: list[ArmCommandSent] = []
 
     def connect(self) -> None:
         return None
@@ -55,9 +56,33 @@ class RM65SimBackend(ArmBackend):
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = bool(enabled)
 
-    def send_joint_target(self, q_rad: np.ndarray) -> None:
+    def send_joint_target(
+        self,
+        q_rad: np.ndarray,
+        *,
+        command_bundle_id: int | None = None,
+    ) -> None:
+        import time
+
         q = _as_six_vector(q_rad)
         self._data.ctrl[self._layout.arm_actuator_ids] = q
+        self._sequence += 1
+        now_ns = time.monotonic_ns()
+        self._command_events.append(
+            ArmCommandSent(
+                q_rad=q.copy(),
+                limiter_input_q_rad=q.copy(),
+                sent_monotonic_ns=now_ns,
+                source_timestamp_ns=now_ns,
+                target_sequence=self._sequence,
+                command_bundle_id=command_bundle_id,
+            )
+        )
+
+    def drain_command_events(self) -> tuple[ArmCommandSent, ...]:
+        events = tuple(self._command_events)
+        self._command_events.clear()
+        return events
 
     def joint_state(self) -> ArmState | None:
         import time

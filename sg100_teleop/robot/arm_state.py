@@ -23,6 +23,7 @@ class ArmTarget:
     q_rad: np.ndarray
     source_timestamp_ns: int
     sequence: int
+    command_bundle_id: int | None = None
 
     def validate(self) -> None:
         q = np.asarray(self.q_rad, dtype=np.float64)
@@ -51,6 +52,7 @@ class ArmState:
     controller_error: int | None
     arm_status: int | None
     valid: bool
+    controller_tcp: np.ndarray | None = None
 
     def validate(self) -> None:
         q = np.asarray(self.q_rad, dtype=np.float64)
@@ -67,3 +69,39 @@ class ArmState:
                 raise ValueError("ArmState.qd_rad_s must match q_rad shape")
             if not np.all(np.isfinite(qd)):
                 raise ValueError("ArmState.qd_rad_s contains non-finite values")
+        if self.controller_tcp is not None:
+            tcp = np.asarray(self.controller_tcp, dtype=np.float64)
+            if tcp.shape != (6,):
+                raise ValueError("ArmState.controller_tcp must have shape (6,)")
+            if not np.all(np.isfinite(tcp)):
+                raise ValueError("ArmState.controller_tcp contains non-finite values")
+
+
+@dataclass(frozen=True)
+class ArmCommandSent:
+    """One limiter-bounded command successfully accepted by RM65 CANFD.
+
+    This is the canonical arm-action event.  It is emitted only after
+    ``rm_movej_canfd`` returns success, and therefore must not be confused
+    with a producer target, IK goal, or pre-limiter command.
+    """
+
+    q_rad: np.ndarray
+    limiter_input_q_rad: np.ndarray
+    sent_monotonic_ns: int
+    source_timestamp_ns: int
+    target_sequence: int
+    command_bundle_id: int | None
+
+    def validate(self) -> None:
+        for name, value in (
+            ("q_rad", self.q_rad),
+            ("limiter_input_q_rad", self.limiter_input_q_rad),
+        ):
+            vector = np.asarray(value, dtype=np.float64)
+            if vector.shape != (ARM_DOF,):
+                raise ValueError(f"ArmCommandSent.{name} must have shape ({ARM_DOF},)")
+            if not np.all(np.isfinite(vector)):
+                raise ValueError(f"ArmCommandSent.{name} contains non-finite values")
+        if self.sent_monotonic_ns <= 0 or self.source_timestamp_ns <= 0:
+            raise ValueError("ArmCommandSent timestamps must be positive")

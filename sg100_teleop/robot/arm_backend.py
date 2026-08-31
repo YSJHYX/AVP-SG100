@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from sg100_teleop.robot.arm_state import ArmState
+from sg100_teleop.robot.arm_state import ArmCommandSent, ArmState
 
 
 class ArmBackend(ABC):
@@ -36,8 +36,17 @@ class ArmBackend(ABC):
         """Enable/disable streaming (ARM/DISARM, pause semantics)."""
 
     @abstractmethod
-    def send_joint_target(self, q_rad: np.ndarray) -> None:
+    def send_joint_target(
+        self,
+        q_rad: np.ndarray,
+        *,
+        command_bundle_id: int | None = None,
+    ) -> None:
         """Publish a new joint target (non-blocking)."""
+
+    @abstractmethod
+    def drain_command_events(self) -> tuple[ArmCommandSent, ...]:
+        """Return and remove successful post-limiter command events."""
 
     @abstractmethod
     def joint_state(self) -> ArmState | None:

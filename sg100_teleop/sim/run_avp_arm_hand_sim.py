@@ -23,6 +23,11 @@ from sg100_teleop.control.teleop_arming import (
     TeleopArmingController,
 )
 
+from sg100_teleop.data_collection.collector import (
+    ArmHandDataCollector,
+    CollectorConfig,
+)
+
 from sg100_teleop.kinematics.rm65_ik import RM65IKSolver
 
 from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
@@ -38,6 +43,11 @@ from sg100_teleop.sim.combined_robot_layout import (
     initialize_robot_state,
     resolve_robot_layout,
     write_robot_controls,
+)
+
+from sg100_teleop.sim.hammer_impact_diagnostic import (
+    HammerImpactDiagnostic,
+    enable_collision_debug_visualization,
 )
 
 from sg100_teleop.tracking.avp_adapter import AVPHandAdapter
@@ -63,7 +73,7 @@ DEFAULT_MODEL = (
     "sg100_teleop/assets/rm65_sg100/"
     # "mjcf/rm65_sg100_avp_grasp_scene.xml"
     # "mjcf/rm65_sg100_demo_hammer_peg_assembly_scene.xml"
-    # "mjcf/rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
+    "mjcf/rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
     # "mjcf/rm65_sg100_demo_maintenance_kit_packing_scene.xml"
 )
 
@@ -533,6 +543,29 @@ def build_arg_parser():
         help="Simulation-time visual-state sampling frequency (default: 30 Hz)",
     )
 
+    parser.add_argument(
+        "--collect-arm-hand-data",
+        action="store_true",
+        help=(
+            "Record causal rm65_sg100_joint17_v1 transitions. Requires "
+            "--arm-backend real because arm state must be measured feedback."
+        ),
+    )
+
+    parser.add_argument(
+        "--data-stale-pre-ms",
+        type=float,
+        default=100.0,
+        help="Maximum age of pre-action RM65 feedback (default: 100 ms)",
+    )
+
+    parser.add_argument(
+        "--data-stale-post-ms",
+        type=float,
+        default=250.0,
+        help="Maximum wait for post-action RM65 feedback (default: 250 ms)",
+    )
+
     # Teleop arm-IK mode: exactly one of these may be selected.
     mode_group = parser.add_mutually_exclusive_group()
 
@@ -706,6 +739,24 @@ def build_arg_parser():
         help="Print low-rate runtime diagnostics",
     )
 
+    parser.add_argument(
+        "--hammer-impact-diagnostic",
+        action="store_true",
+        help=(
+            "Record bounded Hammer-head/Peg impact traces and print one "
+            "summary per impact (default: disabled)"
+        ),
+    )
+
+    parser.add_argument(
+        "--show-hammer-collision-debug",
+        action="store_true",
+        help=(
+            "Show Hammer/Peg collision proxies and MuJoCo contact points "
+            "without changing production physics (default: disabled)"
+        ),
+    )
+
     return parser
 
 
@@ -761,6 +812,21 @@ def main():
         raise ValueError(
             "--arm-backend real requires --arm-ip"
         )
+
+    if args.collect_arm_hand_data and args.arm_backend != "real":
+        raise ValueError(
+            "--collect-arm-hand-data requires --arm-backend real; "
+            "simulated qpos is not RM65 measured feedback"
+        )
+
+    if args.hammer_impact_diagnostic and args.arm_backend != "sim":
+        raise ValueError(
+            "--hammer-impact-diagnostic requires --arm-backend sim; the "
+            "real backend uses a kinematic MuJoCo twin without mj_step"
+        )
+
+    if args.data_stale_pre_ms <= 0.0 or args.data_stale_post_ms <= 0.0:
+        raise ValueError("data stale-state thresholds must be > 0")
 
     if args.arm_send_hz <= 0.0:
         raise ValueError(
@@ -1641,6 +1707,11 @@ def main():
 
     rejected_tracking_count = 0
 
+    # Latest complete AVP -> TCP -> IK audit record.  It is attached to
+    # high-rate command decisions but never used as canonical action data.
+    latest_control_audit = None
+    latest_ik_accepted = False
+
 
     # ========================================================
     # Lightweight MuJoCo visual-state recording
@@ -1658,6 +1729,41 @@ def main():
     )
     recording_session_dir = state_recorder.start(data)
 
+    hammer_impact_diagnostic = None
+    if args.hammer_impact_diagnostic:
+        hammer_impact_diagnostic = HammerImpactDiagnostic(
+            model,
+            recording_session_dir / "hammer_diagnostic",
+        )
+        print(
+            "hammer diagnostic :",
+            recording_session_dir / "hammer_diagnostic",
+        )
+
+    arm_hand_collector = None
+    if args.collect_arm_hand_data:
+        arm_lower_rad, arm_upper_rad = real_arm_backend.joint_limits_rad()
+        hand_joint_ids = robot_layout.joint_ids[ARM_DOF:]
+        hand_lower_rad = model.jnt_range[hand_joint_ids, 0].copy()
+        hand_upper_rad = model.jnt_range[hand_joint_ids, 1].copy()
+        arm_hand_collector = ArmHandDataCollector(
+            recording_session_dir / "arm_hand_data",
+            # The calibrated runtime qcmd does not exist yet.  Never invent a
+            # zero/home baseline; calibration establishes the real software
+            # command proxy before the first eligible action.
+            initial_hand_qcmd=None,
+            arm_lower_rad=arm_lower_rad,
+            arm_upper_rad=arm_upper_rad,
+            hand_lower_rad=hand_lower_rad,
+            hand_upper_rad=hand_upper_rad,
+            config=CollectorConfig(
+                stale_pre_state_ns=int(args.data_stale_pre_ms * 1e6),
+                stale_post_state_ns=int(args.data_stale_post_ms * 1e6),
+            ),
+        )
+        # RECORDER_ARMED pre-roll begins before the first motion command.
+        arm_hand_collector.observe_arm_feedback(real_arm_backend.joint_state())
+
     print(
         "recording session :",
         recording_session_dir,
@@ -1667,6 +1773,21 @@ def main():
         args.video_fps,
         "FPS (simulation time)",
     )
+    if arm_hand_collector is not None:
+        print(
+            "joint17 data     :",
+            recording_session_dir / "arm_hand_data",
+        )
+        print(
+            "joint17 schema   : rm65_sg100_joint17_v1 "
+            "(real feedback / actual commands, rad)",
+        )
+        print(
+            "hand baseline   :",
+            "SERIALIZED COMMAND PROXY"
+            if arm_hand_collector.hand_proxy_baseline_valid
+            else "WAITING FOR VALID FINAL TELEOP QCMD",
+        )
 
 
     # ========================================================
@@ -1762,6 +1883,9 @@ def main():
             )
             as viewer
         ):
+
+            if args.show_hammer_collision_debug:
+                enable_collision_debug_visualization(model, viewer)
 
             while viewer.is_running():
 
@@ -2104,8 +2228,23 @@ def main():
                                     q_hand0_runtime
                                 )
 
+                                if (
+                                    arm_hand_collector is not None
+                                    and not arm_hand_collector.hand_proxy_baseline_valid
+                                ):
+                                    arm_hand_collector.establish_hand_proxy_baseline(
+                                        q_hand_cmd,
+                                        timestamp_ns=time.monotonic_ns(),
+                                    )
+                                    print(
+                                        "[DATA] hand baseline: SERIALIZED "
+                                        "COMMAND PROXY"
+                                    )
+
                                 wrist_calibrated = True
                                 teleop_arming.complete_calibration()
+                                latest_control_audit = None
+                                latest_ik_accepted = False
 
                                 print_teleop_state(
                                     "Neutral wrist and runtime hand anchors "
@@ -2344,6 +2483,11 @@ def main():
                                     ik_result
                                 )
 
+                                latest_ik_accepted = bool(
+                                    ik_result.converged
+                                    or args.wrist_roll_ik
+                                )
+
 
                                 # ---------------------------------
                                 # Accept only a valid converged IK
@@ -2508,6 +2652,26 @@ def main():
                                     q_hand_candidate.copy()
                                 )
 
+                                latest_control_audit = {
+                                    "raw_avp_wrist_pose": T_avp_wrist.copy(),
+                                    "mapped_relative_wrist_target": T_tcp_raw.copy(),
+                                    "filtered_tcp_target": T_tcp_target.copy(),
+                                    "ik_q_arm_goal": q_arm_goal.copy(),
+                                    "ik_primary_candidate": q_arm_candidate.copy(),
+                                    "ik_reason": ik_result.reason,
+                                    "ik_converged": bool(ik_result.converged),
+                                    "continuity_gate_status": (
+                                        "not_applied_in_current_runtime"
+                                    ),
+                                    "latest_target_q": q_arm_goal.copy(),
+                                    "tracking_status": "valid",
+                                    "safety_status": "ok",
+                                    "tracking_frame_sequence": frame_sequence,
+                                    "tracking_received_monotonic_ns": (
+                                        received_monotonic_ns
+                                    ),
+                                }
+
 
                             # -------------------------------------
                             # Tracking recovery notification
@@ -2607,6 +2771,8 @@ def main():
                         roll_axis_anchor = None
                         filtered_roll = 0.0
                         last_roll_time_s = None
+                        latest_control_audit = None
+                        latest_ik_accepted = False
                         print_teleop_state(
                             "Tracking timeout invalidated the wrist anchor. "
                             "Reacquisition requires another C confirmation."
@@ -2685,8 +2851,28 @@ def main():
                         #   equals actual-q + software FK (§A6.2).
                         # ==========================================
 
+                        feedback = real_arm_backend.joint_state()
+                        if arm_hand_collector is not None:
+                            # Continuous pre-roll: feedback is observed even
+                            # before the first eligible motion command.
+                            arm_hand_collector.observe_arm_feedback(feedback)
+
+                        command_bundle_id = None
+                        decision_timestamp_ns = None
+                        if (
+                            arm_hand_collector is not None
+                            and real_arm_backend.enabled
+                            and teleop_arming.active
+                            and latest_control_audit is not None
+                        ):
+                            command_bundle_id = (
+                                arm_hand_collector.next_command_bundle_id()
+                            )
+                            decision_timestamp_ns = time.monotonic_ns()
+
                         real_arm_backend.send_joint_target(
-                            q_arm_goal
+                            q_arm_goal,
+                            command_bundle_id=command_bundle_id,
                         )
 
                         q_hand_cmd = (
@@ -2696,9 +2882,6 @@ def main():
                             )
                         )
 
-                        feedback = (
-                            real_arm_backend.joint_state()
-                        )
                         if feedback is not None:
                             data.qpos[
                                 robot_layout.arm_qpos_indices
@@ -2707,6 +2890,44 @@ def main():
                         data.qpos[
                             robot_layout.hand_qpos_indices
                         ] = q_hand_cmd
+
+                        hand_applied_timestamp_ns = time.monotonic_ns()
+                        if command_bundle_id is not None:
+                            tracking_age_ns = (
+                                decision_timestamp_ns
+                                - int(
+                                    latest_control_audit[
+                                        "tracking_received_monotonic_ns"
+                                    ]
+                                )
+                            )
+                            arm_hand_collector.record_control_decision(
+                                command_bundle_id=command_bundle_id,
+                                decision_timestamp_ns=decision_timestamp_ns,
+                                hand_command_applied_timestamp_ns=(
+                                    hand_applied_timestamp_ns
+                                ),
+                                hand_qcmd_rad=q_hand_cmd,
+                                audit=latest_control_audit,
+                                tracking_valid=(
+                                    tracking_age_ns
+                                    <= int(args.tracking_timeout * 1e9)
+                                ),
+                                safety_ok=real_arm_backend.enabled,
+                                ik_accepted=latest_ik_accepted,
+                                stale_target=(
+                                    tracking_age_ns
+                                    > int(args.arm_target_timeout_ms * 1e6)
+                                ),
+                                hand_command_valid=bool(
+                                    np.all(np.isfinite(q_hand_cmd))
+                                ),
+                            )
+
+                        if arm_hand_collector is not None:
+                            arm_hand_collector.ingest_arm_command_events(
+                                real_arm_backend.drain_command_events()
+                            )
 
                         mujoco.mj_forward(
                             model,
@@ -2748,6 +2969,24 @@ def main():
                             model,
                             data,
                         )
+
+                        if hammer_impact_diagnostic is not None:
+                            hammer_impact_diagnostic.sample(
+                                data,
+                                q_arm_goal,
+                                target_tcp=(
+                                    tcp_target_filter.value
+                                    if tcp_target_filter.initialized
+                                    else None
+                                ),
+                                raw_target_tcp=(
+                                    latest_control_audit[
+                                        "mapped_relative_wrist_target"
+                                    ]
+                                    if latest_control_audit is not None
+                                    else None
+                                ),
+                            )
 
                         state_recorder.maybe_record(
                             data
@@ -2973,14 +3212,37 @@ def main():
         print()
 
     finally:
+        if hammer_impact_diagnostic is not None:
+            hammer_impact_diagnostic.close()
         if real_arm_backend is not None:
             # v3 §A3.5 order on exit: quiesce, slow stop, disconnect.
             try:
+                if arm_hand_collector is not None:
+                    arm_hand_collector.observe_arm_feedback(
+                        real_arm_backend.joint_state()
+                    )
+                    arm_hand_collector.ingest_arm_command_events(
+                        real_arm_backend.drain_command_events()
+                    )
                 real_arm_backend.set_enabled(False)
                 real_arm_backend.stop_smooth()
             finally:
                 real_arm_backend.disconnect()
                 print("[REAL-ARM] backend disconnected")
+        if arm_hand_collector is not None:
+            arm_hand_recording_path = arm_hand_collector.finalize()
+            print(
+                "Arm-hand data    :",
+                arm_hand_recording_path,
+            )
+            print(
+                "causal transitions:",
+                len(arm_hand_collector.transitions),
+            )
+            print(
+                "hard rejections  :",
+                len(arm_hand_collector.rejections),
+            )
         recording_path = state_recorder.stop()
         print(
             "MuJoCo recording :",

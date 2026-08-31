@@ -1,0 +1,26 @@
+{
+  "audio": false,
+  "camera_name": "workstation_front",
+  "camera_observations": {
+    "workstation_front": "base_0_rgb",
+    "wrist_camera": "right_wrist_0_rgb"
+  },
+  "frame_count": 1,
+  "mocap_count": 0,
+  "mujoco_timestep": 0.002,
+  "qpos_dimension": 25,
+  "record_fps": 30.0,
+  "recorded_time_span": 0.0,
+  "scene_path": "sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_demo_hammer_peg_assembly_scene.xml",
+  "schema_version": 1,
+  "simulation_end_time": 0.0,
+  "simulation_start_time": 0.0,
+  "state_fields": [
+    "timestamps",
+    "qpos",
+    "mocap_pos",
+    "mocap_quat"
+  ],
+  "video_duration": 0.03333333333333333,
+  "wall_start_time": "2026-08-28T17:11:27.029030+08:00"
+}

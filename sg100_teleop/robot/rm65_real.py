@@ -16,7 +16,12 @@ from typing import Callable
 import numpy as np
 
 from sg100_teleop.robot.arm_backend import ArmBackend
-from sg100_teleop.robot.arm_state import ARM_DOF, ArmState, ArmTarget
+from sg100_teleop.robot.arm_state import (
+    ARM_DOF,
+    ArmCommandSent,
+    ArmState,
+    ArmTarget,
+)
 from sg100_teleop.robot.latest_target_buffer import LatestTargetBuffer
 from sg100_teleop.robot.rm65_sim import (
     RM65_JOINT_LOWER_RAD,
@@ -124,6 +129,8 @@ class RM65RealBackend(ArmBackend):
         self._sdk_lock = threading.Lock()
         self._feedback_lock = threading.Lock()
         self._feedback: ArmState | None = None
+        self._command_event_lock = threading.Lock()
+        self._command_events: deque[ArmCommandSent] = deque()
         self._feedback_sequence = 0
         # Previous sample for finite-difference feedback velocity
         # (TCP polling has no qd; the UDP push path will fill it
@@ -259,7 +266,12 @@ class RM65RealBackend(ArmBackend):
             if feedback is not None:
                 self._limiter.reset(feedback.q_rad)
 
-    def send_joint_target(self, q_rad: np.ndarray) -> None:
+    def send_joint_target(
+        self,
+        q_rad: np.ndarray,
+        *,
+        command_bundle_id: int | None = None,
+    ) -> None:
         q = np.asarray(q_rad, dtype=np.float64)
         self._publish_sequence += 1
         self._buffer.publish(
@@ -267,8 +279,15 @@ class RM65RealBackend(ArmBackend):
                 q_rad=q,
                 source_timestamp_ns=time.monotonic_ns(),
                 sequence=self._publish_sequence,
+                command_bundle_id=command_bundle_id,
             )
         )
+
+    def drain_command_events(self) -> tuple[ArmCommandSent, ...]:
+        with self._command_event_lock:
+            events = tuple(self._command_events)
+            self._command_events.clear()
+        return events
 
     def joint_state(self) -> ArmState | None:
         with self._feedback_lock:
@@ -378,6 +397,7 @@ class RM65RealBackend(ArmBackend):
                 controller_error=controller_error,
                 arm_status=None,
                 valid=True,
+                controller_tcp=self._parse_controller_tcp(state.get("pose")),
             )
 
     @staticmethod
@@ -388,6 +408,16 @@ class RM65RealBackend(ArmBackend):
             return int(codes[0]) if codes else 0
         except (TypeError, ValueError, IndexError):
             return None
+
+    @staticmethod
+    def _parse_controller_tcp(pose: object) -> np.ndarray | None:
+        try:
+            vector = np.asarray(pose, dtype=np.float64)
+        except (TypeError, ValueError):
+            return None
+        if vector.shape != (6,) or not np.all(np.isfinite(vector)):
+            return None
+        return vector
 
     def _feedback_loop(self) -> None:
         period = 1.0 / self._feedback_poll_hz
@@ -445,9 +475,20 @@ class RM65RealBackend(ArmBackend):
                     else:
                         tag = self._send_canfd(cmd)
                         if tag == 0:
+                            sent_ns = time.monotonic_ns()
                             self._send_failures = 0
                             self._send_count += 1
                             last_cmd = cmd
+                            event = ArmCommandSent(
+                                q_rad=cmd.copy(),
+                                limiter_input_q_rad=target.q_rad.copy(),
+                                sent_monotonic_ns=sent_ns,
+                                source_timestamp_ns=target.source_timestamp_ns,
+                                target_sequence=target.sequence,
+                                command_bundle_id=target.command_bundle_id,
+                            )
+                            with self._command_event_lock:
+                                self._command_events.append(event)
                         else:
                             self._send_failures += 1
                             self._on_event("send_failure", f"rm_movej_canfd -> {tag}")
