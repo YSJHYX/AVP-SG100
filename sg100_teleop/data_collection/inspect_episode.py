@@ -383,6 +383,11 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
     action_representation = manifest.get(
         "action_representation", manifest.get("representation")
     )
+    hand_measured_episode = (
+        manifest.get("hand_state_source")
+        == "sg100_measured_joint_feedback"
+    )
+
     metadata_checks = {
         "archive_schema": archive_schema == SCHEMA_NAME,
         "manifest_schema": manifest_schema == SCHEMA_NAME,
@@ -394,19 +399,40 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
         == "rm65_measured_joint_feedback",
         "arm_action_source": manifest.get("arm_action_source")
         == "real_joint_command_sent",
-        "hand_state_source": manifest.get("hand_state_source")
-        == "previous_command_proxy",
-        "hand_initial_state_source": manifest.get("hand_initial_state_source")
-        == "serialized_command_proxy_baseline",
-        "hand_action_source": manifest.get("hand_action_source")
-        in ("final_teleop_qcmd", "final_hand_qcmd"),
-        "hand_feedback_unavailable": manifest.get("hand_feedback_available") is False,
-        "hand_feedback_invalid": manifest.get("hand_feedback_valid") is False,
-        "hand_action_not_hardware_applied": manifest.get(
-            "hand_action_hardware_applied"
-        ) is False,
-        "hand_hardware_absent": manifest.get("hand_hardware_present") is False,
     }
+    if hand_measured_episode:
+        metadata_checks.update({
+            "hand_state_source": manifest.get("hand_state_source")
+            == "sg100_measured_joint_feedback",
+            "hand_initial_state_source": manifest.get("hand_initial_state_source")
+            == "first_measured_feedback_replay_seed",
+            "hand_action_source": manifest.get("hand_action_source")
+            == "final_hardware_sent_qcmd",
+            "hand_feedback_available": manifest.get("hand_feedback_available")
+            is True,
+            "hand_feedback_valid": manifest.get("hand_feedback_valid") is True,
+            "hand_action_not_hardware_applied": manifest.get(
+                "hand_action_hardware_applied"
+            ) is False,
+            "hand_hardware_present": manifest.get("hand_hardware_present") is True,
+            "hand_action_hardware_sent": manifest.get("hand_action_hardware_sent")
+            is True,
+        })
+    else:
+        metadata_checks.update({
+            "hand_state_source": manifest.get("hand_state_source")
+            == "previous_command_proxy",
+            "hand_initial_state_source": manifest.get("hand_initial_state_source")
+            == "serialized_command_proxy_baseline",
+            "hand_action_source": manifest.get("hand_action_source")
+            in ("final_teleop_qcmd", "final_hand_qcmd"),
+            "hand_feedback_unavailable": manifest.get("hand_feedback_available") is False,
+            "hand_feedback_invalid": manifest.get("hand_feedback_valid") is False,
+            "hand_action_not_hardware_applied": manifest.get(
+                "hand_action_hardware_applied"
+            ) is False,
+            "hand_hardware_absent": manifest.get("hand_hardware_present") is False,
+        })
     metadata_valid = bool(all(metadata_checks.values()))
 
     timestamp_names = (
@@ -432,6 +458,19 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
     rejection_events = [event for event in events if event.get("event_type") == "hard_rejection"]
     baseline_events = [
         event for event in events if event.get("event_type") == "hand_proxy_baseline"
+    ]
+    hand_sent_events = [
+        event
+        for event in events
+        if event.get("event_type") == "hand_hardware_sent"
+    ]
+    hand_feedback_events = [
+        event for event in events if event.get("event_type") == "hand_feedback"
+    ]
+    hand_measured_baseline_events = [
+        event
+        for event in events
+        if event.get("event_type") == "hand_measured_baseline"
     ]
 
     arm_exact: dict[tuple[int, int], list[Mapping[str, Any]]] = defaultdict(list)
@@ -463,6 +502,32 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
             hand_exact[(bundle_id, timestamp)].append(payload)
             hand_history.append((timestamp, bundle_id, payload))
     hand_history.sort(key=lambda item: (item[0], item[1]))
+
+    if hand_measured_episode:
+        # Measured episodes: canonical hand action is the
+        # hardware-sent qcmd, so per-transition hand commands are
+        # matched against hand_hardware_sent events at
+        # (bundle_id, master_timestamp_ns == sent time).
+        hand_exact = defaultdict(list)
+        for event in hand_sent_events:
+            payload = _payload(event)
+            bundle_id = _bundle_id(payload)
+            timestamp = _event_timestamp(event)
+            if bundle_id is not None and timestamp is not None:
+                hand_exact[(bundle_id, timestamp)].append(payload)
+
+    hand_feedback_timeline: list[tuple[int, Mapping[str, Any]]] = []
+    for event in hand_feedback_events:
+        timestamp = _event_timestamp(event)
+        if timestamp is not None:
+            hand_feedback_timeline.append((timestamp, _payload(event)))
+    hand_feedback_timeline.sort(key=lambda item: item[0])
+
+    intervening_hand_commands = sum(
+        1
+        for event in rejection_events
+        if _payload(event).get("reason") == "INTERVENING_HAND_COMMAND"
+    )
 
     for event in feedback_events:
         timestamp = _event_timestamp(event)
@@ -509,7 +574,52 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
     baseline_state_match: bool | str = NOT_VERIFIABLE
     baseline_status = "NOT SERIALIZED — LEGACY EPISODE" if legacy_baseline else "INVALID"
 
-    if legacy_baseline:
+    if hand_measured_episode:
+        # Measured-feedback episode: the replay seed is the FIRST
+        # MEASURED SG100 feedback, recorded as audit only.  The
+        # canonical state_hand comes from measured feedback strictly
+        # before each action, so the frozen V1 requirement
+        # "baseline == state[0]" deliberately does NOT apply here.
+        baseline_status = "MEASURED SG100 FEEDBACK (REPLAY SEED)"
+        baseline_format_valid = bool(hand_measured_baseline_events)
+        first_hand_action_timestamp = (
+            int(arrays["hand_command_applied_timestamp_ns"][0])
+            if timestamp_valid and n > 0
+            else None
+        )
+        if not baseline_format_valid:
+            add_failure(None, None, "MISSING_HAND_MEASURED_BASELINE", {})
+        else:
+            measured_baseline_event = hand_measured_baseline_events[0]
+            baseline_timestamp = _event_timestamp(measured_baseline_event)
+            baseline_q = _vector(
+                _payload(measured_baseline_event), "q_rad", HAND_DIM
+            )
+            baseline_manifest_timestamp_valid = (
+                manifest.get("hand_measured_baseline_timestamp_ns")
+                == baseline_timestamp
+            )
+            baseline_temporal_valid = bool(
+                first_hand_action_timestamp is not None
+                and baseline_timestamp is not None
+                and baseline_timestamp < first_hand_action_timestamp
+            )
+            if not baseline_temporal_valid:
+                add_failure(
+                    0 if n else None,
+                    canonical_ids[0] if canonical_ids else None,
+                    "HAND_BASELINE_AFTER_ACTION",
+                    {
+                        "baseline_timestamp_ns": baseline_timestamp,
+                        "first_hand_action_timestamp_ns": first_hand_action_timestamp,
+                    },
+                )
+        baseline_valid = bool(
+            baseline_format_valid
+            and baseline_manifest_timestamp_valid
+            and baseline_temporal_valid
+        )
+    elif legacy_baseline:
         add_failure(None, None, "MISSING_HAND_PROXY_BASELINE", {"legacy_episode": True})
     elif not baseline_declared or not baseline_events:
         add_failure(None, None, "MISSING_HAND_PROXY_BASELINE", {})
@@ -594,39 +704,44 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
                 )
                 hand_history.sort(key=lambda item: (item[0], item[1]))
 
-    if (
-        baseline_format_valid
-        and baseline_temporal_valid
-        and shape_valid
-        and n > 0
-        and baseline_q is not None
-    ):
-        baseline_state_match = bool(
-            np.allclose(
-                arrays["state"][0, HAND_SLICE],
-                baseline_q,
-                rtol=0.0,
-                atol=atol,
-                equal_nan=False,
+    if not hand_measured_episode:
+        # Proxy episodes only: the serialized command proxy must equal
+        # the first canonical hand state.  Measured episodes derive
+        # state_hand from MEASURED feedback, so this equality check
+        # (the frozen V1 baseline-replay bug) does not apply.
+        if (
+            baseline_format_valid
+            and baseline_temporal_valid
+            and shape_valid
+            and n > 0
+            and baseline_q is not None
+        ):
+            baseline_state_match = bool(
+                np.allclose(
+                    arrays["state"][0, HAND_SLICE],
+                    baseline_q,
+                    rtol=0.0,
+                    atol=atol,
+                    equal_nan=False,
+                )
             )
-        )
-        if not baseline_state_match:
-            add_failure(
-                0,
-                canonical_ids[0] if canonical_ids else None,
-                "HAND_BASELINE_STATE_MISMATCH",
-                {"baseline_timestamp_ns": baseline_timestamp},
-            )
-        else:
-            baseline_status = "SERIALIZED COMMAND PROXY BASELINE"
+            if not baseline_state_match:
+                add_failure(
+                    0,
+                    canonical_ids[0] if canonical_ids else None,
+                    "HAND_BASELINE_STATE_MISMATCH",
+                    {"baseline_timestamp_ns": baseline_timestamp},
+                )
+            else:
+                baseline_status = "SERIALIZED COMMAND PROXY BASELINE"
 
-    baseline_valid = bool(
-        baseline_declared
-        and baseline_format_valid
-        and baseline_manifest_timestamp_valid
-        and baseline_temporal_valid
-        and baseline_state_match is True
-    )
+        baseline_valid = bool(
+            baseline_declared
+            and baseline_format_valid
+            and baseline_manifest_timestamp_valid
+            and baseline_temporal_valid
+            and baseline_state_match is True
+        )
 
     for event in rejection_events:
         payload = _payload(event)
@@ -767,43 +882,94 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
                     else "NEXT_FEEDBACK_RAW_MISMATCH"
                 )
 
-            earlier_state_hands = [item for item in hand_history if item[0] <= state_ts]
-            earlier_next_hands = [item for item in hand_history if item[0] <= next_ts]
             state_hand_match: bool | None
-            if earlier_state_hands:
-                raw_state_hand = _vector(earlier_state_hands[-1][2], "q_rad", HAND_DIM)
-                state_hand_match = raw_state_hand is not None and bool(
-                    np.allclose(
-                        arrays["state"][index, HAND_SLICE],
-                        raw_state_hand,
-                        rtol=0.0,
-                        atol=atol,
-                        equal_nan=False,
-                    )
-                )
-                if not state_hand_match:
-                    reasons.append("HAND_STATE_PROXY_MISMATCH")
-            else:
-                state_hand_match = None
-
             next_hand_match: bool | None = None
-            if earlier_next_hands:
-                raw_next_hand = _vector(earlier_next_hands[-1][2], "q_rad", HAND_DIM)
-                next_hand_match = raw_next_hand is not None and bool(
-                    np.allclose(
-                        arrays["next_state"][index, HAND_SLICE],
-                        raw_next_hand,
-                        rtol=0.0,
-                        atol=atol,
-                        equal_nan=False,
+            if hand_measured_episode:
+                # Measured semantics: state_hand = latest measured
+                # feedback strictly BEFORE the action; next_state_hand
+                # = first measured feedback strictly AFTER it.
+                earlier_state_feedback = [
+                    item
+                    for item in hand_feedback_timeline
+                    if item[0] < effective_ts
+                ]
+                later_state_feedback = [
+                    item
+                    for item in hand_feedback_timeline
+                    if item[0] > effective_ts
+                ]
+                if earlier_state_feedback:
+                    raw_state_hand = _vector(
+                        earlier_state_feedback[-1][1], "q_rad", HAND_DIM
                     )
-                )
-            if next_hand_match is not True:
-                reasons.append(
-                    "HAND_NEXT_PROXY_NOT_VERIFIABLE"
-                    if next_hand_match is None
-                    else "HAND_NEXT_PROXY_MISMATCH"
-                )
+                    state_hand_match = raw_state_hand is not None and bool(
+                        np.allclose(
+                            arrays["state"][index, HAND_SLICE],
+                            raw_state_hand,
+                            rtol=0.0,
+                            atol=atol,
+                            equal_nan=False,
+                        )
+                    )
+                    if not state_hand_match:
+                        reasons.append("HAND_STATE_MEASURED_MISMATCH")
+                else:
+                    state_hand_match = None
+                    reasons.append("HAND_STATE_MEASURED_NOT_VERIFIABLE")
+
+                if later_state_feedback:
+                    raw_next_hand = _vector(
+                        later_state_feedback[0][1], "q_rad", HAND_DIM
+                    )
+                    next_hand_match = raw_next_hand is not None and bool(
+                        np.allclose(
+                            arrays["next_state"][index, HAND_SLICE],
+                            raw_next_hand,
+                            rtol=0.0,
+                            atol=atol,
+                            equal_nan=False,
+                        )
+                    )
+                    if not next_hand_match:
+                        reasons.append("HAND_NEXT_STATE_MEASURED_MISMATCH")
+                else:
+                    reasons.append("HAND_NEXT_STATE_MEASURED_NOT_VERIFIABLE")
+            else:
+                earlier_state_hands = [item for item in hand_history if item[0] <= state_ts]
+                earlier_next_hands = [item for item in hand_history if item[0] <= next_ts]
+                if earlier_state_hands:
+                    raw_state_hand = _vector(earlier_state_hands[-1][2], "q_rad", HAND_DIM)
+                    state_hand_match = raw_state_hand is not None and bool(
+                        np.allclose(
+                            arrays["state"][index, HAND_SLICE],
+                            raw_state_hand,
+                            rtol=0.0,
+                            atol=atol,
+                            equal_nan=False,
+                        )
+                    )
+                    if not state_hand_match:
+                        reasons.append("HAND_STATE_PROXY_MISMATCH")
+                else:
+                    state_hand_match = None
+
+                if earlier_next_hands:
+                    raw_next_hand = _vector(earlier_next_hands[-1][2], "q_rad", HAND_DIM)
+                    next_hand_match = raw_next_hand is not None and bool(
+                        np.allclose(
+                            arrays["next_state"][index, HAND_SLICE],
+                            raw_next_hand,
+                            rtol=0.0,
+                            atol=atol,
+                            equal_nan=False,
+                        )
+                    )
+                if next_hand_match is not True:
+                    reasons.append(
+                        "HAND_NEXT_PROXY_NOT_VERIFIABLE"
+                        if next_hand_match is None
+                        else "HAND_NEXT_PROXY_MISMATCH"
+                    )
 
             causal = state_ts < effective_ts < next_ts
             bundle = arm_present and hand_present and effective_match and bundle_id not in duplicate_ids
@@ -1203,7 +1369,12 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
         "sg100": {
             "hand_commands": len(hand_events),
             "proxy_state_transitions": n,
-            "measured_feedback": "UNAVAILABLE",
+            "measured_feedback": (
+                "AVAILABLE"
+                if hand_measured_episode
+                else "UNAVAILABLE"
+            ),
+            "measured_episode": hand_measured_episode,
             "proxy_consistency": hand_proxy_result,
             "initial_proxy_baseline": baseline_status,
             "initial_proxy_baseline_serialized": baseline_declared,
@@ -1214,6 +1385,60 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
             "hardware_execution": False,
             "action_hardware_applied": bool(
                 manifest.get("hand_action_hardware_applied", False)
+            ),
+            "hand_real_validation": (
+                {
+                    "feedback_samples": len(hand_feedback_events),
+                    "commands_sent": len(hand_sent_events),
+                    "canonical_actions": n,
+                    "canonical_state_measured": bool(
+                        arrays["hand_state_measured"].all()
+                    )
+                    if "hand_state_measured" in arrays
+                    and arrays["hand_state_measured"].size
+                    else False,
+                    "command_raw_match": (
+                        "NOT VERIFIABLE"
+                        if not hand_measured_episode
+                        else (
+                            "PASS"
+                            if not any(
+                                item["reason"]
+                                in (
+                                    "MISSING_OR_AMBIGUOUS_HAND_COMMAND",
+                                    "HAND_CANONICAL_RAW_MISMATCH",
+                                )
+                                for item in failures
+                            )
+                            else "FAIL"
+                        )
+                    ),
+                    "feedback_raw_match": (
+                        "NOT VERIFIABLE"
+                        if not hand_measured_episode
+                        else (
+                            "PASS"
+                            if not any(
+                                "MEASURED_MISMATCH" in item["reason"]
+                                or "MEASURED_NOT_VERIFIABLE" in item["reason"]
+                                for item in failures
+                            )
+                            else "FAIL"
+                        )
+                    ),
+                    "intervening_hand_commands": intervening_hand_commands,
+                    "first_pre_roll": (
+                        "PASS"
+                        if baseline_temporal_valid and hand_measured_episode
+                        else (
+                            _pass_fail(first_transition_pre_roll)
+                            if first_transition_pre_roll is not None
+                            else "NOT VERIFIABLE"
+                        )
+                    ),
+                }
+                if hand_measured_episode
+                else None
             ),
         },
         "data_quality": {
@@ -1271,9 +1496,39 @@ def inspect_episode(path: str | Path, *, atol: float = MATCH_ATOL) -> Inspection
             ),
             "rm65_real_causal_chain_pass": rm65_real_causal_chain_pass,
             "rm65_hardware_validation": rm65_real_causal_chain_pass,
-            "sg100_hardware_validation": "NOT TESTED — HARDWARE NOT AVAILABLE",
+            "sg100_real_causal_chain_pass": (
+                bool(
+                    n > 0
+                    and metadata_valid
+                    and causal_valid == n
+                    and not any(
+                        item["reason"].startswith("HAND_")
+                        or item["reason"]
+                        in (
+                            "MISSING_OR_AMBIGUOUS_HAND_COMMAND",
+                            "HAND_CANONICAL_RAW_MISMATCH",
+                        )
+                        for item in failures
+                    )
+                )
+                if hand_measured_episode
+                else False
+            ),
+            "sg100_hardware_validation": (
+                "MEASURED-FEEDBACK EPISODE VALIDATED"
+                if hand_measured_episode
+                and n > 0
+                and not failures
+                else (
+                    "MEASURED-FEEDBACK EPISODE WITH FAILURES"
+                    if hand_measured_episode
+                    else "NOT TESTED — HARDWARE NOT AVAILABLE"
+                )
+            ),
             "camera_hardware_validation": "NOT TESTED — HARDWARE NOT AVAILABLE",
-            "full_arm_hand_hardware_validated": False,
+            "full_arm_hand_hardware_validated": bool(
+                rm65_real_causal_chain_pass and hand_measured_episode
+            ),
         },
     }
     return InspectionReport(files, _jsonable(summary), transitions, failures)
@@ -1458,6 +1713,47 @@ def format_summary(report: InspectionReport, *, show_all_errors: bool = False) -
             f"multimodal training ready: {_yes_no(value['cameras']['multimodal_training_ready'])}",
         ]
     )
+    hand_validation = value["sg100"].get("hand_real_validation")
+    if hand_validation is not None:
+        lines.extend(
+            [
+                "",
+                "-" * 50,
+                "HAND REAL VALIDATION (SG100 measured feedback)",
+                "-" * 50,
+                f"feedback samples     : {hand_validation['feedback_samples']}",
+                f"commands sent        : {hand_validation['commands_sent']}",
+                f"canonical actions    : {hand_validation['canonical_actions']}",
+                "canonical state measured: "
+                + _yes_no(hand_validation["canonical_state_measured"]),
+                "command/raw match    : "
+                + str(hand_validation["command_raw_match"]),
+                "feedback/raw match   : "
+                + str(hand_validation["feedback_raw_match"]),
+                "intervening command  : "
+                f"{hand_validation['intervening_hand_commands']}",
+                "first pre-roll       : "
+                + str(hand_validation["first_pre_roll"]),
+                "SG100 REAL CAUSAL CHAIN: "
+                + _pass_fail(value["result"]["sg100_real_causal_chain_pass"]),
+            ]
+        )
+    elif value["sg100"].get("measured_episode"):
+        lines.extend(
+            [
+                "",
+                "HAND REAL VALIDATION: no transitions in episode",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "HAND REAL VALIDATION: NOT APPLICABLE — "
+                "LEGACY HAND PROXY EPISODE "
+                "(command proxy, hand_hardware_present=false)",
+            ]
+        )
     if report.failures:
         selected = report.failures if show_all_errors else report.failures[:MAX_DEFAULT_ERRORS]
         lines.extend(["", "-" * 50, "FAILURES", "-" * 50])

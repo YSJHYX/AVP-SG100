@@ -273,6 +273,19 @@ little: outward, flexion, distal
 
 AVP adapter 提取语义量，经 calibration YAML 归一化成 `CanonicalHandState`，再由 `SG100Retargeter` 转为受 joint limits 约束的目标。arm 与 hand 使用同一 accepted tracking frame。
 
+retargeter 在基础映射之上有两个可选 config-driven 协调层（section 缺失或 disabled 时输出与基础映射 bit-exact 一致）：
+
+1. `pinch_coordination`：pinch gate 平滑地把 thumb 指令 blend 到 pinch anchors/target；
+2. `power_grasp_thumb_lock`：power grasp 时对 thumb 施加连续的 opposition bias（FK 实测基础映射 q1≈60° 时拇指悬在 index-middle closure region 拇指侧约 59 mm，未形成对掌锁扣；bias +40° 后进入 closure region，d_lock 62→31 mm）。lock weight = grasp 闭合度 × thumb engagement × (1 − pinch gate)，pinch/open hand/刻意张拇抓取均保持 weight 0。
+
+thumb 诊断（单关节 sweep、operating point FK 几何、BEFORE/AFTER 对比）：
+
+```bash
+python -m sg100_teleop.sim.inspect_sg100_thumb_kinematics
+```
+
+两个 sim runner 均支持 `--thumb-retarget-debug`（约 5 Hz 打印 grasp/lock 权重、human thumb 特征、raw/bias/final q 与拇指尖几何）。
+
 需要区分：
 
 1. `avp_right_calibration.yaml`：长期保存的用户 hand feature ranges；
@@ -455,6 +468,9 @@ python -m sg100_teleop.tests.test_tcp_target_filter
 python -m sg100_teleop.tests.test_sg100_retargeter
 python -m sg100_teleop.tests.test_sg100_retarget_semantics
 python -m sg100_teleop.tests.test_sg100_physical_joint_semantics
+python -m sg100_teleop.tests.test_sg100_driver
+python -m sg100_teleop.tests.test_sg100_latest_sdk_driver
+python -m sg100_teleop.tests.test_sg100_no_legacy_backend
 python -m sg100_teleop.tests.test_rm65_fk_tcp
 python -m sg100_teleop.tests.test_rm65_tcp_jacobian
 python -m sg100_teleop.tests.test_rm65_ik_position_only

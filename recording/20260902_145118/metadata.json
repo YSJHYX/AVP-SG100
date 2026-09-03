@@ -1,0 +1,26 @@
+{
+  "audio": false,
+  "camera_name": "workstation_front",
+  "camera_observations": {
+    "workstation_front": "base_0_rgb",
+    "wrist_camera": "right_wrist_0_rgb"
+  },
+  "frame_count": 2951,
+  "mocap_count": 0,
+  "mujoco_timestep": 0.002,
+  "qpos_dimension": 25,
+  "record_fps": 30.0,
+  "recorded_time_span": 98.33399999995223,
+  "scene_path": "sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_demo_drawer_loading_and_closing_scene.xml",
+  "schema_version": 1,
+  "simulation_end_time": 98.33399999995223,
+  "simulation_start_time": 0.0,
+  "state_fields": [
+    "timestamps",
+    "qpos",
+    "mocap_pos",
+    "mocap_quat"
+  ],
+  "video_duration": 98.36666666666666,
+  "wall_start_time": "2026-09-02T14:51:18.589545+08:00"
+}

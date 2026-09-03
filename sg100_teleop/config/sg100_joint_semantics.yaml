@@ -152,3 +152,59 @@ pinch_coordination:
         - [1.000, 125.0]
     thumb_j2:
       pinch_target_deg: 0.0
+
+# Grasp-conditioned thumb lock (generic, config-driven).
+#
+# Problem being solved (FK-measured, see
+# sg100_teleop/sim/inspect_sg100_thumb_kinematics.py): at the real AVP
+# NORMAL_GRASP operating point (opp=.7595 abd=.8610 dst=.918) the base
+# mapping commands thumb_j1 = 90*.7595^1.5 = 59.6 deg.  On the SG100
+# morphology that leaves the thumb tip ~59 mm out on the thumb side of
+# the index-middle closure region (lateral delta) and ~20 mm in front
+# of it (forward delta): no opposition lock — the extended thumb rides
+# across the palm opening and can eject the grasped object.  The joint
+# itself is correct (thumb_j1 q+ IS opposition toward the palm); the
+# human canonical scale simply under-reaches the robot morphology.
+#
+# FK grid over the same grasp pose (thumb_j3 held at the raw mapping):
+#   j1= 59.6 j2=-51.7 -> d_lock 62.3 mm, lateral delta +59 mm
+#   j1= 99.6 j2=-51.7 -> d_lock ~30 mm, lateral delta  +4 mm
+# thumb_j2 needs NO bias: -51.7 deg already aligns the thumb with the
+# closure-region height (normal delta +2 mm); j2=0 would lift it
+# ~45 mm above the closure region.  thumb_j3 stays raw as well.
+#
+# Blend (CONTINUOUS, never a fixed lock pose):
+#   grasp_w     = smoothstep(grasp_score, start, full)
+#   engage_w    = smoothstep(thumb_opposition, low, high)
+#   lock_weight = max_weight * grasp_w * engage_w * (1 - pinch_gate)
+#   q_final     = clip(q_raw + lock_weight * bias, mechanical range)
+#
+# Real AVP operating points:
+#   OPEN_HAND   score .000 engage .000 gate 0 -> weight 0 (thumb free)
+#   NORMAL_GRASP score .993 engage 1.000 gate 0 -> weight 1 (lock on)
+#   INDEX/MIDDLE/LITTLE pinch: gate 1 -> weight 0 (pinch preserved)
+#
+# Absent section or enabled: false reproduces the previous behaviour
+# exactly (locked by test).
+power_grasp_thumb_lock:
+  enabled: true
+  grasp_score:
+    # Same closure features/combiner semantics as the pinch gate
+    # context; declared here so the lock does not depend on the
+    # pinch_coordination section being present.
+    features:
+      - index_flexion
+      - middle_flexion
+      - little_flexion
+    combiner: geometric_mean
+    start: 0.60
+    full: 0.85
+  thumb_engagement:
+    feature: thumb_opposition
+    low: 0.35
+    high: 0.60
+  max_weight: 1.0
+  biases_deg:
+    thumb_j1: 40.0
+    thumb_j2: 0.0
+    thumb_j3: 0.0

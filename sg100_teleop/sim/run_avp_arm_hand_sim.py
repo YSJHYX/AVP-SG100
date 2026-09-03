@@ -32,6 +32,16 @@ from sg100_teleop.kinematics.rm65_ik import RM65IKSolver
 
 from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
 
+from sg100_teleop.retargeting.thumb_debug import (
+    build_lock_disabled_retargeter,
+    format_thumb_retarget_debug,
+    hand_tip_geometry_mm,
+)
+
+from sg100_teleop.robot.sg100_driver import SG100HardwareMap
+
+from sg100_teleop.robot.sg100_mock_driver import MockSG100Driver
+
 from sg100_teleop.recording.mujoco_state_recorder import (
     MujocoStateRecorder,
 )
@@ -638,6 +648,66 @@ def build_arg_parser():
         help="RM65 controller IP for --arm-backend real (e.g. 192.168.1.18)",
     )
 
+    # ========================================================
+    # Real SG100 hand backend (H3+).  The sim default keeps the
+    # current behaviour unchanged; the real backend sends the final
+    # post-filter qcmd over the vendor SDK UART link and ingests the
+    # measured joint feedback for the DATA CONTRACT.
+    # ========================================================
+
+    parser.add_argument(
+        "--hand-backend",
+        choices=("sim", "real", "mock"),
+        default="sim",
+        help=(
+            "Hand execution backend: 'sim' keeps the software-only "
+            "command proxy (current behaviour); 'real' sends the final "
+            "qcmd to the SG100 over UART and records measured joint "
+            "feedback; 'mock' exercises the real-hand data path "
+            "against MockSG100Driver (no hardware)"
+        ),
+    )
+
+    parser.add_argument(
+        "--hand-port",
+        default="/dev/ttyUSB0",
+        help="UART port of the SG100 palm board for --hand-backend real",
+    )
+
+    parser.add_argument(
+        "--hand-baudrate",
+        type=int,
+        default=1_000_000,
+        help="SG100 UART baudrate (vendor default 1000000)",
+    )
+
+    parser.add_argument(
+        "--hand-sdk-dir",
+        default=None,
+        help="SG100 SDK root (default: ~/SG100_SDK_Publish)",
+    )
+
+    parser.add_argument(
+        "--hand-feedback-poll-hz",
+        type=float,
+        default=100.0,
+        help="SG100 measured-feedback polling rate",
+    )
+
+    parser.add_argument(
+        "--thumb-lock-hardware-cap-deg",
+        type=float,
+        default=None,
+        help=(
+            "HARDWARE VALIDATION CAP ONLY: clamps the configured "
+            "power-grasp thumb_j1 lock bias to at most this many "
+            "degrees for this run (staged first-hardware testing: "
+            "10 -> 20 -> 30 -> 40). Default None keeps the production "
+            "config unchanged; the cap never alters the blend "
+            "semantics, only the bias amplitude for this session."
+        ),
+    )
+
     parser.add_argument(
         "--arm-port",
         type=int,
@@ -737,6 +807,16 @@ def build_arg_parser():
         "--verbose",
         action="store_true",
         help="Print low-rate runtime diagnostics",
+    )
+
+    parser.add_argument(
+        "--thumb-retarget-debug",
+        action="store_true",
+        help=(
+            "Print a low-rate (~5 Hz) thumb retargeting diagnostic: "
+            "grasp/lock weights, human thumb features, raw/bias/final "
+            "SG100 thumb q, and live thumb tip geometry"
+        ),
     )
 
     parser.add_argument(
@@ -1243,6 +1323,51 @@ def main():
 
     retargeter = SG100Retargeter()
 
+    # Optional FIRST-HARDWARE validation cap on the power-grasp lock
+    # bias (staged 10 -> 20 -> 30 -> 40 deg).  Implemented as a session
+    # bias override so the blend semantics stay untouched; without the
+    # flag the production config (+40 deg) is used unchanged.
+    if args.thumb_lock_hardware_cap_deg is not None:
+        cap = float(args.thumb_lock_hardware_cap_deg)
+        if not (0.0 < cap <= 40.0 + 1e-9):
+            raise SystemExit(
+                "--thumb-lock-hardware-cap-deg must lie in (0, 40]"
+            )
+        import tempfile as _tempfile
+
+        import yaml as _yaml
+
+        _semantics_path = (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "sg100_joint_semantics.yaml"
+        )
+        with _semantics_path.open("r") as f:
+            _semantics = _yaml.safe_load(f)
+        _biases = _semantics["power_grasp_thumb_lock"]["biases_deg"]
+        _biases["thumb_j1"] = min(float(_biases["thumb_j1"]), cap)
+        with _tempfile.NamedTemporaryFile(
+            "w", suffix=".yaml", delete=False
+        ) as f:
+            _yaml.safe_dump(_semantics, f)
+            _semantics_temp_path = f.name
+        retargeter = SG100Retargeter(_semantics_temp_path)
+        print(
+            "thumb lock hardware cap :",
+            f"thumb_j1 bias limited to {_biases['thumb_j1']:.1f} deg "
+            "(validation session)",
+        )
+
+    # RAW (pre-lock) thumb commands for the debug overlay only; the
+    # production retarget path is untouched.
+    retargeter_no_lock = (
+        build_lock_disabled_retargeter()
+        if args.thumb_retarget_debug
+        else None
+    )
+
+    last_thumb_debug = -float("inf")
+
 
     # ========================================================
     # Validate SG100 retargeter joint ordering
@@ -1740,22 +1865,69 @@ def main():
             recording_session_dir / "hammer_diagnostic",
         )
 
+    # ========================================================
+    # SG100 hand backend (H3+).  'sim' (default) keeps the software
+    # command proxy; 'real'/'mock' stream the FINAL post-filter qcmd
+    # to the hand driver and ingest measured joint feedback.
+    # ========================================================
+
+    hand_driver = None
+    hand_hardware_map = None
+    if args.hand_backend == "real":
+        from sg100_teleop.robot.sg100_sdk_driver import SG100SDKDriver
+
+        hand_hardware_map = SG100HardwareMap()
+        hand_driver = SG100SDKDriver(
+            args.hand_port,
+            baudrate=args.hand_baudrate,
+            hardware_map=hand_hardware_map,
+            sdk_dir=(
+                Path(args.hand_sdk_dir)
+                if args.hand_sdk_dir is not None
+                else None
+            ),
+        )
+    elif args.hand_backend == "mock":
+        hand_hardware_map = SG100HardwareMap()
+        hand_driver = MockSG100Driver(hand_hardware_map)
+
+    hand_feedback_poll_period = 1.0 / args.hand_feedback_poll_hz
+    last_hand_feedback_poll = -float("inf")
+
+    if hand_driver is not None:
+        hand_driver.connect()
+        hand_driver.start()
+        # Vendor-native realtime entry: MODE_NULL no-drive hold is seeded
+        # BEFORE SwitchToRealtimeMode, so entering realtime cannot move the
+        # hand and commands stay fail-closed until the teleop gate opens.
+        hand_driver.enter_realtime()
+        print(
+            "hand backend      :",
+            f"{type(hand_driver).__name__} @ "
+            f"{getattr(hand_driver, 'port', 'mock')}",
+            "(realtime, MODE_NULL hold)",
+        )
+
     arm_hand_collector = None
     if args.collect_arm_hand_data:
         arm_lower_rad, arm_upper_rad = real_arm_backend.joint_limits_rad()
         hand_joint_ids = robot_layout.joint_ids[ARM_DOF:]
         hand_lower_rad = model.jnt_range[hand_joint_ids, 0].copy()
         hand_upper_rad = model.jnt_range[hand_joint_ids, 1].copy()
+        hand_measured = hand_driver is not None
         arm_hand_collector = ArmHandDataCollector(
             recording_session_dir / "arm_hand_data",
-            # The calibrated runtime qcmd does not exist yet.  Never invent a
-            # zero/home baseline; calibration establishes the real software
-            # command proxy before the first eligible action.
+            # Proxy mode: the calibrated runtime qcmd does not exist
+            # yet.  Never invent a zero/home baseline; calibration
+            # establishes the real software command proxy before the
+            # first eligible action.  (Measured mode builds the replay
+            # seed from the first measured SG100 feedback instead.)
             initial_hand_qcmd=None,
             arm_lower_rad=arm_lower_rad,
             arm_upper_rad=arm_upper_rad,
             hand_lower_rad=hand_lower_rad,
             hand_upper_rad=hand_upper_rad,
+            hand_measured_feedback=hand_measured,
             config=CollectorConfig(
                 stale_pre_state_ns=int(args.data_stale_pre_ms * 1e6),
                 stale_post_state_ns=int(args.data_stale_post_ms * 1e6),
@@ -1763,6 +1935,10 @@ def main():
         )
         # RECORDER_ARMED pre-roll begins before the first motion command.
         arm_hand_collector.observe_arm_feedback(real_arm_backend.joint_state())
+        if hand_measured:
+            arm_hand_collector.observe_hand_feedback(
+                hand_driver.read_feedback()
+            )
 
     print(
         "recording session :",
@@ -1999,11 +2175,56 @@ def main():
                                 )
                             )
 
-                            q_hand_candidate = (
-                                retargeter.retarget(
+                            q_hand_candidate, hand_stages = (
+                                retargeter.retarget_with_stages(
                                     canonical
                                 )
                             )
+
+                            # Full hand command provenance (audit only):
+                            # raw retarget -> pinch-coordinated ->
+                            # power-grasp-locked final.  The remaining
+                            # two levels (post-filter, hardware-sent)
+                            # are recorded at the send site.
+                            if arm_hand_collector is not None:
+                                arm_hand_collector.record_hand_pipeline_stages(
+                                    hand_stages
+                                )
+
+                            if (
+                                args.thumb_retarget_debug
+                                and (
+                                    now
+                                    - last_thumb_debug
+                                    >= 0.2
+                                )
+                            ):
+                                last_thumb_debug = now
+
+                                raw_q = (
+                                    retargeter_no_lock
+                                    .retarget(canonical)
+                                )
+
+                                thumb_info = (
+                                    retargeter
+                                    .thumb_lock_diagnostics(
+                                        raw_q,
+                                        canonical.as_dict(),
+                                    )
+                                )
+
+                                print()
+                                print(
+                                    format_thumb_retarget_debug(
+                                        thumb_info,
+                                        canonical.as_dict(),
+                                        hand_tip_geometry_mm(
+                                            model,
+                                            data,
+                                        ),
+                                    )
+                                )
 
 
                             # -------------------------------------
@@ -2230,6 +2451,7 @@ def main():
 
                                 if (
                                     arm_hand_collector is not None
+                                    and not arm_hand_collector.hand_measured_feedback
                                     and not arm_hand_collector.hand_proxy_baseline_valid
                                 ):
                                     arm_hand_collector.establish_hand_proxy_baseline(
@@ -2239,6 +2461,17 @@ def main():
                                     print(
                                         "[DATA] hand baseline: SERIALIZED "
                                         "COMMAND PROXY"
+                                    )
+                                elif (
+                                    arm_hand_collector is not None
+                                    and arm_hand_collector.hand_measured_feedback
+                                ):
+                                    # Measured mode: the replay seed is the
+                                    # first MEASURED SG100 feedback; the
+                                    # software qcmd needs no proxy baseline.
+                                    print(
+                                        "[DATA] hand baseline: MEASURED "
+                                        "SG100 FEEDBACK (replay seed)"
                                     )
 
                                 wrist_calibrated = True
@@ -2882,14 +3115,46 @@ def main():
                             )
                         )
 
+                        if hand_driver is not None:
+                            # FINAL post-filter qcmd -> SG100 driver.
+                            # Only a successful transport accept
+                            # produces an SG100CommandSent event; the
+                            # canonical hand action is exactly this
+                            # hardware-sent value.
+                            hand_driver.send_positions_rad(
+                                q_hand_cmd,
+                                command_bundle_id=command_bundle_id,
+                            )
+
+                        if (
+                            hand_driver is not None
+                            and now - last_hand_feedback_poll
+                            >= hand_feedback_poll_period
+                        ):
+                            last_hand_feedback_poll = now
+                            hand_feedback = (
+                                hand_driver.read_feedback()
+                            )
+                            if (
+                                arm_hand_collector is not None
+                                and hand_feedback is not None
+                            ):
+                                arm_hand_collector.observe_hand_feedback(
+                                    hand_feedback
+                                )
+                                data.qpos[
+                                    robot_layout.hand_qpos_indices
+                                ] = hand_feedback.q_rad
+
                         if feedback is not None:
                             data.qpos[
                                 robot_layout.arm_qpos_indices
                             ] = feedback.q_rad
 
-                        data.qpos[
-                            robot_layout.hand_qpos_indices
-                        ] = q_hand_cmd
+                        if hand_driver is None:
+                            data.qpos[
+                                robot_layout.hand_qpos_indices
+                            ] = q_hand_cmd
 
                         hand_applied_timestamp_ns = time.monotonic_ns()
                         if command_bundle_id is not None:
@@ -2928,6 +3193,10 @@ def main():
                             arm_hand_collector.ingest_arm_command_events(
                                 real_arm_backend.drain_command_events()
                             )
+                            if hand_driver is not None:
+                                arm_hand_collector.ingest_hand_command_events(
+                                    hand_driver.drain_command_events()
+                                )
 
                         mujoco.mj_forward(
                             model,
@@ -2952,6 +3221,29 @@ def main():
                                 physics_dt,
                             )
                         )
+
+                        if hand_driver is not None:
+                            # H3 path: arm stays simulated while the
+                            # SG100 receives the final post-filter qcmd.
+                            hand_driver.send_positions_rad(
+                                q_hand_cmd,
+                                command_bundle_id=None,
+                            )
+                            if (
+                                now - last_hand_feedback_poll
+                                >= hand_feedback_poll_period
+                            ):
+                                last_hand_feedback_poll = now
+                                hand_feedback = (
+                                    hand_driver.read_feedback()
+                                )
+                                if (
+                                    arm_hand_collector is not None
+                                    and hand_feedback is not None
+                                ):
+                                    arm_hand_collector.observe_hand_feedback(
+                                        hand_feedback
+                                    )
 
                         write_robot_controls(
                             data,
@@ -3214,6 +3506,20 @@ def main():
     finally:
         if hammer_impact_diagnostic is not None:
             hammer_impact_diagnostic.close()
+        if hand_driver is not None:
+            # Final hand feedback + sent events, then stop sending.
+            try:
+                if arm_hand_collector is not None:
+                    arm_hand_collector.observe_hand_feedback(
+                        hand_driver.read_feedback()
+                    )
+                    arm_hand_collector.ingest_hand_command_events(
+                        hand_driver.drain_command_events()
+                    )
+            finally:
+                hand_driver.stop()
+                hand_driver.disconnect()
+                print("[HAND] SG100 driver disconnected")
         if real_arm_backend is not None:
             # v3 §A3.5 order on exit: quiesce, slow stop, disconnect.
             try:

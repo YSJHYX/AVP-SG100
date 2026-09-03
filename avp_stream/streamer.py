@@ -5187,8 +5187,10 @@ class VisionProStreamer:
         """
         # Always configure video (start_streaming implies video streaming)
         self.configure_video(
-            device=device,
-            format=format,
+            # device=device,
+            device = "/dev/video0",
+            # format=format,
+            format = "avfoundation",
             size=size,
             fps=fps,
             stereo=stereo_video,

@@ -35,6 +35,9 @@ from sg100_teleop.calibration.session import (
 from sg100_teleop.hand.canonical_hand import CanonicalHandState
 from sg100_teleop.hand.hand_calibration import BidirectionalCalibration
 from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
+from sg100_teleop.retargeting.thumb_debug import (
+    build_lock_disabled_retargeter,
+)
 from sg100_teleop.tracking.avp_hand_adapter import AVPRawHandFeatures
 
 
@@ -610,8 +613,15 @@ def _thumb_q(h, point):
 
 def test_pinch_gate_preserves_neutral_and_grasp():
     """(A) NORMAL GRASP — global context high, signal ~0, gate == 0,
-    q1/q2 exactly equal to the old grasp branch."""
+    q1/q2 exactly equal to the old grasp branch.
+
+    The exact-value assertions run with the power-grasp thumb lock
+    DISABLED so they keep locking the pinch-coordination layer; the
+    production lock layer (base + grasp bias) is asserted at the end
+    and covered in full by test_sg100_power_grasp_thumb_lock.py.
+    """
     h = PalmFrameHarness()
+    h.retargeter = build_lock_disabled_retargeter()
     r = h.retargeter
     i1 = r.joint_order.index("thumb_j1")
     i2 = r.joint_order.index("thumb_j2")
@@ -635,11 +645,28 @@ def test_pinch_gate_preserves_neutral_and_grasp():
     assert np.isclose(np.degrees(q[i1]), 59.58, atol=0.05)
     assert np.isclose(np.degrees(q[i2]), -51.66, atol=0.05)
 
+    # Production config: gate still 0, lock weight 1, command = base
+    # branch + configured thumb_j1 opposition bias (40 deg).
+    prod = SG100Retargeter()
+    q_prod = prod.retarget(CanonicalHandState(**grasp))
+    assert prod.pinch_gate(grasp) < 1e-12
+    assert prod.thumb_lock_weight(grasp) > 0.99
+    assert np.isclose(
+        np.degrees(q_prod[i1]), 59.58 + 40.0, atol=0.1
+    )
+
 
 def test_pinch_gate_activates_on_pinch_points():
     """(B/C/D) INDEX / MIDDLE / LITTLE pinches — context ~0, signal high,
-    gate ~1."""
+    gate ~1.
+
+    Runs with the power-grasp thumb lock disabled: this test locks the
+    pinch-coordination layer against the base mapping.  (The pinch
+    points keep lock weight 0 under the production config too, locked
+    in test_sg100_power_grasp_thumb_lock.py.)
+    """
     h = PalmFrameHarness()
+    h.retargeter = build_lock_disabled_retargeter()
     r = h.retargeter
     i1 = r.joint_order.index("thumb_j1")
     i2 = r.joint_order.index("thumb_j2")

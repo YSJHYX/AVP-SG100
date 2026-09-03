@@ -1,0 +1,43 @@
+# SG100 software <-> hardware joint map (driver boundary authority).
+#
+# software_joint_order MUST equal sg100_joint_semantics.yaml joint_order;
+# it is repeated here only so the mapping is self-describing and can be
+# validated against drift at load time.
+#
+# hardware_joint_ids: vendor SDK joint ID (1..11) for each software
+# index.  Vendor layout (SG100_SDK_User_Guide.md §5.1):
+#   thumb 1,2,3 | index 4,5,6 | middle 7,8 | little 9,10,11
+#
+# gain / offset_rad: SDK public/user-angle radians relate to canonical
+# software radians by
+#     sdk_user  = gain * canonical + offset_rad      (send)
+#     canonical = gain * (sdk_user - offset_rad)     (receive)
+# The vendor SDK separately applies its joint_angle_map.json mapping between
+# this public degree-valued API domain and the low-level wire radians.
+#
+# Defaults are the IDENTITY map.  They are provisional until the first
+# hardware session: the H1 single-joint smoke tests
+# (sg100_teleop/tools/sg100_joint_smoke_test.py) verify each joint's
+# direction against measured feedback and this file is then updated
+# per-joint from that evidence.  Do NOT change the canonical model
+# ordering to match the vendor API — conversions live here only.
+#
+# Canonical-domain mechanical limits come from sg100_joint_semantics.yaml
+# and are enforced on every outbound command in SG100HardwareMap.
+software_joint_order:
+  - thumb_j1
+  - thumb_j2
+  - thumb_j3
+  - index_j1
+  - index_j2
+  - index_j3
+  - middle_j1
+  - middle_j2
+  - little_j1
+  - little_j2
+  - little_j3
+
+hardware_joint_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+gain:        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+offset_rad:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

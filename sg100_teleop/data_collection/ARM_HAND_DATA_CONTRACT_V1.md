@@ -23,7 +23,77 @@ specific to RM65 morphology.
 
 ## Transition semantics
 
+Two provenance modes share the same 17D layout and schema name.  The
+mode is recorded in the manifest (`hand_state_source` +
+`writer_version`); the layout never changes.
+
+### Measured mode (writer_version 2, SG100 hardware present)
+
 For one accepted command bundle:
+
+```text
+state_t = [measured_arm_q_before[6] |
+           measured_hand_q_before[11]]        # both strictly before action
+
+action_t = [actual_arm_qcmd_sent_after_limiter[6] |
+            hand_hardware_sent_qcmd[11]]      # final post-lock,
+                                               # post-filter, transport-accepted
+
+next_state_t = [measured_arm_q_after_action[6] |
+                first_measured_hand_q_after_action[11]]
+```
+
+Sources are fixed:
+
+- `arm_state_source = "rm65_measured_joint_feedback"`
+- `arm_action_source = "real_joint_command_sent"`
+- `hand_state_source = "sg100_measured_joint_feedback"`
+- `hand_initial_state_source = "first_measured_feedback_replay_seed"`
+- `hand_action_source = "final_hardware_sent_qcmd"`
+- `hand_hardware_present = true`
+- `hand_feedback_available = true`
+- `hand_feedback_valid = true`
+- `hand_feedback_semantics = "sg100_driver_reported_joint_feedback"`
+  (the SDK 0x05 response `Joint_Status_t.position` is the joint
+  board's accumulated position in rad — a measurement, not a command
+  echo)
+- `hand_feedback_timestamp_source = "host_monotonic_receive"` (the
+  vendor SDK provides no device timestamp; none is fabricated)
+- `hand_action_hardware_applied = false` — the SDK can only prove the
+  frame was queued (`hand_action_hardware_sent = true`); only
+  measured feedback proves execution
+
+Hand causal rules (mirroring the arm standard):
+
+- `state_hand` is the newest measured SG100 feedback strictly before
+  the action-effective time (max(arm_sent, hand_sent));
+- `next_state_hand` is the FIRST measured SG100 feedback strictly
+  after it;
+- if any other hand command was successfully sent between the action
+  and that post-action feedback, the bundle is hard-rejected as
+  `INTERVENING_HAND_COMMAND` — a two-command transition is never
+  relabelled as single-action;
+- the canonical hand action is the final post-retarget, post-pinch,
+  post-power-grasp-lock, post-clamp, post-filter qcmd that the
+  transport accepted.  The raw retarget value (pre-lock, e.g. thumb_j1
+  60 deg before the +40 deg lock bias) stays in the raw audit stream
+  only.
+
+Measured-mode hand rejections:
+
+- `NO_PRE_ACTION_HAND_FEEDBACK`, `NO_POST_ACTION_HAND_FEEDBACK`
+- `STALE_PRE_HAND_STATE`, `STALE_POST_HAND_STATE`
+- `HAND_FEEDBACK_INVALID` (NaN/non-finite/deduped-invalid)
+- `HAND_COMMAND_NOT_SENT`, `HAND_SENT_WITHOUT_DECISION`
+- `INTERVENING_HAND_COMMAND`
+
+The measured replay seed: the first valid measured sample is recorded
+as the `hand_measured_baseline` raw event for replay/audit.  It is
+NOT required to equal `state[0, 6:17]` (that V1 proxy equality was
+the frozen baseline-replay bug; measured state comes from feedback,
+not from a baseline).
+
+### Proxy mode (writer_version 1, legacy / no hand hardware)
 
 ```text
 state_t = [measured_arm_q_before[6] |
@@ -36,10 +106,6 @@ next_state_t = [measured_arm_q_after_action[6] |
                 latest_hand_qcmd_proxy_after_action[11]]
 ```
 
-Sources are fixed:
-
-- `arm_state_source = "rm65_measured_joint_feedback"`
-- `arm_action_source = "real_joint_command_sent"`
 - `hand_state_source = "previous_command_proxy"`
 - `hand_initial_state_source = "serialized_command_proxy_baseline"`
 - `hand_action_source = "final_teleop_qcmd"`
@@ -47,6 +113,10 @@ Sources are fixed:
 - `hand_action_hardware_applied = false`
 - `hand_feedback_available = false`
 - `hand_feedback_valid = false`
+
+Legacy episodes stay readable exactly as recorded; the inspector
+labels them `LEGACY HAND PROXY EPISODE` and never reinterprets the
+proxy values as measured feedback.
 
 An AVP target, TCP target, IK goal, producer target, or pre-limiter joint goal
 must never be stored as canonical arm state/action. They belong only to the
@@ -77,11 +147,11 @@ Every eligible control decision receives a monotonically increasing
 - `hand_command_applied_timestamp_ns`
 - `action_effective_timestamp_ns = max(arm sent, hand applied)`
 
-The current SG100 path has no physical hardware. The hand action is the final
-teleoperation software qcmd used as a command target; it is not a measured
-state or a hardware-confirmed execution. The existing timestamp field remains
-named `hand_command_applied_timestamp_ns` for V1 storage compatibility, but
-"applied" means applied to the software command proxy, not sent to SG100.
+Timestamp honesty: both backend SDK calls return at HOST send time; no
+field claims to be a device actuation timestamp.  In measured mode the
+stored `hand_command_applied_timestamp_ns` is the HAND HARDWARE SEND
+time (host send, field name kept for schema compatibility); in proxy
+mode it is the software-command time.
 
 Every canonical transition must satisfy:
 
@@ -103,13 +173,13 @@ including while real-arm streaming is disabled. A first actual command is
 accepted only if a valid pre-action feedback sample already exists. Otherwise
 the bundle is rejected as `NO_PRE_ACTION_FEEDBACK`.
 
-## Hand initial proxy baseline
+## Hand initial proxy baseline (proxy mode only)
 
-When the collector enters `RECORDER_ARMED`, it serializes the current valid
-final teleoperation hand qcmd as a standalone `hand_proxy_baseline` raw event.
-The event contains a sequence ID, monotonic timestamp, 11D qcmd, source, and
-explicit `measured=false`, `hardware_feedback=false`, and
-`hardware_applied=false` provenance.
+When the collector enters `RECORDER_ARMED` in PROXY mode, it serializes the
+current valid final teleoperation hand qcmd as a standalone
+`hand_proxy_baseline` raw event. The event contains a sequence ID, monotonic
+timestamp, 11D qcmd, source, and explicit `measured=false`,
+`hardware_feedback=false`, and `hardware_applied=false` provenance.
 
 The first hand state is defined as:
 
@@ -124,6 +194,12 @@ the collector waits: it never substitutes zeros or a nominal home pose, and it
 cannot build a full 17D transition until an explicit baseline is established.
 The inspector independently compares `state[0, 6:17]` with the serialized raw
 baseline using the same strict raw/canonical tolerance policy.
+
+In MEASURED mode the baseline role is replaced by the first measured
+feedback sample (`hand_measured_baseline` raw event, replay seed /
+audit only); canonical hand states come from measured feedback at the
+action boundaries, so the V1 requirement that the baseline equal
+`state[0, 6:17]` deliberately does not apply.
 
 ## Raw audit stream
 
@@ -144,6 +220,18 @@ baseline using the same strict raw/canonical tolerance policy.
 - tracking and safety status
 - hard rejection events
 - serialized initial hand command-proxy baseline
+
+Measured mode additionally retains the full hand provenance chain:
+
+- `hand_raw_retarget` / `hand_coordinated_command` /
+  `hand_final_command` — the three retargeter stages (base mapping,
+  post-pinch, post-power-grasp-lock)
+- `hand_hardware_sent` — commands actually accepted by the SG100
+  transport (host send timestamp, `transmission_confirmed` =
+  successfully_transmitted)
+- `hand_feedback` — every new measured SG100 sample (measured=true,
+  host receive timestamp)
+- `hand_measured_baseline` — the first measured replay seed
 
 The current runner records `continuity_gate_status =
 "not_applied_in_current_runtime"` because the current production runner does
@@ -168,8 +256,9 @@ The NPZ contains physical `float64` arrays:
 - `next_state [N,17]`
 - command bundle IDs and all causal timestamps
 - `arm_state_measured [N] = true`
-- `hand_state_measured [N] = false`
+- `hand_state_measured [N] = false` (proxy mode) / `true` (measured mode)
 - `hand_action_hardware_applied [N] = false`
+- `hand_action_hardware_sent [N]` (measured mode: transport-accepted)
 
 The manifest records sources, units, rejection counts, camera presence,
 Markov diagnostic, quarantine status, and training-eligible indices.
@@ -200,6 +289,11 @@ Rejected bundles do not enter canonical training arrays. Supported reasons:
 - `INVALID_HAND_PROXY_BASELINE`
 - `HAND_BASELINE_AFTER_ACTION`
 - `HAND_BASELINE_STATE_MISMATCH`
+- measured mode only: `NO_PRE_ACTION_HAND_FEEDBACK`,
+  `NO_POST_ACTION_HAND_FEEDBACK`, `STALE_PRE_HAND_STATE`,
+  `STALE_POST_HAND_STATE`, `HAND_FEEDBACK_INVALID`,
+  `HAND_COMMAND_NOT_SENT`, `HAND_SENT_WITHOUT_DECISION`,
+  `INTERVENING_HAND_COMMAND`
 
 Default feedback freshness limits are 100 ms pre-action and 250 ms
 post-action and can be configured without changing the schema.

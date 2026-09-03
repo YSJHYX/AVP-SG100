@@ -17,6 +17,11 @@ from sg100_teleop.control.joint_command_filter import (
 from sg100_teleop.retargeting.sg100_retargeter import (
     SG100Retargeter,
 )
+from sg100_teleop.retargeting.thumb_debug import (
+    build_lock_disabled_retargeter,
+    format_thumb_retarget_debug,
+    hand_tip_geometry_mm,
+)
 from sg100_teleop.tracking.avp_adapter import (
     AVPHandAdapter,
 )
@@ -123,6 +128,16 @@ def main():
         action="store_true",
     )
 
+    parser.add_argument(
+        "--thumb-retarget-debug",
+        action="store_true",
+        help=(
+            "Print a low-rate (~5 Hz) thumb retargeting diagnostic: "
+            "grasp/lock weights, human thumb features, raw/bias/final "
+            "SG100 thumb q, and live thumb tip geometry."
+        ),
+    )
+
     args = parser.parse_args()
 
     model_path = Path(
@@ -211,6 +226,16 @@ def main():
     retargeter = (
         SG100Retargeter()
     )
+
+    # RAW (pre-lock) thumb commands for the debug overlay only; the
+    # production retarget path above is untouched.
+    retargeter_no_lock = (
+        build_lock_disabled_retargeter()
+        if args.thumb_retarget_debug
+        else None
+    )
+
+    last_thumb_debug = -float("inf")
 
     command_filter = (
         JointCommandFilter(
@@ -374,6 +399,45 @@ def main():
                                     canonical
                                 )
                             )
+
+                            if (
+                                args.thumb_retarget_debug
+                                and (
+                                    now
+                                    - last_thumb_debug
+                                    >= 0.2
+                                )
+                            ):
+                                last_thumb_debug = (
+                                    now
+                                )
+
+                                raw_q = (
+                                    retargeter_no_lock
+                                    .retarget(
+                                        canonical
+                                    )
+                                )
+
+                                info = (
+                                    retargeter
+                                    .thumb_lock_diagnostics(
+                                        raw_q,
+                                        canonical.as_dict(),
+                                    )
+                                )
+
+                                print()
+                                print(
+                                    format_thumb_retarget_debug(
+                                        info,
+                                        canonical.as_dict(),
+                                        hand_tip_geometry_mm(
+                                            model,
+                                            data,
+                                        ),
+                                    )
+                                )
 
                             last_valid_tracking = (
                                 now
