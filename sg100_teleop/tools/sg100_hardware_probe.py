@@ -48,6 +48,7 @@ from sg100_teleop.robot.sg100_sdk_driver import (
     SG100SDKDriver,
     _load_wrapper_library,
     quantize_gain,
+    sdk_shared_library,
 )
 from sg100_teleop.robot.sg100_driver import HAND_DOF
 
@@ -200,10 +201,7 @@ def run_traced_probe(args: argparse.Namespace) -> int:
 
         print()
         print("==== RUNTIME JOINT ANGLE MAP PROOF ====")
-        so_path = (
-            Path(args.sdk_dir).resolve()
-            / "lib" / "linux-x86_64" / "libsg100_sdk.so"
-        )
+        so_path = sdk_shared_library(Path(args.sdk_dir).resolve())
         print("NEW SDK library      :", so_path)
         if so_path.exists():
             print("  md5                :", md5_of(so_path))

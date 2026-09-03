@@ -16,9 +16,10 @@ description; this docstring summarizes the load-bearing facts):
   (MODE_JOINT_POSITION) position is the intended correct joint angle
   (historical vendor production logs strongly support it), but physical
   correctness on this unit remains pending hardware verification.
-- This module is the ONLY place where canonical software radians meet the
-  vendor user-degree domain, through ``SG100HardwareMap`` (canonical rad
-  <-> user rad) plus a single rad<->deg conversion.
+- Outbound canonical commands meet the vendor user-degree domain through
+  ``SG100HardwareMap`` (F_cmd) plus one rad<->deg conversion.  Callback
+  values remain explicitly in the SDK callback domain unless a separate,
+  fully validated ``SG100FeedbackMap`` (F_fb) is supplied and enabled.
 - Because the vendor send-side clamp is not round-trip safe (a target
   outside the json user range would be silently clamped, making the
   recorded action differ from the encoded one), targets outside the
@@ -38,6 +39,7 @@ import json
 import os
 import struct
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -48,10 +50,14 @@ import numpy as np
 from sg100_teleop.robot.sg100_driver import (
     FEEDBACK_DOMAIN_MODE7_CANDIDATE,
     FEEDBACK_DOMAIN_NON_CANONICAL_DIAGNOSTIC,
+    FEEDBACK_MAP_STATUS_NOT_PROVIDED,
+    FEEDBACK_MAP_STATUS_UNVALIDATED,
+    FEEDBACK_MAP_STATUS_VALIDATED,
     HAND_DOF,
     MODE_JOINT_POSITION,
     SG100CommandSent,
     SG100Driver,
+    SG100FeedbackMap,
     SG100HandFeedback,
     SG100HardwareMap,
     classify_feedback_domain,
@@ -60,11 +66,61 @@ from sg100_teleop.robot.sg100_driver import (
 
 ROOT = Path(__file__).resolve().parents[2]
 
-DEFAULT_SDK_DIR = Path.home() / "SG100_SDK_Publish"
+
+def _default_sdk_dir() -> Path:
+    """Locate the vendor SDK checkout on the current machine.
+
+    Resolution order:
+      1. ``$SG100_SDK_DIR`` environment variable (explicit override),
+      2. the checkout sitting next to this repository
+         (``<repo>/../SG100_SDK_Publish``, e.g.
+         C:\\Users\\khan\\Documents\\codes\\SG100_SDK_Publish),
+      3. the historical ``~/SG100_SDK_Publish`` location (old device).
+    """
+
+    env_override = os.environ.get("SG100_SDK_DIR")
+    if env_override:
+        return Path(env_override).expanduser()
+    sibling = ROOT.parent / "SG100_SDK_Publish"
+    if (sibling / "include" / "sg100_device.h").exists():
+        return sibling
+    return Path.home() / "SG100_SDK_Publish"
+
+
+DEFAULT_SDK_DIR = _default_sdk_dir()
 WRAPPER_SOURCE = Path(__file__).resolve().parent / "sg100_c_wrapper.cpp"
 WRAPPER_LIBRARY = (
-    Path(__file__).resolve().parent / "_sg100_c_wrapper.so"
+    Path(__file__).resolve().parent
+    / ("_sg100_c_wrapper.dll" if sys.platform == "win32"
+       else "_sg100_c_wrapper.so")
 )
+
+
+def _platform_lib_candidates() -> list[tuple[str, str]]:
+    """(lib/<subdir>, shared-lib file name) candidates, mirroring the
+    platform block of the vendor CMakeLists.txt (win-msvc > win-mingw32,
+    linux-x86_64 > linux-arm64, macos-arm64)."""
+
+    if sys.platform == "win32":
+        return [("win-msvc", "sg100_sdk.dll"),
+                ("win-mingw32", "libsg100_sdk.dll")]
+    if sys.platform == "darwin":
+        return [("macos-arm64", "libsg100_sdk.dylib"),
+                ("macos-x86_64", "libsg100_sdk.dylib")]
+    return [("linux-x86_64", "libsg100_sdk.so"),
+            ("linux-arm64", "libsg100_sdk.so")]
+
+
+def sdk_shared_library(sdk_dir: Path | str = DEFAULT_SDK_DIR) -> Path:
+    """Resolve the vendor prebuilt shared library for THIS platform."""
+
+    sdk_dir = Path(sdk_dir)
+    for subdir, name in _platform_lib_candidates():
+        lib = sdk_dir / "lib" / subdir / name
+        if lib.exists():
+            return lib
+    subdir, name = _platform_lib_candidates()[0]
+    return sdk_dir / "lib" / subdir / name
 
 DEFAULT_BAUDRATE = 1_000_000
 
@@ -164,22 +220,32 @@ def _load_wrapper_library(
     ):
         _build_wrapper(sdk_dir=sdk_dir, output_path=path)
 
-    sdk_lib_dir = str(Path(sdk_dir) / "lib" / "linux-x86_64")
-    if sdk_lib_dir not in (
-        os.environ.get("LD_LIBRARY_PATH", "").split(":")
-    ):
-        os.environ["LD_LIBRARY_PATH"] = (
-            f"{sdk_lib_dir}:{os.environ.get('LD_LIBRARY_PATH', '')}"
-        )
+    sdk_lib_path = sdk_shared_library(sdk_dir)
+    sdk_lib_dir = str(sdk_lib_path.parent)
+    if sys.platform == "win32":
+        # Windows resolves the SDK DLL next to the wrapper DLL (the
+        # wrapper depends on sg100_sdk.dll); register the directory so
+        # dependent DLL loads succeed without PATH tricks.
         try:
-            # Re-exec is unacceptable; preload by absolute path instead.
-            ctypes.CDLL(
-                str(Path(sdk_lib_dir) / "libsg100_sdk.so"),
-                mode=ctypes.RTLD_GLOBAL,
+            os.add_dll_directory(sdk_lib_dir)
+        except (OSError, AttributeError):
+            pass
+    else:
+        if sdk_lib_dir not in (
+            os.environ.get("LD_LIBRARY_PATH", "").split(":")
+        ):
+            os.environ["LD_LIBRARY_PATH"] = (
+                f"{sdk_lib_dir}:{os.environ.get('LD_LIBRARY_PATH', '')}"
             )
-        except OSError as exc:
-            raise SG100SDKDriverError(
-                f"cannot preload libsg100_sdk.so: {exc}"
+    try:
+        # Re-exec is unacceptable; preload by absolute path instead.
+        ctypes.CDLL(
+            str(sdk_lib_path),
+            mode=ctypes.RTLD_GLOBAL,
+        )
+    except OSError as exc:
+        raise SG100SDKDriverError(
+            f"cannot preload {sdk_lib_path.name}: {exc}"
             ) from exc
 
     lib = ctypes.CDLL(str(path))
@@ -276,36 +342,135 @@ def _load_wrapper_library(
     return lib
 
 
+# Every extern "C" symbol the wrapper exports (MSVC needs them listed
+# explicitly at link time; GCC/clang export them by default).
+_WRAPPER_EXPORTS = (
+    "sg100_connect",
+    "sg100_disconnect",
+    "sg100_is_connected",
+    "sg100_poll_status",
+    "sg100_request_hand_status",
+    "sg100_set_hand_control",
+    "sg100_switch_to_realtime_mode",
+    "sg100_get_work_mode",
+    "sg100_error_frames",
+    "sg100_hand_status_callbacks",
+    "sg100_hand_control_calls",
+    "sg100_switch_to_realtime_calls",
+    "sg100_read_runtime_status",
+    "sg100_get_cached_runtime_status",
+    "sg100_read_param_calib",
+    "sg100_get_cached_param_calib",
+    "sg100_status_recv_count",
+    "sg100_zero_status_queries",
+    "sg100_test_struct_sizes",
+    "sg100_test_serialize_hand_control",
+)
+
+
+def _find_vcvars64() -> Path | None:
+    """Locate vcvars64.bat (MSVC x64 environment) on this machine."""
+
+    candidates: list[Path] = []
+    env_override = os.environ.get("SG100_VCVARS64")
+    if env_override:
+        candidates.append(Path(env_override))
+    for program_files in (
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("LocalAppData"),
+    ):
+        if not program_files:
+            continue
+        vs_root = Path(program_files)
+        if not vs_root.exists():
+            continue
+        # <root>\<version>\<edition>\VC\Auxiliary\Build\vcvars64.bat
+        # (e.g. ...\Microsoft Visual Studio\18\BuildTools\VC\...).
+        for candidate in vs_root.glob(
+            "Microsoft Visual Studio/*/*/VC/Auxiliary/Build/vcvars64.bat"
+        ):
+            candidates.append(candidate)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _build_wrapper(
     sdk_dir: Path | str = DEFAULT_SDK_DIR,
     output_path: Path | str = WRAPPER_LIBRARY,
 ) -> Path:
     sdk_dir = Path(sdk_dir)
     output_path = Path(output_path)
+    if sys.platform == "win32" and " " in str(sdk_dir) or " " in str(output_path) or " " in str(WRAPPER_SOURCE):
+        raise SG100SDKDriverError(
+            "paths with spaces are unsupported for the MSVC wrapper "
+            "build; move the repo/SDK to a space-free path or build "
+            "the wrapper manually"
+        )
     if not (sdk_dir / "include" / "sg100_device.h").exists():
         raise SG100SDKDriverError(
             f"SG100 SDK not found at {sdk_dir} "
-            "(expected include/ + lib/linux-x86_64)"
+            f"(expected include/ + lib/ for {sys.platform})"
         )
-    cmd = [
-        "g++",
-        "-std=c++14",
-        "-O2",
-        "-shared",
-        "-fPIC",
-        f"-I{sdk_dir / 'include'}",
-        str(WRAPPER_SOURCE),
-        f"-L{sdk_dir / 'lib' / 'linux-x86_64'}",
-        "-lsg100_sdk",
-        "-o",
-        str(output_path),
-    ]
+    if sys.platform == "win32":
+        vcvars = _find_vcvars64()
+        if vcvars is None:
+            raise SG100SDKDriverError(
+                "MSVC (vcvars64.bat) not found — install Visual Studio "
+                "Build Tools C++ or set SG100_VCVARS64"
+            )
+        sdk_lib = sdk_shared_library(sdk_dir)
+        exports = " ".join(f"/EXPORT:{n}" for n in _WRAPPER_EXPORTS)
+        # /MD matches the CMake-built SDK DLL runtime; /LD builds a DLL.
+        # cmd's quote handling is incompatible with subprocess argument
+        # quoting, so run the build through a temporary batch file.
+        script_path = output_path.with_suffix(".build.bat")
+        script_path.write_text(
+            "@echo off\r\n"
+            f'call "{vcvars}" >nul\r\n'
+            "if errorlevel 1 exit /b 1\r\n"
+            # No path below contains a space (repo + SDK checkouts);
+            # unquoted arguments avoid cmd/cl quote-pairing pitfalls.
+            f"cl /nologo /std:c++14 /EHsc /O2 /MD /LD "
+            f"/I{sdk_dir / 'include'} {WRAPPER_SOURCE} "
+            f"/Fe{output_path} "
+            f"/link /LIBPATH:{sdk_lib.parent} {sdk_lib.stem}.lib "
+            f"{exports}\r\n",
+            encoding="ascii",
+        )
+        cmd = ["cmd", "/c", str(script_path)]
+    else:
+        cmd = [
+            "g++",
+            "-std=c++14",
+            "-O2",
+            "-shared",
+            "-fPIC",
+            f"-I{sdk_dir / 'include'}",
+            str(WRAPPER_SOURCE),
+            f"-L{sdk_shared_library(sdk_dir).parent}",
+            f"-l{sdk_shared_library(sdk_dir).stem.removeprefix('lib')}",
+            "-o",
+            str(output_path),
+        ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise SG100SDKDriverError(
             "failed to compile SG100 C wrapper:\n"
             f"{' '.join(cmd)}\n{result.stderr}"
         )
+    # cl drops .obj/.lib/.exp next to the output; they are build
+    # byproducts, keep only the DLL itself.
+    for suffix in (".obj", ".lib", ".exp"):
+        byproduct = output_path.with_suffix(suffix)
+        if byproduct.exists() and byproduct != output_path:
+            byproduct.unlink()
+    if sys.platform == "win32":
+        script_path = output_path.with_suffix(".build.bat")
+        if script_path.exists():
+            script_path.unlink()
     return output_path
 
 
@@ -329,6 +494,7 @@ class SG100SDKDriver(SG100Driver):
         kd: float = DEFAULT_KD,
         output_limit: float = DEFAULT_OUTPUT_LIMIT,
         mode7_hardware_validated: bool = False,
+        feedback_map: SG100FeedbackMap | None = None,
     ) -> None:
         self.port = str(port)
         self.baudrate = int(baudrate)
@@ -341,11 +507,15 @@ class SG100SDKDriver(SG100Driver):
             sdk_dir if sdk_dir is not None else DEFAULT_SDK_DIR
         )
         self.control_mode = int(control_mode)
-        # Historical name retained for API compatibility. This now means
-        # exact MODE7 feedback-to-canonical identity/sign/zero/range mapping
-        # has been hardware-validated, not merely that MODE7 is an angle-scale
-        # domain. While False, measured data stays quarantined.
+        # Historical name retained for API compatibility as an additional
+        # enable gate.  It can no longer claim or unlock canonical feedback
+        # by itself: a separately supplied, validated F_fb is also mandatory.
         self._mode7_hardware_validated = bool(mode7_hardware_validated)
+        if feedback_map is not None and not isinstance(
+            feedback_map, SG100FeedbackMap
+        ):
+            raise TypeError("feedback_map must be SG100FeedbackMap or None")
+        self.feedback_map = feedback_map
         self._pid_p = quantize_gain(kp)
         self._pid_i = quantize_gain(ki)
         self._pid_d = quantize_gain(kd)
@@ -484,6 +654,16 @@ class SG100SDKDriver(SG100Driver):
 
     # -- feedback -----------------------------------------------------------
 
+    @property
+    def feedback_mapping_status(self) -> str:
+        """Configuration status of the independent inbound map (F_fb)."""
+
+        if self.feedback_map is None:
+            return FEEDBACK_MAP_STATUS_NOT_PROVIDED
+        if not self.feedback_map.validated:
+            return FEEDBACK_MAP_STATUS_UNVALIDATED
+        return FEEDBACK_MAP_STATUS_VALIDATED
+
     def read_feedback(self) -> SG100HandFeedback | None:
         """Newest deduped callback with per-joint modes preserved.
 
@@ -492,14 +672,14 @@ class SG100SDKDriver(SG100Driver):
         on the RX side while TX stays mode 7, so this is not a command
         echo).  ``feedback_domain`` classifies the sample conservatively:
         all-7 -> MODE7_JOINT_POSITION_CANDIDATE, anything else ->
-        NON_CANONICAL_DIAGNOSTIC.  ``canonical_valid`` additionally
-        requires ``mode7_hardware_validated`` (historical name; default
-        False; flip only after exact F_fb canonical mapping validation).
+        NON_CANONICAL_DIAGNOSTIC.  ``canonical_valid`` requires all-7 status,
+        the historical ``mode7_hardware_validated`` enable gate, AND an
+        independently supplied ``SG100FeedbackMap(validated=True)``.
 
-        ``q_rad`` retains the existing hardware-map conversion for API
-        compatibility, but its numeric meaning is returned-mode-dependent
-        (MODE_NULL is raw/accumulated-like) and it is NOT validated
-        canonical q while ``canonical_valid`` is False.
+        With no enabled validated F_fb, ``q_rad`` and
+        ``sdk_callback_positions_rad`` both expose the callback degrees after
+        only a degree-to-radian unit conversion.  No outbound F_cmd inverse is
+        implied or applied.
         """
 
         if not self._connected:
@@ -520,28 +700,38 @@ class SG100SDKDriver(SG100Driver):
 
         joint_modes = tuple(int(m) for m in modes)
         feedback_domain = classify_feedback_domain(joint_modes)
-        # This numerically reverses the SDK's callback degree rendering only.
-        # MODE_NULL is raw/accumulated-like. MODE7 is hardware-supported as
-        # joint-angle-scale feedback, but its exact canonical identity/sign/
-        # zero/range map remains pending.
-        sdk_user_rad = np.deg2rad(positions_deg)
-        canonical = self.hardware_map.actual_to_canonical(sdk_user_rad)
+        # Exact SDK callback values after only the documented degree->radian
+        # unit conversion.  Never pass them through outbound F_cmd.
+        sdk_callback_rad = np.deg2rad(positions_deg)
+        callback_finite = bool(np.all(np.isfinite(sdk_callback_rad)))
+        mapping_applied = bool(
+            feedback_domain == FEEDBACK_DOMAIN_MODE7_CANDIDATE
+            and self._mode7_hardware_validated
+            and self.feedback_map is not None
+            and self.feedback_map.validated
+            and callback_finite
+        )
+        q_rad = (
+            self.feedback_map.callback_to_canonical(sdk_callback_rad)
+            if mapping_applied and self.feedback_map is not None
+            else sdk_callback_rad.copy()
+        )
+        sample_finite = bool(
+            np.all(np.isfinite(q_rad))
+            and callback_finite
+        )
         feedback = SG100HandFeedback(
-            q_rad=canonical,
+            q_rad=q_rad,
             received_monotonic_ns=int(recv_ns.value),
             sequence=sequence,
-            valid=bool(
-                np.all(np.isfinite(canonical))
-                and np.all(np.isfinite(positions_deg))
-            ),
-            raw_positions=sdk_user_rad.copy(),
+            valid=sample_finite,
+            raw_positions=sdk_callback_rad.copy(),
             currents=currents.copy(),
             joint_modes=joint_modes,
             feedback_domain=feedback_domain,
-            canonical_valid=bool(
-                feedback_domain == FEEDBACK_DOMAIN_MODE7_CANDIDATE
-                and self._mode7_hardware_validated
-            ),
+            canonical_valid=bool(mapping_applied and sample_finite),
+            feedback_mapping_status=self.feedback_mapping_status,
+            feedback_mapping_applied=mapping_applied,
         )
         self._last_sequence = sequence
         self._last_feedback = feedback

@@ -81,8 +81,19 @@ remains a real-hardware acceptance criterion.
 
 ## Current offline evidence
 
-- Test counts are refreshed at the end of the current review; no hardware is
-  part of those regressions.
+- Focused MODE7 suite: **66 passed**.
+- Full `test_sg100_*.py` collection under Windows/UTF-8 mode: **166 passed,
+  4 failed**. Two failures are Windows-only test assumptions (`grep` and a
+  POSIX path suffix); two are the existing N1 guard correctly detecting that
+  the uncommitted Windows SDK-directory selection exposes a different J2
+  command interval than the preserved hardware-run map. None changes the
+  MODE7 feedback-domain result.
+- Selected MODE7 + arm/hand data-safety suite: **85 passed, 2 failed**. The
+  remaining failures are a Windows temporary-NPZ file lock and an existing
+  causal-chain assertion, outside this correction.
+- `compileall`, passive mapping dry-run, feedback-probe explain mode, and
+  `git diff --check`: passed.
+- No hardware was executed.
 
 ## Gates
 

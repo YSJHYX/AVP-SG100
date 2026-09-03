@@ -684,7 +684,8 @@ def build_arg_parser():
     parser.add_argument(
         "--hand-sdk-dir",
         default=None,
-        help="SG100 SDK root (default: ~/SG100_SDK_Publish)",
+        help="SG100 SDK root (default: $SG100_SDK_DIR, else "
+        "<repo>/../SG100_SDK_Publish, else ~/SG100_SDK_Publish)",
     )
 
     parser.add_argument(

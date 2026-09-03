@@ -130,6 +130,7 @@ EXPECTED_HAND_CONTROL_SIZE = 176
 
 # Observation / classification thresholds.
 MULTI_TURN_ABS_DEG = 360.0       # any |position| > 360 deg => multi-turn
+MAX_STATIONARY_SPAN_DEG = 1.0    # per-joint span in the no-motion stable run
 STABILIZE_SKIP_FRAMES = 0        # input is already the final stable run
 # Diagnostic label only; it NEVER turns an out-of-range value into a pass.
 NEAR_BOUNDARY_OFFSET_CANDIDATE_DEG = 1.0
@@ -378,6 +379,8 @@ def classify_joint_angle_scale_domain(mode7_positions_by_joint) -> str:
         if len(values) < MIN_MODE7_FRAMES:
             return "REJECTED"
         if not np.all(np.isfinite(values)) or detect_multi_turn(values):
+            return "REJECTED"
+        if float(np.ptp(values)) > MAX_STATIONARY_SPAN_DEG:
             return "REJECTED"
     return "SUPPORTED"
 

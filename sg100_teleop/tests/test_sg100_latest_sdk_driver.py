@@ -42,6 +42,7 @@ from sg100_teleop.robot.sg100_sdk_driver import (
     _load_wrapper_library,
     load_vendor_user_ranges,
     quantize_gain,
+    sdk_shared_library,
 )
 
 
@@ -71,7 +72,7 @@ def test_a_sdk_library_and_wrapper_load(wrapper_lib) -> None:
 
 
 def test_a_vendor_sdk_shared_object_exists() -> None:
-    lib = Path(DEFAULT_SDK_DIR) / "lib" / "linux-x86_64" / "libsg100_sdk.so"
+    lib = sdk_shared_library(DEFAULT_SDK_DIR)
     assert lib.exists(), f"latest SDK library missing: {lib}"
 
 

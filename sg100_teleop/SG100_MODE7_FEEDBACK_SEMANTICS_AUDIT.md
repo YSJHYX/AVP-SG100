@@ -413,9 +413,12 @@ q_canonical   = F_fb(q_mode7_feedback)
 ```
 
 An outbound sign candidate therefore cannot be copied automatically into
-`F_fb`. The strict range review below uses the actual config limits, displayed
-rounded in degrees; `distance` is zero for an in-range value. No tolerance is
-used to turn a mismatch into a pass.
+`F_fb`. The strict range review below uses the SDK command limits captured in
+the preserved real artifact and the current canonical config limits, displayed
+rounded in degrees. This keeps the historical result reproducible if a later
+machine or checkout selects a different vendor `joint_angle_map.json`.
+`distance` is zero for an in-range value. No tolerance is used to turn a
+mismatch into a pass.
 
 | Joint | Canonical name | Real MODE7 baseline ° | SDK command range ° | Cmd compatible | Canonical range ° | Canonical compatible | Distance outside canonical ° | Interpretation |
 |---|---|---:|---:|:---:|---:|:---:|---:|---|
@@ -433,9 +436,11 @@ used to turn a mismatch into a pass.
 
 The zero-gain zero-target MODE7 frame is unchanged. Angle-domain acceptance
 uses returned MODE7 status, finite/stable/non-multiturn values, bounded angular
-magnitude, mode-dependent rebasing, fault 0, and no visible movement. SDK
-command ranges are diagnostic only. Canonical range checks are separate and
-strict: no tolerance converts an out-of-range baseline into a pass.
+magnitude, mode-dependent rebasing, fault 0, and no visible movement. The
+no-motion stable-run classifier permits at most 1 degree peak-to-peak per
+joint; this is a stability criterion, not a range tolerance. SDK command ranges
+are diagnostic only. Canonical range checks are separate and strict: no
+tolerance converts an out-of-range baseline into a pass.
 
 The next hardware stage is `tools/sg100_mode7_mapping_characterization.py`,
 prepared but not executed. It submits the proven zero-output MODE7 frame once,

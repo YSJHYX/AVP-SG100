@@ -49,6 +49,7 @@ from sg100_teleop.robot.sg100_sdk_driver import (
     MODE_NULL,
     SG100SDKDriver,
     quantize_gain,
+    sdk_shared_library,
 )
 
 
@@ -530,7 +531,7 @@ def _sdk_fingerprint(sdk_dir: Path) -> dict:
         ).stdout.strip()
     except OSError:
         commit = ""
-    lib = sdk_dir / "lib" / "linux-x86_64" / "libsg100_sdk.so"
+    lib = sdk_shared_library(sdk_dir)
     mapping = sdk_dir / "joint_angle_map.json"
     return {
         "sdk_dir": str(sdk_dir),

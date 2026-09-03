@@ -48,9 +48,13 @@ from sg100_teleop.robot.sg100_driver import (
     FEEDBACK_DOMAIN_MODE7_CANDIDATE,
     FEEDBACK_DOMAIN_NON_CANONICAL_DIAGNOSTIC,
     FEEDBACK_DOMAIN_UNCLASSIFIED,
+    FEEDBACK_MAP_STATUS_NOT_PROVIDED,
+    FEEDBACK_MAP_STATUS_UNVALIDATED,
+    FEEDBACK_MAP_STATUS_VALIDATED,
     HAND_DOF,
     MODE_JOINT_POSITION,
     MODE_NULL,
+    SG100FeedbackMap,
     SG100HandFeedback,
     SG100HardwareMap,
     classify_feedback_domain,
@@ -68,6 +72,9 @@ from sg100_teleop.tools import sg100_mode7_mapping_characterization as mapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
+REAL_MODE7_ARTIFACT = (
+    ROOT / "recording" / "sg100_mode7_probe_20260903_163543"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +96,21 @@ class _FakeWrapper:
         return self._sequence
 
 
-def _driver_with_modes(modes, *, positions_deg=None,
-                       mode7_hardware_validated=False) -> SG100SDKDriver:
+def _driver_with_modes(
+    modes,
+    *,
+    positions_deg=None,
+    mode7_hardware_validated=False,
+    feedback_map=None,
+    hardware_map=None,
+) -> SG100SDKDriver:
     driver = SG100SDKDriver(
         "/dev/null",
-        hardware_map=SG100HardwareMap(),
+        hardware_map=(
+            hardware_map if hardware_map is not None else SG100HardwareMap()
+        ),
         mode7_hardware_validated=mode7_hardware_validated,
+        feedback_map=feedback_map,
     )
     if positions_deg is None:
         positions_deg = np.zeros(HAND_DOF)
@@ -243,7 +259,7 @@ def test_a_wrapper_preserves_mode_bytes():
     # The C wrapper snapshot path keeps Joint_Status.mode[11] verbatim.
     wrapper_src = (
         ROOT / "sg100_teleop" / "robot" / "sg100_c_wrapper.cpp"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "uint8_t mode[JOINT_COUNT]" in wrapper_src
     assert "g_latest.mode[id - 1] = status.joints[i].mode" in wrapper_src
     assert "std::memcpy(mode_out, g_latest.mode" in wrapper_src
@@ -274,14 +290,144 @@ def test_d_mode7_feedback_is_candidate_but_not_canonical():
     assert feedback.canonical_valid is False
 
 
-def test_d_mode7_canonical_requires_explicit_hardware_validation_flag():
+def test_d_legacy_hardware_flag_cannot_unlock_without_feedback_map():
     driver = _driver_with_modes(
         [MODE_JOINT_POSITION] * 11, mode7_hardware_validated=True
     )
     feedback = driver.read_feedback()
-    # The only unlock path is the explicit validated flag (default False,
-    # covered by test_d_mode7_feedback_is_candidate_but_not_canonical).
+    assert feedback.feedback_mapping_status == FEEDBACK_MAP_STATUS_NOT_PROVIDED
+    assert feedback.feedback_mapping_applied is False
+    assert feedback.canonical_valid is False
+
+
+def test_d_unvalidated_feedback_map_cannot_unlock_canonical_feedback():
+    feedback_map = SG100FeedbackMap(
+        sdk_callback_index_by_canonical=tuple(range(HAND_DOF)),
+        sign=(1,) * HAND_DOF,
+        zero_offset_rad=(0.0,) * HAND_DOF,
+        validated=False,
+    )
+    driver = _driver_with_modes(
+        [MODE_JOINT_POSITION] * HAND_DOF,
+        positions_deg=np.arange(1.0, HAND_DOF + 1.0),
+        mode7_hardware_validated=True,
+        feedback_map=feedback_map,
+    )
+    feedback = driver.read_feedback()
+    assert feedback.feedback_mapping_status == FEEDBACK_MAP_STATUS_UNVALIDATED
+    assert feedback.feedback_mapping_applied is False
+    assert feedback.canonical_valid is False
+    np.testing.assert_allclose(
+        feedback.q_rad, feedback.sdk_callback_positions_rad, atol=0.0
+    )
+    with pytest.raises(RuntimeError, match="unvalidated feedback map"):
+        feedback_map.callback_to_canonical(
+            np.deg2rad(np.arange(1.0, HAND_DOF + 1.0))
+        )
+
+
+def test_d_validated_feedback_map_still_requires_explicit_enable_gate():
+    feedback_map = SG100FeedbackMap(
+        sdk_callback_index_by_canonical=tuple(reversed(range(HAND_DOF))),
+        sign=(-1,) * HAND_DOF,
+        zero_offset_rad=(0.1,) * HAND_DOF,
+        validated=True,
+    )
+    callback_deg = np.arange(1.0, HAND_DOF + 1.0)
+    driver = _driver_with_modes(
+        [MODE_JOINT_POSITION] * HAND_DOF,
+        positions_deg=callback_deg,
+        feedback_map=feedback_map,
+    )
+
+    feedback = driver.read_feedback()
+    assert feedback.feedback_mapping_status == FEEDBACK_MAP_STATUS_VALIDATED
+    assert feedback.feedback_mapping_applied is False
+    assert feedback.canonical_valid is False
+    np.testing.assert_allclose(feedback.q_rad, np.deg2rad(callback_deg))
+
+
+def test_d_feedback_map_supports_permutation_sign_and_zero_independently():
+    callback_deg = np.arange(10.0, 120.0, 10.0)
+    callback_indices = (1, 0, *range(2, HAND_DOF))
+    signs = (-1, 1, -1, *([1] * (HAND_DOF - 3)))
+    zero_deg = np.array([2.0, 3.0, 4.0] + [0.0] * (HAND_DOF - 3))
+    feedback_map = SG100FeedbackMap(
+        sdk_callback_index_by_canonical=callback_indices,
+        sign=signs,
+        zero_offset_rad=tuple(np.deg2rad(zero_deg)),
+        validated=True,
+    )
+    driver = _driver_with_modes(
+        [MODE_JOINT_POSITION] * HAND_DOF,
+        positions_deg=callback_deg,
+        mode7_hardware_validated=True,
+        feedback_map=feedback_map,
+    )
+
+    feedback = driver.read_feedback()
+    expected_deg = np.asarray(signs) * (
+        callback_deg[np.asarray(callback_indices)] - zero_deg
+    )
+    np.testing.assert_allclose(
+        feedback.sdk_callback_positions_rad,
+        np.deg2rad(callback_deg),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(feedback.q_rad, np.deg2rad(expected_deg))
+    assert feedback.feedback_mapping_status == FEEDBACK_MAP_STATUS_VALIDATED
+    assert feedback.feedback_mapping_applied is True
     assert feedback.canonical_valid is True
+
+
+def test_d_outbound_map_is_never_implicitly_reused_for_feedback():
+    hardware_map = SG100HardwareMap()
+    hardware_map.gain[:] = -3.0
+    hardware_map.offset_rad[:] = 1.25
+    callback_deg = np.arange(1.0, HAND_DOF + 1.0)
+    driver = _driver_with_modes(
+        [MODE_JOINT_POSITION] * HAND_DOF,
+        positions_deg=callback_deg,
+        mode7_hardware_validated=True,
+        hardware_map=hardware_map,
+    )
+
+    feedback = driver.read_feedback()
+    expected_callback = np.deg2rad(callback_deg)
+    np.testing.assert_allclose(
+        feedback.sdk_callback_positions_rad, expected_callback
+    )
+    np.testing.assert_allclose(feedback.q_rad, expected_callback)
+    assert feedback.feedback_mapping_status == FEEDBACK_MAP_STATUS_NOT_PROVIDED
+    assert feedback.feedback_mapping_applied is False
+    assert feedback.canonical_valid is False
+    assert "actual_to_canonical" not in (
+        SG100SDKDriver.read_feedback.__code__.co_names
+    )
+
+
+def test_d_feedback_map_rejects_incomplete_or_ambiguous_structure():
+    valid_indices = tuple(range(HAND_DOF))
+    valid_signs = (1,) * HAND_DOF
+    valid_zeros = (0.0,) * HAND_DOF
+    with pytest.raises(ValueError, match="permutation"):
+        SG100FeedbackMap(valid_indices[:-1] + (9,), valid_signs, valid_zeros)
+    with pytest.raises(ValueError, match="permutation"):
+        SG100FeedbackMap(
+            (0.5,) + valid_indices[1:], valid_signs, valid_zeros
+        )
+    with pytest.raises(ValueError, match="sign"):
+        SG100FeedbackMap(valid_indices, (0,) + valid_signs[1:], valid_zeros)
+    with pytest.raises(ValueError, match="zero_offset_rad"):
+        SG100FeedbackMap(
+            valid_indices,
+            valid_signs,
+            (float("nan"),) + valid_zeros[1:],
+        )
+    with pytest.raises(ValueError, match="validated"):
+        SG100FeedbackMap(
+            valid_indices, valid_signs, valid_zeros, validated="false"
+        )
 
 
 def test_e_mixed_modes_are_non_canonical():
@@ -584,24 +730,19 @@ def test_angle_domain_does_not_depend_on_command_range_equality():
     shifted = [[10.0] * 20 for _ in range(11)]
     shifted[0] = [130.0] * 20
     assert probe.classify_joint_angle_scale_domain(shifted) == "SUPPORTED"
-    wide = [[10.0] * 20 for _ in range(11)]
-    wide[4] = [10.0] * 5 + [200.0] * 15
-    assert probe.classify_joint_angle_scale_domain(wide) == "SUPPORTED"
+    # Stability is an independent angle-domain requirement. This rejection
+    # is caused by the 190-degree stationary-window span, not by a range.
+    unstable = [[10.0] * 20 for _ in range(11)]
+    unstable[4] = [10.0] * 5 + [200.0] * 15
+    assert probe.classify_joint_angle_scale_domain(unstable) == "REJECTED"
 
 
 def test_real_mode7_baselines_report_command_and_canonical_ranges_separately():
+    artifact = json.loads(
+        (REAL_MODE7_ARTIFACT / "summary.json").read_text(encoding="utf-8")
+    )
     values = np.asarray([
-        10.2289457321167,
-        18.083322525024414,
-        7.229345321655273,
-        0.13200023770332336,
-        -0.4284714460372925,
-        -9.283442497253418,
-        -6.932403087615967,
-        -0.03279173746705055,
-        -0.31862491369247437,
-        -3.955403566360473,
-        -8.811077117919922,
+        joint["mode7_median_deg"] for joint in artifact["per_joint"]
     ])
     hardware_map_path = (
         ROOT / "sg100_teleop" / "config" / "sg100_hardware_map.yaml"
@@ -609,8 +750,13 @@ def test_real_mode7_baselines_report_command_and_canonical_ranges_separately():
     before = hardware_map_path.read_bytes()
     hardware_map = SG100HardwareMap()
     canonical_ranges = probe.canonical_ranges_deg(hardware_map)
-    command_ranges = load_vendor_user_ranges(Path(DEFAULT_SDK_DIR))
-    assert command_ranges is not None
+    # Use the command ranges captured by the real run. Loading a machine's
+    # current default SDK checkout would make this historical classification
+    # drift when a different joint_angle_map.json is selected later.
+    command_ranges = [
+        tuple(joint["configured_user_range_deg"])
+        for joint in artifact["per_joint"]
+    ]
 
     command_overall, command = probe.strict_range_compatibility(
         values, command_ranges
@@ -905,9 +1051,13 @@ def test_l_execute_path_uses_native_set_hand_control():
     assert audit["latest_cached_requested_joint_modes"] == [7] * 11
     assert audit["scheduler_alive"] is True
     # ...and the native chain exists in the real sources.
-    wrapper = (ROOT / "sg100_teleop" / "robot" / "sg100_c_wrapper.cpp").read_text()
+    wrapper = (ROOT / "sg100_teleop" / "robot" / "sg100_c_wrapper.cpp").read_text(
+        encoding="utf-8"
+    )
     assert "g_device->SetHandControl(control)" in wrapper
-    sdk_driver_src = (ROOT / "sg100_teleop" / "robot" / "sg100_sdk_driver.py").read_text()
+    sdk_driver_src = (
+        ROOT / "sg100_teleop" / "robot" / "sg100_sdk_driver.py"
+    ).read_text(encoding="utf-8")
     assert "sg100_set_hand_control" in sdk_driver_src
 
 
@@ -923,12 +1073,16 @@ def test_m_one_set_hand_control_call_scheduler_resends(monkeypatch):
         assert len(driver.sent_targets) == 1
     # Static: no custom re-send loop in the probe source (exactly one
     # actual invocation; docstring/path mentions do not count).
-    source = (ROOT / "sg100_teleop" / "tools" / "sg100_mode7_feedback_probe.py").read_text()
+    source = (
+        ROOT / "sg100_teleop" / "tools" / "sg100_mode7_feedback_probe.py"
+    ).read_text(encoding="utf-8")
     phase_c_body = source.split("def run_phase_c")[1].split("def _write_artifacts")[0]
     assert phase_c_body.count("driver.send_mode7_feedback_probe(") == 1
     assert "driver.send_positions_rad(" not in phase_c_body
     # Static: the wrapper documents the vendor cache/resend semantics.
-    wrapper = (ROOT / "sg100_teleop" / "robot" / "sg100_c_wrapper.cpp").read_text()
+    wrapper = (ROOT / "sg100_teleop" / "robot" / "sg100_c_wrapper.cpp").read_text(
+        encoding="utf-8"
+    )
     assert "cached_control_" in wrapper
 
 
@@ -981,7 +1135,10 @@ def _sources() -> dict[str, str]:
         ),
         "wrapper": ROOT / "sg100_teleop" / "robot" / "sg100_c_wrapper.cpp",
     }
-    return {name: path.read_text() for name, path in files.items()}
+    return {
+        name: path.read_text(encoding="utf-8")
+        for name, path in files.items()
+    }
 
 
 def test_j_no_set_joint_positions_usage():
@@ -1066,7 +1223,10 @@ def test_l_passive_mapping_analysis_keeps_f_cmd_and_canonical_valid_blocked():
             phase="test",
             sequence=sequence,
             received_monotonic_ns=sequence,
-            raw_mode7_positions_deg=tuple(float(value) for value in values),
+            returned_modes=(MODE_JOINT_POSITION,) * HAND_DOF,
+            sdk_callback_positions_deg=tuple(
+                float(value) for value in values
+            ),
         )
 
     baseline = [frame(index, baseline_values) for index in range(1, 6)]
@@ -1135,7 +1295,7 @@ def test_probe_driver_api_bypasses_canonical_map_and_sends_exact_native_fields()
 
     source = (
         ROOT / "sg100_teleop" / "robot" / "sg100_sdk_driver.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     body = source.split("def send_mode7_feedback_probe")[1].split(
         "def hold_passive"
     )[0]

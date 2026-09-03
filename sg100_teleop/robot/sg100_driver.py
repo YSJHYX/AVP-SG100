@@ -19,10 +19,10 @@ docs/Realtime_Performance_Analysis.md, include/sg100_types.h):
   identity/sign/zero/range mapping to canonical coordinates is pending. It
   is measured state, never a command echo.
 
-This module defines the ONLY place where software-canonical radians
-meet vendor-domain values.  Everything above this boundary works in
-canonical software joint order (sg100_joint_semantics.yaml
-``joint_order``) and radians.
+This module defines the ONLY place where software-canonical radians meet
+vendor-domain values.  Outbound commands use F_cmd.  Inbound callbacks use
+an independently validated F_fb; until it exists, callback values remain an
+explicit non-canonical diagnostic domain.
 """
 
 from __future__ import annotations
@@ -72,6 +72,13 @@ FEEDBACK_DOMAIN_MODE7_CANDIDATE = "MODE7_JOINT_POSITION_CANDIDATE"
 FEEDBACK_DOMAIN_NON_CANONICAL_DIAGNOSTIC = "NON_CANONICAL_DIAGNOSTIC"
 FEEDBACK_DOMAIN_UNCLASSIFIED = "UNCLASSIFIED_NO_MODE_INFORMATION"
 
+# Independent inbound feedback-map status.  F_fb is deliberately separate
+# from SG100HardwareMap (F_cmd); the absence of F_fb is not an identity-map
+# claim.
+FEEDBACK_MAP_STATUS_NOT_PROVIDED = "F_FB_NOT_PROVIDED"
+FEEDBACK_MAP_STATUS_UNVALIDATED = "F_FB_PROVIDED_NOT_VALIDATED"
+FEEDBACK_MAP_STATUS_VALIDATED = "F_FB_VALIDATED"
+
 # Feedback provenance labels (DATA CONTRACT metadata).
 FEEDBACK_SEMANTICS_MEASURED = "sg100_driver_reported_joint_feedback"
 FEEDBACK_EVIDENCE = (
@@ -105,8 +112,97 @@ def classify_feedback_domain(
 
 
 @dataclass(frozen=True)
+class SG100FeedbackMap:
+    """Independent MODE7 callback -> canonical mapping (``F_fb``).
+
+    ``sdk_callback_index_by_canonical[i]`` selects the SDK callback channel
+    for canonical joint ``i``.  The conversion is then::
+
+        canonical[i] = sign[i] * (
+            sdk_callback[selected_channel] - zero_offset_rad[i]
+        )
+
+    This represents identity/permutation, sign, and zero independently from
+    the outbound command map.  ``validated`` must mean that all 11 entries
+    were validated against physical joint identity, direction, and zero on
+    the actual unit; constructing this object alone makes no such claim.
+    """
+
+    sdk_callback_index_by_canonical: tuple[int, ...]
+    sign: tuple[int, ...]
+    zero_offset_rad: tuple[float, ...]
+    validated: bool = False
+
+    def __post_init__(self) -> None:
+        index_values = tuple(
+            float(v) for v in self.sdk_callback_index_by_canonical
+        )
+        sign_values = tuple(float(v) for v in self.sign)
+        zeros = tuple(float(v) for v in self.zero_offset_rad)
+        if (
+            len(index_values) != HAND_DOF
+            or not np.all(np.isfinite(index_values))
+            or any(not v.is_integer() for v in index_values)
+        ):
+            raise ValueError(
+                "sdk_callback_index_by_canonical must be a permutation "
+                "of 0..10"
+            )
+        indices = tuple(int(v) for v in index_values)
+        if sorted(indices) != list(range(HAND_DOF)):
+            raise ValueError(
+                "sdk_callback_index_by_canonical must be a permutation "
+                "of 0..10"
+            )
+        if (
+            len(sign_values) != HAND_DOF
+            or not np.all(np.isfinite(sign_values))
+            or any(v not in (-1.0, 1.0) for v in sign_values)
+        ):
+            raise ValueError(
+                "feedback-map sign must contain 11 values in {-1, +1}"
+            )
+        signs = tuple(int(v) for v in sign_values)
+        if len(zeros) != HAND_DOF or not np.all(np.isfinite(zeros)):
+            raise ValueError(
+                "feedback-map zero_offset_rad must be 11 finite values"
+            )
+        if not isinstance(self.validated, (bool, np.bool_)):
+            raise ValueError("feedback-map validated must be a boolean")
+        object.__setattr__(self, "sdk_callback_index_by_canonical", indices)
+        object.__setattr__(self, "sign", signs)
+        object.__setattr__(self, "zero_offset_rad", zeros)
+        object.__setattr__(self, "validated", bool(self.validated))
+
+    def callback_to_canonical(self, sdk_callback_rad: np.ndarray) -> np.ndarray:
+        """Apply a fully validated independent map to SDK callback values."""
+
+        if not self.validated:
+            raise RuntimeError(
+                "refusing to apply an unvalidated feedback map as canonical"
+            )
+        callback = np.asarray(sdk_callback_rad, dtype=np.float64)
+        if callback.shape != (HAND_DOF,):
+            raise ValueError(
+                f"expected shape (11,) SDK callback values, got {callback.shape}"
+            )
+        if not np.all(np.isfinite(callback)):
+            raise ValueError("non-finite SDK callback values")
+        ordered = callback[np.asarray(self.sdk_callback_index_by_canonical)]
+        return np.asarray(self.sign, dtype=np.float64) * (
+            ordered - np.asarray(self.zero_offset_rad, dtype=np.float64)
+        )
+
+
+@dataclass(frozen=True)
 class SG100HandFeedback:
-    """One measured SG100 callback sample in provisional mapped form."""
+    """One measured SG100 callback sample with explicit mapping state.
+
+    ``q_rad`` is canonical only when ``canonical_valid`` is true.  Otherwise
+    it remains the SDK callback value converted degree-for-degree to radians
+    for backwards-compatible diagnostics; use
+    :attr:`sdk_callback_positions_rad` when consuming that raw domain.
+    """
 
     q_rad: np.ndarray
     received_monotonic_ns: int
@@ -126,6 +222,18 @@ class SG100HandFeedback:
     # range map is validated on this unit. Angle-scale support alone is not
     # sufficient.
     canonical_valid: bool = False
+    # Status of the independently configured F_fb.  This does not describe
+    # (and must never be inferred from) the outbound command map.
+    feedback_mapping_status: str = FEEDBACK_MAP_STATUS_NOT_PROVIDED
+    # True only when a validated F_fb was actually applied to this MODE7
+    # sample and the legacy hardware-validation gate was also enabled.
+    feedback_mapping_applied: bool = False
+
+    @property
+    def sdk_callback_positions_rad(self) -> np.ndarray | None:
+        """Exact SDK callback values after only the degree->radian unit step."""
+
+        return self.raw_positions
 
     @property
     def feedback_semantics(self) -> str:
@@ -186,16 +294,17 @@ def assess_zero_pose(
 
 
 class SG100HardwareMap:
-    """Authoritative software <-> hardware joint mapping and limits.
+    """Authoritative outbound command mapping (``F_cmd``) and limits.
 
     conversion (send):     sdk_user = gain * canonical + offset
-    conversion (receive):  canonical = gain * (sdk_user - offset)
+    legacy inverse helper: canonical = gain * (sdk_user - offset)
 
     The result is the SDK API coordinate expressed in radians; the vendor
     then applies ``joint_angle_map.json`` on commands.  An identity map does
     NOT establish physical 1:1 scale. Real MODE7 entry established the
     joint-angle-scale domain but left the physical canonical mapping blocked;
-    this class must not be read as inbound mapping validation.
+    this class must not be read as, or automatically reused for, inbound
+    mapping validation.  Real SDK feedback uses :class:`SG100FeedbackMap`.
     """
 
     def __init__(
@@ -206,9 +315,11 @@ class SG100HardwareMap:
         map_path = Path(map_path)
         semantics_path = Path(semantics_path)
 
-        with map_path.open("r") as f:
+        # encoding="utf-8": the YAML files carry non-ASCII comments and
+        # Windows' locale default (e.g. GBK) cannot decode them.
+        with map_path.open("r", encoding="utf-8") as f:
             hardware = yaml.safe_load(f)
-        with semantics_path.open("r") as f:
+        with semantics_path.open("r", encoding="utf-8") as f:
             semantics = yaml.safe_load(f)
 
         self.software_joint_order = list(
@@ -283,6 +394,12 @@ class SG100HardwareMap:
         return self.gain * clipped + self.offset_rad
 
     def actual_to_canonical(self, actual: np.ndarray) -> np.ndarray:
+        """Legacy algebraic inverse of F_cmd; not a validated F_fb.
+
+        Retained for mock/round-trip compatibility.  Production SDK callback
+        handling must use an independent :class:`SG100FeedbackMap`.
+        """
+
         a = np.asarray(actual, dtype=np.float64)
         if a.shape != (HAND_DOF,):
             raise ValueError(
@@ -315,9 +432,10 @@ class SG100Driver:
 
     Contract:
     - ``connect/start/stop/disconnect`` lifecycle;
-    - ``read_feedback`` returns measured joint feedback (never a
-      command echo) in canonical software order, rad, with a host
-      monotonic RECEIVE timestamp taken immediately after the read;
+    - ``read_feedback`` returns measured joint feedback (never a command
+      echo), with a host monotonic RECEIVE timestamp taken immediately after
+      the read.  Its ``q_rad`` is canonical only when ``canonical_valid``;
+      otherwise the SDK callback domain is explicitly exposed for diagnosis;
     - ``send_positions_rad`` returns ``SG100CommandSent`` only when the
       transport accepted the frame; failures return ``None`` and are
       never canonicalized;
