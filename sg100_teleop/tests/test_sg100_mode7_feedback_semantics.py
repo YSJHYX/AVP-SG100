@@ -14,8 +14,8 @@ K. no Homing/SetJointZero
 L. no startup-feedback-as-zero logic
 
 Round 2 (full-hand mode7 feedback probe, vendor entry contract):
-- governing states split: ENTRY_CONTRACT_CONFIRMED=True vs
-  PHYSICAL_FEEDBACK_HARDWARE_VALIDATED=False
+- governing states split: entry/control PASS and joint-angle-scale domain
+  SUPPORTED vs exact canonical mapping still pending
 - MODE_NULL position NEVER becomes a mode7 target (always-raises helper)
 - deterministic zero-initialized 176-byte Hand_Control_t, ids 1..11 all
   mode 7, no uninitialized/raw bytes, preflight prints all 11 entries
@@ -61,8 +61,10 @@ from sg100_teleop.robot.sg100_sdk_driver import (
     SG100Mode7ProbeSubmission,
     SG100SDKDriver,
     _load_wrapper_library,
+    load_vendor_user_ranges,
 )
 from sg100_teleop.tools import sg100_mode7_feedback_probe as probe
+from sg100_teleop.tools import sg100_mode7_mapping_characterization as mapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -392,9 +394,13 @@ def test_g_collector_raw_event_records_modes_and_domain():
 def test_h_probe_governing_states_split_entry_from_validation():
     # Vendor contract confirmed => full-hand mode7 FEEDBACK probe allowed.
     assert probe.MODE7_ENTRY_CONTRACT_CONFIRMED is True
-    # Physical feedback NOT yet hardware-validated => canonical/dataset/
-    # AVP/H2 stay blocked; canonical_valid cannot become True.
-    assert probe.MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED is False
+    # Real hardware supports MODE7's angle-scale domain, but exact F_fb is
+    # still pending; canonical/dataset/AVP/H2 stay blocked.
+    assert probe.MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED is True
+    assert probe.MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED is False
+    assert probe.MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED == (
+        "PARTIAL_ANGLE_DOMAIN_SUPPORTED"
+    )
     assert probe.MODE_NULL_TARGET_REUSE == "FORBIDDEN"
 
 
@@ -427,6 +433,10 @@ def test_h_phase_c_enter_means_no_visible_motion_observed():
     )
     # Empty/"n" means no movement observed; "y" means movement and FAIL.
     assert result["MODE7_STATUS_MODE"] == "PASS"
+    assert result["MODE7_CONTROL_STATE"] == "PASS"
+    assert result["MODE7_JOINT_ANGLE_SCALE_DOMAIN"] == "SUPPORTED"
+    assert result["MODE7_CANONICAL_MAPPING"] == "PENDING"
+    assert result["canonical_valid"] is False
     assert result["NO_VISIBLE_ENTRY_MOTION"] == "PASS"
     moved_driver = _StubProbeDriver()
     result_moved = probe.run_phase_c(
@@ -434,7 +444,9 @@ def test_h_phase_c_enter_means_no_visible_motion_observed():
         confirm_fn=lambda prompt: "YES" if "SEND" in prompt else "y",
     )
     assert result_moved["NO_VISIBLE_ENTRY_MOTION"] == "FAIL"
-    assert result_moved["MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED"] is False
+    assert result_moved["MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED"] == (
+        "PARTIAL_ANGLE_DOMAIN_SUPPORTED"
+    )
     assert result_moved["canonical_valid_autoflip"] == "NOT_PERFORMED"
 
 
@@ -550,12 +562,12 @@ def test_multi_turn_mode7_feedback_fails():
     assert probe.detect_multi_turn([0.0, 1854.0])
     assert probe.detect_multi_turn([-42604.57])
     assert not probe.detect_multi_turn([0.0, 125.0, -60.0])
-    series = [[0.0] * 10 for _ in range(10)]
+    series = [[0.0] * 10 for _ in range(11)]
     series[4] = [0.0, 42604.57] + [0.0] * 8     # J5 goes multi-turn
-    assert probe.classify_position_domain(series, None) == "REJECTED"
-    series_nan = [[0.0] * 10 for _ in range(10)]
+    assert probe.classify_joint_angle_scale_domain(series) == "REJECTED"
+    series_nan = [[0.0] * 10 for _ in range(11)]
     series_nan[2] = [float("nan")] * 10
-    assert probe.classify_position_domain(series_nan, None) == "REJECTED"
+    assert probe.classify_joint_angle_scale_domain(series_nan) == "REJECTED"
 
 
 def test_mixed_returned_modes_fail():
@@ -564,27 +576,132 @@ def test_mixed_returned_modes_fail():
     assert ok is False and "J11=mode0" in detail
 
 
-def test_position_domain_classification_matrix():
-    ranges = [(0.0, 125.0)] * 11
-    # Plausible stationary joints -> SUPPORTED.
+def test_angle_domain_does_not_depend_on_command_range_equality():
+    # Bounded finite stable values are angle-scale SUPPORTED even when they
+    # do not match SDK command ranges. Range mapping is a separate verdict.
     good = [[10.0] * 20 for _ in range(11)]
-    assert probe.classify_position_domain(good, ranges) == (
-        "PHYSICAL_JOINT_ANGLE_SUPPORTED"
-    )
-    # Unknown configured ranges -> AMBIGUOUS (never auto-supported).
-    assert probe.classify_position_domain(good, None) == "AMBIGUOUS"
-    # Median outside configured range -> AMBIGUOUS.
+    assert probe.classify_joint_angle_scale_domain(good) == "SUPPORTED"
     shifted = [[10.0] * 20 for _ in range(11)]
     shifted[0] = [130.0] * 20
-    assert probe.classify_position_domain(shifted, ranges) == "AMBIGUOUS"
-    # Excursion far beyond the configured range -> AMBIGUOUS.
+    assert probe.classify_joint_angle_scale_domain(shifted) == "SUPPORTED"
     wide = [[10.0] * 20 for _ in range(11)]
     wide[4] = [10.0] * 5 + [200.0] * 15
-    assert probe.classify_position_domain(wide, ranges) == "AMBIGUOUS"
+    assert probe.classify_joint_angle_scale_domain(wide) == "SUPPORTED"
+
+
+def test_real_mode7_baselines_report_command_and_canonical_ranges_separately():
+    values = np.asarray([
+        10.2289457321167,
+        18.083322525024414,
+        7.229345321655273,
+        0.13200023770332336,
+        -0.4284714460372925,
+        -9.283442497253418,
+        -6.932403087615967,
+        -0.03279173746705055,
+        -0.31862491369247437,
+        -3.955403566360473,
+        -8.811077117919922,
+    ])
+    hardware_map_path = (
+        ROOT / "sg100_teleop" / "config" / "sg100_hardware_map.yaml"
+    )
+    before = hardware_map_path.read_bytes()
+    hardware_map = SG100HardwareMap()
+    canonical_ranges = probe.canonical_ranges_deg(hardware_map)
+    command_ranges = load_vendor_user_ranges(Path(DEFAULT_SDK_DIR))
+    assert command_ranges is not None
+
+    command_overall, command = probe.strict_range_compatibility(
+        values, command_ranges
+    )
+    canonical_overall, canonical = probe.strict_range_compatibility(
+        values, canonical_ranges
+    )
+    assert command_overall == "PARTIAL"
+    assert canonical_overall == "PARTIAL"
+    assert [item["compatible"] for item in command] == [
+        True, False, True, True, False, True,
+        False, True, True, False, True,
+    ]
+    assert [item["compatible"] for item in canonical] == [
+        True, False, True, True, False, True,
+        True, True, True, False, True,
+    ]
+    # J7: command mismatch is not a canonical-range or angle-domain failure.
+    assert command[6]["compatible"] is False
+    assert canonical[6] == {
+        "compatible": True,
+        "distance_outside_deg": 0.0,
+    }
+    assert canonical[1]["distance_outside_deg"] == pytest.approx(
+        18.083322525024414
+    )
+    assert canonical[4]["distance_outside_deg"] == pytest.approx(
+        0.4284714460372925
+    )
+    assert canonical[9]["distance_outside_deg"] == pytest.approx(
+        3.955403566360473
+    )
+    stable_series = [[float(value)] * 17 for value in values]
+    assert probe.classify_joint_angle_scale_domain(stable_series) == (
+        "SUPPORTED"
+    )
+    frames = [
+        (index, [MODE_JOINT_POSITION] * 11, values.tolist())
+        for index in range(17)
+    ]
+    per_joint = probe.summarize_joints(
+        [0.0] * 11,
+        frames,
+        command_ranges,
+        canonical_ranges,
+        joint_names=hardware_map.software_joint_order,
+    )
+    assert per_joint[6]["canonical_joint"] == "middle_j1"
+    assert per_joint[6]["sdk_command_range_compatible"] is False
+    assert per_joint[6]["strict_canonical_range_compatible"] is True
+    assert per_joint[6]["interpretation"] == (
+        "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    )
+    assert per_joint[4]["interpretation"] == (
+        "NEAR_BOUNDARY_OFFSET_CANDIDATE_MAPPING_PENDING"
+    )
+    assert per_joint[1]["interpretation"] == (
+        "ZERO_SIGN_OR_IDENTITY_MAPPING_PENDING"
+    )
+    assert per_joint[9]["interpretation"] == (
+        "ZERO_SIGN_OR_IDENTITY_MAPPING_PENDING"
+    )
+    assert hardware_map_path.read_bytes() == before
+
+
+def test_partial_ranges_leave_canonical_mapping_pending_without_domain_reject():
+    values = [
+        10.22895, 18.08332, 7.22935, 0.13200, -0.42847,
+        -9.28344, -6.93240, -0.03279, -0.31862, -3.95540, -8.81108,
+    ]
+    command_ranges = load_vendor_user_ranges(Path(DEFAULT_SDK_DIR))
+    canonical_ranges = probe.canonical_ranges_deg(SG100HardwareMap())
+    driver = _StubProbeDriver(positions_deg=values)
+    answers = iter(["YES", ""])
+    result = probe.run_phase_c(
+        driver,
+        command_ranges,
+        canonical_ranges,
+        confirm_fn=lambda prompt: next(answers),
+    )
+    assert result["status"] == "COMPLETED_PASS_ANGLE_DOMAIN_SUPPORTED"
+    assert result["MODE7_JOINT_ANGLE_SCALE_DOMAIN"] == "SUPPORTED"
+    assert result["MODE7_COMMAND_RANGE_COMPATIBILITY"] == "PARTIAL"
+    assert result["MODE7_CANONICAL_RANGE_COMPATIBILITY"] == "PARTIAL"
+    assert result["MODE7_CANONICAL_MAPPING"] == "PENDING"
+    assert result["canonical_valid"] is False
 
 
 def test_canonical_valid_stays_false_before_hardware_validation():
-    assert probe.MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED is False
+    assert probe.MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED is True
+    assert probe.MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED is False
     # Driver gate unchanged (task section 13): mode7 candidate still not
     # canonical until a separate later change after a PASSING probe.
     driver = _driver_with_modes([MODE_JOINT_POSITION] * 11)
@@ -858,6 +975,10 @@ def _sources() -> dict[str, str]:
         "sdk_driver": ROOT / "sg100_teleop" / "robot" / "sg100_sdk_driver.py",
         "driver": ROOT / "sg100_teleop" / "robot" / "sg100_driver.py",
         "probe": ROOT / "sg100_teleop" / "tools" / "sg100_mode7_feedback_probe.py",
+        "mapping": (
+            ROOT / "sg100_teleop" / "tools"
+            / "sg100_mode7_mapping_characterization.py"
+        ),
         "wrapper": ROOT / "sg100_teleop" / "robot" / "sg100_c_wrapper.cpp",
     }
     return {name: path.read_text() for name, path in files.items()}
@@ -890,6 +1011,82 @@ def test_l_no_startup_feedback_as_zero_logic():
     specs = probe.build_full_hand_mode7_control()
     assert all(spec.mode == MODE_JOINT_POSITION for spec in specs)
     assert all(spec.position_deg == 0.0 for spec in specs)
+
+
+def test_l_passive_mapping_uses_only_raw_mode7_feedback_and_no_target_path(
+    monkeypatch,
+):
+    calls = []
+
+    def _forbidden(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("prepared-only path must not construct a driver")
+
+    monkeypatch.setattr(mapping, "_probe_driver", _forbidden)
+    assert mapping.main(["--joint", "J7"]) == 0
+    assert calls == []
+
+    source = _sources()["mapping"]
+    run_body = source.split("def run_characterization")[1].split(
+        "def _joint_index"
+    )[0]
+    assert run_body.count("driver.send_mode7_feedback_probe(") == 1
+    assert "send_positions_rad(" not in source
+    assert "canonical_to_actual(" not in source
+    assert "actual_to_canonical(" not in source
+    assert "sg100_set_hand_control" not in source
+    for raw_transport_token in ("RS485Adapter", "SerialTask", "CRC32", "0x05"):
+        assert raw_transport_token not in source
+
+    mode7 = _feedback(
+        [MODE_JOINT_POSITION] * HAND_DOF,
+        [0.0] * HAND_DOF,
+        domain=FEEDBACK_DOMAIN_MODE7_CANDIDATE,
+    )
+    np.testing.assert_array_equal(
+        mapping.extract_mode7_raw_degrees(mode7),
+        np.zeros(HAND_DOF),
+    )
+    mode_loss = dataclasses.replace(
+        mode7,
+        joint_modes=(MODE_JOINT_POSITION,) * 10 + (MODE_NULL,),
+    )
+    with pytest.raises(probe.Mode7ProbeHardFail, match="MODE7 loss"):
+        mapping.extract_mode7_raw_degrees(mode_loss)
+
+
+def test_l_passive_mapping_analysis_keeps_f_cmd_and_canonical_valid_blocked():
+    baseline_values = np.asarray([
+        10.2, 18.1, 7.2, 0.1, -0.4, -9.3,
+        -6.9, -0.03, -0.3, -4.0, -8.8,
+    ])
+
+    def frame(sequence, values):
+        return mapping.MappingFrame(
+            phase="test",
+            sequence=sequence,
+            received_monotonic_ns=sequence,
+            raw_mode7_positions_deg=tuple(float(value) for value in values),
+        )
+
+    baseline = [frame(index, baseline_values) for index in range(1, 6)]
+    movement = []
+    for index in range(6, 16):
+        values = baseline_values.copy()
+        values[6] = -20.0 if index < 11 else baseline_values[6]
+        movement.append(frame(index, values))
+    result = mapping.analyze_manual_excursion(
+        baseline,
+        movement,
+        expected_joint_index=6,
+        canonical_delta_sign=-1,
+    )
+    assert result["observed_dominant_channel"] == 7
+    assert result["identity_candidate"] == "EXPECTED_CHANNEL_DOMINANT"
+    assert result["feedback_sign_gain_candidate"] == "+1"
+    assert result["F_fb_verdict"] == "PENDING_HUMAN_REVIEW"
+    assert result["F_cmd_changed_or_validated"] is False
+    assert result["canonical_valid"] is False
 
 
 # -- independent-review regressions: exact probe API / clocks / cleanup -----

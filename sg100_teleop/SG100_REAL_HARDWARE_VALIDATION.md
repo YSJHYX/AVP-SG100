@@ -4,11 +4,12 @@
 > tested only thumb_j1 with all joints commanded MODE_NULL and exposed that mode's
 > raw/accumulated scale mismatch (~15–30° physical motion -> +1854 callback
 > units). Vendor guidance says mode-7 feedback should instead be joint angle;
-> A later preserved v4 probe artifact reached stable all-11 mode7 with no
-> visible movement and fault 0, but returned signs disagreed with configured
-> ranges on J2/J5/J7/J10, so its physical position-domain result is AMBIGUOUS.
-> Canonical physical-angle semantics therefore remain unverified. H2 and all
-> later hardware stages are blocked. See
+> A later preserved v4 probe artifact reached stable all-11 MODE7 with no
+> visible movement and fault 0. This is a real-hardware PASS for safe MODE7
+> entry/all-11 status/no-motion entry and supports a bounded joint-angle-scale
+> feedback domain. The old AMBIGUOUS verdict incorrectly compared feedback to
+> SDK command ranges. Exact feedback-to-canonical identity/sign/zero/range
+> mapping is still pending, so H2 and all active later stages remain blocked. See
 > [SG100_LATEST_SDK_INTEGRATION.md](SG100_LATEST_SDK_INTEGRATION.md).
 
 > **HISTORICAL (2026-09-02, OLD SDK architecture).**  The H0–H5 flow and
@@ -47,12 +48,22 @@ READ-ONLY 或 DRY-RUN，真实运动必须显式 `--execute`。
 | H4 | SG100 feedback + DATA CONTRACT 采集验证 | 低 |
 | H5 | RM65 + SG100 combined（仅前面全 PASS 后） | 中 |
 
+## 当前下一阶段（仅设计，未执行）
+
+不要重复 MODE7 entry probe，也不要进入 H2 active target motion。下一项是
+`tools/sg100_mode7_mapping_characterization.py` 的被动 `F_fb` 映射采集：每次
+只选择一个物理 DOF，先且仅先发送一次已经过真机 no-motion 验证的全手
+MODE7/position=0/PID=0/output=0 配置，随后操作员手动移动该 DOF，软件只记录
+raw MODE7 feedback。任何 fault 或 mode loss 立即失败并恢复 MODE_NULL；不发送
+后续 target、不 homing/zeroing、不计算 startup offset、不修改 outbound map。
+本轮仅完成工具准备，**没有执行硬件**。
+
 ---
 
 ## 最终运行行为要求（H3 实现时必须满足）
 
 - **startup measured pose（当前未满足，BLOCKED）**：只有全部关节返回 mode 7
-  且 mode-7 物理角语义经真机验证后，MuJoCo 中的 SG100 才能显示真机
+  且 mode-7 到 canonical 的逐关节 identity/sign/zero/range 映射经真机验证后，MuJoCo 中的 SG100 才能显示真机
   当前 **measured** 姿态（`--hand-backend real` 时 hand qpos 来自
   `read_feedback()`）。真机在 0 位则显示 0 位；真机不在 0 位则必须显示
   实际非 0 姿态。**禁止 startup 自动拉回 0 / home。**

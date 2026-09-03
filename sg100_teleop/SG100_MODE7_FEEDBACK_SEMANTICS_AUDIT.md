@@ -1,12 +1,13 @@
 # SG100 Mode-7 Feedback Semantics Audit
 
-**Date:** 2026-09-03 (rev 4: independently reviewed transition milestone +
-post-stable observation window; physical-angle validation still pending)  
-**Method:** static SDK/protocol/binary audit plus offline parsing of existing
-vendor logs.  
-**Hardware execution:** none. No homing, zeroing, position command, or H2 work
-was performed.  
-**Decision:** **MODE-7 SEMANTICS PENDING hardware verification.**
+**Date:** 2026-09-03 (rev 5: command/feedback domains separated)  
+**Method:** static SDK/protocol/binary audit plus read-only review of the
+preserved real artifact `recording/sg100_mode7_probe_20260903_163543`.  
+**Hardware execution this review:** none. No homing, zeroing, active position
+command, or H2 work was performed.  
+**Decision:** MODE7 entry/control **PASS — REAL HARDWARE**; MODE7 bounded
+joint-angle-scale feedback **SUPPORTED — REAL HARDWARE**; exact MODE7
+feedback-to-canonical map `F_fb` **PENDING**.
 
 The vendor guidance for this audit is **CONFIRMED** (user-vendor
 communication, 2026-09-03):
@@ -17,11 +18,11 @@ communication, 2026-09-03):
 - the mode-7 entry contract is id+mode only: populate the 11 joint IDs and
   use mode 7 for every joint (rev 3).
 
-Static evidence strongly supports a mode-dependent change in the position
-reported by joint firmware. It does not prove that mode-7 values on this unit
-are metrologically correct physical output-joint angles, and the exact mode-7
-zero/transmission equation remains unpublished — both are exactly what the
-prepared full-hand feedback probe will test on hardware.
+The real artifact proves the mode-dependent change on this unit: MODE7 values
+are finite, stable, bounded joint-angle-scale values instead of the MODE_NULL
+multi-turn coordinate, and the transition produced no visible movement.
+That does not establish each channel's exact physical identity, sign, zero, or
+range convention. Those four properties are the separate pending `F_fb` map.
 
 ## PALM REALTIME VS JOINT MODE
 
@@ -220,9 +221,10 @@ are now preserved end to end, and the data path enforces the mode boundary:
 - `SG100SDKDriver.read_feedback()` classifies every sample:
   all-11 == mode 7 → `MODE7_JOINT_POSITION_CANDIDATE`; anything else with
   mode information → `NON_CANONICAL_DIAGNOSTIC`. `canonical_valid` is
-  additionally gated on the explicit `mode7_hardware_validated` flag, which
-  defaults to **False** and may only be flipped after the authorized
-  hardware validation passes.
+  additionally gated on the historical `mode7_hardware_validated` flag. The
+  flag now specifically means the exact inbound canonical map `F_fb` has
+  passed authorized hardware validation; it defaults to **False**. The real
+  angle-domain milestone alone does not flip it.
 - `ArmHandDataCollector.observe_hand_feedback()` rejects any sample that
   carries mode information but is not canonical-valid with
   `HAND_FEEDBACK_NON_CANONICAL_MODE` — a MODE_NULL accumulated value (e.g.
@@ -270,7 +272,7 @@ deriving a physical target from MODE_NULL feedback — that assumption is
 > `MODE_JOINT_POSITION = 7` for every joint; in mode 7 the returned
 > position is expected to be the correct joint angle.
 
-Two INDEPENDENT states now govern the stack
+Three INDEPENDENT states now govern the stack
 (`tools/sg100_mode7_feedback_probe.py`):
 
 - `MODE7_ENTRY_CONTRACT_CONFIRMED = True` — the id+mode contract above is
@@ -279,9 +281,13 @@ Two INDEPENDENT states now govern the stack
   fields: position=0.0, p=i=d=output_limit=0). This zero-output configuration
   is intended to produce no active drive; no-motion remains an explicit
   hardware acceptance result, not a software guarantee.
-- `MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED = False` — still BLOCKS active
-  movement, canonical measured state, dataset training, AVP, and H2 until
-  the real hardware probe passes.
+- `MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED = True` — supported by the
+  preserved real run: finite/non-multiturn, stable all-mode7 values, mode
+  rebasing, fault 0, and no visible entry movement.
+- `MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED = False` — exact inbound
+  identity/sign/zero/range mapping remains pending. Therefore canonical
+  measured state, dataset training, active movement, AVP, and H2 remain
+  blocked. `canonical_valid` remains false.
 
 Historical context (rev 2, retained as evidence, superseded as a blocker):
 the teaching example replays MODE_NULL callback values as mode-7 targets, and
@@ -365,7 +371,7 @@ Every exit after submission now attempts MODE_NULL restoration before the
 outer `stop()` and `disconnect()`, and artifacts survive timeout, semantic
 rejection, operator movement, EOF/interrupt, fault, and unexpected exception.
 
-### New externally produced v4 artifact (read-only review)
+### Preserved real v4 artifact (read-only review)
 
 During this software-review round, a new preserved working-tree artifact
 appeared at `recording/sg100_mode7_probe_20260903_163543/`. This reviewer did
@@ -380,23 +386,62 @@ not execute hardware. Read-only inspection shows:
 - Observation continued to 20 total fresh post-command frames (17 contiguous
   stable mode7 samples) through 199.638 ms, with no mode loss or multi-turn
   mode7 value. The operator result records no visible movement.
-- `MODE7_POSITION_DOMAIN` is **AMBIGUOUS**, not supported: J2 reported
-  +18.083° against configured `[-150, 0]`, while J5/J7/J10 were negative
-  against configured nonnegative ranges. Therefore this artifact confirms
-  mode7 entry/stability on the unit but does not validate the canonical
-  physical-angle/range mapping.
+- MODE7 control/status entry is **PASS** and the bounded joint-angle-scale
+  feedback domain is **SUPPORTED**. SDK command-range equality is not a
+  prerequisite for that verdict.
+- SDK command-range compatibility is **PARTIAL** (7/11). Canonical-range
+  compatibility is separately **PARTIAL** (8/11).
+- J7 `-6.9324°` is outside its SDK command interval `[0,125]` but strictly
+  inside canonical `middle_j1` `[-2.18,0] rad` (about `[-124.9,0]°`). The old
+  J7 range rejection compared different coordinate domains and was wrong.
+- J2 `+18.0833°`, J5 `-0.4285°`, and J10 `-3.9554°` remain strict canonical
+  range mismatches. J5 is a near-boundary offset candidate; J2 and J10 remain
+  explicit zero/sign/identity questions. None rejects the angle domain.
 
-No gate changes follow from this artifact: physical feedback validation stays
-false and the dataset remains quarantined.
+The output model is now independent: `MODE7_CONTROL_STATE=PASS`,
+`MODE7_ENTRY_NO_VISIBLE_MOTION=PASS`,
+`MODE7_JOINT_ANGLE_SCALE_DOMAIN=SUPPORTED`, command/canonical range
+compatibility `PARTIAL`, `MODE7_CANONICAL_MAPPING=PENDING`, and
+`MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED=PARTIAL_ANGLE_DOMAIN_SUPPORTED`.
+`canonical_valid` remains false and the dataset remains quarantined.
 
-The zero-gain zero-target mode7 frame is UNCHANGED (task ruling: frame-0
-mode0 is no evidence the frame was rejected).  Acceptance for the
-physical-angle question additionally requires per-joint comparison:
-MODE_NULL last position vs mode7 first/median/min/max vs the configured
-user range, with the explicit check that mode 7 eliminated the MODE_NULL
-multi-turn representation (1854 / 42604-like values must NOT appear in
-mode-7-frames).
+Command and feedback transforms are independent:
 
-After a PASSING probe only: a separate reviewed change may set
-`mode7_hardware_validated=True`; sign/range verification then happens in the
-MODE7 domain (MODE_NULL passive sign characterization stays retired).
+```text
+q_sdk_command = F_cmd(q_canonical)
+q_canonical   = F_fb(q_mode7_feedback)
+```
+
+An outbound sign candidate therefore cannot be copied automatically into
+`F_fb`. The strict range review below uses the actual config limits, displayed
+rounded in degrees; `distance` is zero for an in-range value. No tolerance is
+used to turn a mismatch into a pass.
+
+| Joint | Canonical name | Real MODE7 baseline ° | SDK command range ° | Cmd compatible | Canonical range ° | Canonical compatible | Distance outside canonical ° | Interpretation |
+|---|---|---:|---:|:---:|---:|:---:|---:|---|
+| J1 | thumb_j1 | +10.22895 | [0,125] | YES | [0,125] | YES | 0 | strict range-compatible; mapping pending |
+| J2 | thumb_j2 | +18.08332 | [-150,0] | NO | [-149.5,0] | NO | 18.08332 | sign/zero/identity unresolved |
+| J3 | thumb_j3 | +7.22935 | [-60,90] | YES | [-60,90] | YES | 0 | strict range-compatible; mapping pending |
+| J4 | index_j1 | +0.13200 | [0,90] | YES | [0,90] | YES | 0 | strict range-compatible; mapping pending |
+| J5 | index_j2 | -0.42847 | [0,125] | NO | [0,125] | NO | 0.42847 | near-boundary zero/calibration candidate |
+| J6 | index_j3 | -9.28344 | [-60,90] | YES | [-60,90] | YES | 0 | strict range-compatible; mapping pending |
+| J7 | middle_j1 | -6.93240 | [0,125] | NO | [-125,0] | YES | 0 | previous command-range rejection corrected |
+| J8 | middle_j2 | -0.03279 | [-60,90] | YES | [-60,90] | YES | 0 | strict range-compatible; mapping pending |
+| J9 | little_j1 | -0.31862 | [-180,0] | YES | [-180,0] | YES | 0 | strict range-compatible; mapping pending |
+| J10 | little_j2 | -3.95540 | [0,125] | NO | [0,125] | NO | 3.95540 | zero/sign/calibration unresolved |
+| J11 | little_j3 | -8.81108 | [-60,90] | YES | [-60,90] | YES | 0 | strict range-compatible; mapping pending |
+
+The zero-gain zero-target MODE7 frame is unchanged. Angle-domain acceptance
+uses returned MODE7 status, finite/stable/non-multiturn values, bounded angular
+magnitude, mode-dependent rebasing, fault 0, and no visible movement. SDK
+command ranges are diagnostic only. Canonical range checks are separate and
+strict: no tolerance converts an out-of-range baseline into a pass.
+
+The next hardware stage is `tools/sg100_mode7_mapping_characterization.py`,
+prepared but not executed. It submits the proven zero-output MODE7 frame once,
+then only observes raw MODE7 feedback while the operator manually moves one
+physical DOF in a stated canonical direction and returns it. It fails on fault
+or mode loss, restores MODE_NULL on every exit, and never sends a later target,
+homes/zeros, derives offsets, applies the outbound map, or modifies
+`sg100_hardware_map.yaml`. Only reviewed 11-joint identity/sign/zero/range
+evidence may eventually enable the historical `mode7_hardware_validated` gate.

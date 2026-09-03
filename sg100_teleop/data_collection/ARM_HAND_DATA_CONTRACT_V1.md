@@ -52,14 +52,15 @@ Sources are fixed:
 - `hand_action_source = "final_hardware_sent_qcmd"`
 - `hand_hardware_present = true`
 - `hand_feedback_available = true`
-- `hand_feedback_valid = true` (currently finite/transport-valid only; it does
-  not mean physical/canonical-valid until the future mode-7 gate exists)
+- `hand_feedback_valid = true` (finite/transport-valid only; it does not mean
+  canonical-valid—MODE7 angle-scale support and exact `F_fb` mapping are
+  separate)
 - `hand_feedback_semantics = "sg100_driver_reported_joint_feedback"`
   (the SDK 0x05 response is a measurement, not a command echo; position
   semantics depend on returned joint mode: MODE_NULL is proven
-  raw/accumulated-like, while mode 7 is vendor-confirmed intended joint
-  angle and pending physical verification on this unit)
-- `hand_feedback_physical_scale = "UNCHARACTERIZED"`
+  raw/accumulated-like, while mode 7 is real-hardware-supported as bounded
+  joint-angle-scale feedback but not yet mapped exactly to canonical state)
+- `hand_feedback_physical_scale = "ANGLE_SCALE_SUPPORTED_MAPPING_PENDING"`
 - `hand_canonical_mapping_verdict = "BLOCKED"`
 - `hand_feedback_timestamp_source = "host_monotonic_receive"` (the
   vendor SDK provides no device timestamp; none is fabricated)
@@ -203,15 +204,16 @@ In MEASURED mode the baseline role is replaced by the first measured feedback
 sample (`hand_measured_baseline` raw event, replay seed / audit only). MODE_NULL
 samples are raw/accumulated-like SDK callback coordinates and must never be
 silently interpreted as physical/canonical hand state. Canonical eligibility
-requires all expected joints to return mode 7 **and** hardware verification of
-mode-7 physical-angle semantics (vendor confirmed mode 7 is the intended
-correct-joint-angle mode on 2026-09-03; this unit's verification is pending).
+requires all expected joints to return mode 7 **and** hardware validation of
+the exact feedback-to-canonical identity/sign/zero/range map. The preserved
+2026-09-03 real run supports MODE7 as a bounded, stable joint-angle-scale
+domain, but that evidence alone does not establish the canonical map.
 **The mode gate is now implemented** (2026-09-03): the driver preserves
 `joint_modes`/`feedback_domain`/`canonical_valid` per sample, and the
 collector rejects any sample that carries mode information but is not
 canonical-valid with `HAND_FEEDBACK_NON_CANONICAL_MODE` — a MODE_NULL
 accumulated value (e.g. the N1 ~1854-deg trace) can no longer enter
-`measured_hand_q`. Until mode-7 hardware validation passes
+`measured_hand_q`. Until exact `F_fb` mapping validation passes
 (`canonical_valid` becomes attainable), every measured SG100 episode remains
 quarantined and non-training-eligible.
 

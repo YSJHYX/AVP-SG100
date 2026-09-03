@@ -1,4 +1,4 @@
-# AGENT HANDOFF — INDEPENDENT MODE7 PROBE REVIEW (2026-09-03, round 5)
+# AGENT HANDOFF — MODE7 DOMAIN SEPARATION (2026-09-03, round 6)
 
 **Session result:** second-reviewer software audit and repair only. No hardware
 execution, no commit, and no push.
@@ -20,13 +20,18 @@ execution, no commit, and no push.
   consecutive all7 frame at 79.401 ms; 20 total frames/17 stable mode7 samples;
   fault 0; no visible movement; one application mode7 update; successful
   MODE_NULL restoration and disconnect.
-- That artifact is **not a physical-domain PASS**. It reports
-  `MODE7_POSITION_DOMAIN=AMBIGUOUS`: J2 is +18.083° against configured
-  `[-150,0]`, and J5/J7/J10 are negative against nonnegative configured
-  ranges. MODE7 entry/stability is now observed, but canonical physical
-  angle/range semantics remain unvalidated.
+- The artifact is a **real-hardware PASS** for MODE7 entry/control, all-11
+  MODE7 status, and no-visible-motion entry. It also **SUPPORTS** a finite,
+  stable, non-multiturn joint-angle-scale feedback domain. The artifact's old
+  `MODE7_POSITION_DOMAIN=AMBIGUOUS` conclusion conflated SDK command ranges
+  with feedback coordinates and is retired.
+- Range diagnostics are now separate: SDK command compatibility is PARTIAL
+  (7/11); canonical range compatibility is PARTIAL (8/11). J7 `-6.9324°` is
+  outside SDK `[0,125]` but inside canonical `middle_j1` about `[-124.9,0]`.
+  J2 `+18.0833°`, J5 `-0.4285°`, and J10 `-3.9554°` remain exact canonical
+  mapping questions. `F_fb` identity/sign/zero/range is not yet validated.
 
-## Independent-review findings and fixes (probe v4)
+## Independent-review findings and fixes (probe v5)
 
 The previous implementation was accepted only in part. Its core transition
 idea was sound, but the review found material defects:
@@ -50,6 +55,11 @@ idea was sound, but the review found material defects:
 - Position classification uses the full contiguous all-mode7 sample window
   from the run that established stability through observation completion;
   earlier isolated mode7 and transitional mode0 samples remain excluded.
+- The angle-scale verdict no longer accepts/rejects by SDK command range.
+  `MODE7_JOINT_ANGLE_SCALE_DOMAIN`, SDK command compatibility, canonical
+  range compatibility, and exact canonical mapping are independent fields.
+  Strict range checks have no pass-forcing tolerance; a sub-degree diagnostic
+  label may identify a near-boundary offset candidate without changing FAIL.
 - Loss of all-mode7, fault, multi-turn mode7 data, non-finite data, or a fresh
   RX stall during the post-stable tail still fails the probe.
 - A mode7 value beyond ±360 degrees is a preserved semantic rejection, not a
@@ -71,20 +81,25 @@ remains a real-hardware acceptance criterion.
 
 ## Current offline evidence
 
-- Focused mode7 suite: 62 passed.
-- Full `test_sg100_*.py` suite: 166 passed.
-- Selected SG100 driver + arm/hand data-safety suite: 107 passed.
-- `compileall`, dry-run/explain, and `git diff --check`: passed.
+- Test counts are refreshed at the end of the current review; no hardware is
+  part of those regressions.
 
 ## Gates
 
-- `MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED = False`.
+- `MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED = True`.
+- `MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED = False` and the composite
+  verdict is `PARTIAL_ANGLE_DOMAIN_SUPPORTED`.
 - Driver `canonical_valid` remains false by default.
 - Dataset remains quarantined and not training ready; 17D schema unchanged.
 - Active motion, homing, AVP/H2, and dataset training remain blocked.
 
 ## Next step
 
-Do not run more hardware from this handoff. First resolve the mode7 callback
-sign/range disagreement using the preserved v4 artifact and vendor semantics.
-No gate change, active motion, homing, AVP/H2, or dataset training is allowed.
+Do not run more hardware from this handoff. The prepared next stage is
+`tools/sg100_mode7_mapping_characterization.py`, one physical DOF per run. It
+submits the proven zero-output MODE7 configuration once, then observes only
+raw MODE7 feedback while the operator moves the joint in a canonical
+direction and returns it. It sends no later target, performs no homing/zeroing
+or startup-offset derivation, changes no production map, fails on fault/mode
+loss, and restores MODE_NULL. It was not executed this round. No gate change,
+active motion, AVP/H2, or dataset training is allowed.

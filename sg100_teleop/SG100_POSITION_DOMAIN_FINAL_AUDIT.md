@@ -2,7 +2,8 @@
 
 **Date:** 2026-09-03  
 **Safety status:** Static/offline audit only. No hardware command or additional sign characterization was run.  
-**Final decision (revised 2026-09-03):** **MODE-7 SEMANTICS PENDING.**  
+**Final decision (revised 2026-09-03):** MODE7 bounded joint-angle-scale
+feedback **SUPPORTED — REAL HARDWARE**; exact canonical map **PENDING.**  
 **Canonical mapping:** **BLOCKED.**  
 **H2:** **BLOCKED.**
 
@@ -10,8 +11,9 @@ This report is superseded on mode-dependent feedback by
 [SG100_MODE7_FEEDBACK_SEMANTICS_AUDIT.md](SG100_MODE7_FEEDBACK_SEMANTICS_AUDIT.md).
 The vendor has **CONFIRMED** (user-vendor communication, 2026-09-03) that
 mode-7 feedback should be the correct joint angle, while other modes may
-expose raw/accumulated data. That statement is strongly supported by the
-historical log transitions but remains hardware-unverified on this unit.
+expose raw/accumulated data. The preserved real MODE7 artifact now verifies a
+finite, stable, rebased joint-angle-scale domain on this unit. It does not yet
+verify per-joint physical identity, sign, zero, or canonical range.
 
 The original audit covered the checked-out vendor release repository
 `/home/heymandex2025/SG100_SDK_Publish` at commit
@@ -39,19 +41,19 @@ Evidence labels used below:
 **FEEDBACK DOMAIN:** **mode-dependent at the firmware boundary.** Its wire unit
 is radians and the host SDK always presents it as degrees after only an affine
 angle-map inversion. MODE_NULL is proven raw/accumulated-like. MODE_POSITION is
-not validated as physical. MODE_JOINT_POSITION feedback is strongly supported
-as a reduced/zero-referenced joint coordinate, but is pending direct hardware
-verification as physical output-joint angle.
+not validated as physical. MODE_JOINT_POSITION feedback is
+real-hardware-supported as a reduced, zero-referenced joint-angle-scale
+coordinate. Exact physical/canonical mapping remains pending.
 
 | Item | Audit result |
 |---|---|
 | `MotorUp_t.position` | Vendor header: “current accumulated position,” raw `float`, rad. It is the joint-board status field returned by `CMD_GET_STATUS` (`0x02`), but logs show its numeric semantics change with returned joint mode. |
 | `Joint_Status_t.position` | Same 12-byte palm-protocol status layout as `MotorUp_t.position`. The host preserves `mode` and decodes position without consulting it; mode-dependent semantics must therefore originate in firmware. |
 | SDK callback value | `user_deg = (wire_rad * 180/pi - b_i) / a_i`. This is **PROVEN** in the current binary and V3.1 binary. |
-| Physical quantity | MODE_NULL source: **UNKNOWN raw/accumulated-like**. MODE7 source: **UNKNOWN**, but vendor guidance says correct joint angle and logs strongly support a distinct reduced/rebased coordinate. |
+| Physical quantity | MODE_NULL source: **UNKNOWN raw/accumulated-like**. MODE7: **SUPPORTED bounded joint-angle-scale domain on real hardware**; exact output-joint identity/sign/zero/scale mapping remains pending. |
 | Reference frame | MODE_NULL origin: **UNKNOWN**. MODE7 is documented as based on `joint_zero_rad`, but the exact zero equation is **UNKNOWN**. |
 | Multi-turn behavior | **YES, PROVEN only for the observed MODE_NULL J1 trace.** The trace reached 32.360978 wire rad (5.150410 rotations) continuously, without wrap or discontinuity. Audited mode-7 logs contain no value beyond 360 callback degrees. |
-| Motor-side vs joint-side | MODE_NULL is empirically motor/actuator-side-like. MODE7 is strongly supported as joint-side-like but remains hardware-unverified as physical output angle. |
+| Motor-side vs joint-side | MODE_NULL is empirically motor/actuator-side-like. MODE7 is real-hardware-supported as joint-angle-scale; the exact joint-side canonical map is not yet verified. |
 | Transmission already applied | **NO at the host layer.** Some firmware-side scale/rebase in mode 7 is strongly supported; whether it is a ratio calculation or alternate sensor selection is **UNKNOWN**. |
 
 The header exposes separate `motor_raw_count`, `joint_raw_count`,

@@ -1,6 +1,7 @@
 # SG100 Latest SDK Integration (V1.5_NO_TACTILE)
 
-Status: **MODE-7 SEMANTICS PENDING (feedback probe unblocked for hardware).**
+Status: **MODE7 ENTRY PASS / ANGLE-SCALE DOMAIN SUPPORTED ON REAL HARDWARE;
+EXACT CANONICAL MAPPING PENDING.**
 N0 established the link and feedback cadence.  Real N1 artifact
 `sg100_n1_sign_20260903_135111` tested only thumb_j1 while all joints were
 commanded MODE_NULL and exposed that mode's uncharacterized
@@ -78,16 +79,16 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
   and aliases `MotorUp_t`, but its returned numeric semantics are
   mode-dependent. MODE_NULL raw/accumulated-like behavior is real-hardware
   proven; the vendor CONFIRMED mode-7 (`MODE_JOINT_POSITION`) position is the
-  intended correct joint angle and historical logs strongly support a
-  reduced/rebased mode-7 domain (2.3 M mode-7 samples, none beyond ±360 deg);
-  mode-7 physical correctness on this unit is not yet hardware-proven. The
+  intended correct joint angle. The preserved 2026-09-03 real run now supports
+  a finite, stable, reduced/rebased joint-angle-scale MODE7 domain on this
+  unit; exact channel identity/sign/zero/range mapping remains unproven. The
   exact firmware zero/scale equation is absent. **The Python driver now
   preserves the returned mode bytes**: `SG100HandFeedback.joint_modes` (11
   hardware `Joint_Status.mode` bytes — real joint-board state, not a command
   echo), `feedback_domain` (`MODE7_JOINT_POSITION_CANDIDATE` when all 11
   report mode 7, else `NON_CANONICAL_DIAGNOSTIC`), and `canonical_valid`
-  (False until the `mode7_hardware_validated` flag is explicitly flipped
-  after the authorized hardware validation). `q_rad` remains provisional:
+  (False until the historical `mode7_hardware_validated` flag is explicitly
+  flipped after exact `F_fb` canonical mapping validation). `q_rad` remains provisional:
   its numeric meaning is returned-mode-dependent, so consumers must check
   `canonical_valid` before treating it as physical state (the measured
   collector rejects non-canonical samples with
@@ -166,36 +167,39 @@ coordinates rather than validated canonical physical radians.
 
 ## Known open blockers
 
-1. **Mode-7 physical feedback validation** — vendor CONFIRMED (2026-09-03)
-   the full-hand entry contract (populate ids 1..11, mode=7 for every joint;
-   mode-7 returned position expected to be the correct joint angle), so the
-   **full-hand mode7 FEEDBACK probe is unblocked for hardware**
-   (`tools/sg100_mode7_feedback_probe.py --port … --execute
-   --enter-mode7`: one exact SDK-domain native update with position/gains/
-   output-limit zero and all modes 7, RX-mode-decided PASS/FAIL, operator
-   no-movement confirmation). The zero-output configuration is intended to
-   produce no active drive; no-motion is still a hardware acceptance result.
+1. **Exact MODE7 feedback-to-canonical mapping (`F_fb`)** — the full-hand
+   entry probe is complete, not the next experiment. Its zero-output frame
+   and RX state machine remain the regression reference.
    Five consecutive fresh all-11-mode7 callbacks timestamp `MODE7_STABLE`;
    feedback-only observation then continues, without another send or target
    change, until at least 20 total fresh post-command frames are captured.
-   A later preserved v4 artifact (`recording/sg100_mode7_probe_20260903_163543`;
+   The preserved v4 artifact (`recording/sg100_mode7_probe_20260903_163543`;
    externally produced, read-only reviewed here) reached all-11 mode7: first
    all7 at 39.396 ms, stable milestone at 79.401 ms, then 20 total fresh
    frames/17 stable-mode7 samples, fault 0, no visible movement, and successful
-   passive cleanup. It still did **not** pass the physical-domain gate:
-   callback signs disagreed with configured ranges on J2/J5/J7/J10, so
-   `MODE7_POSITION_DOMAIN=AMBIGUOUS`.
-   `MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED`
-   therefore stays False, canonical_valid stays False, and active movement /
-   AVP / H2 remain BLOCKED. MODE_NULL status.position is FORBIDDEN as
+   passive cleanup. These facts are **PASS — REAL HARDWARE** for MODE7 entry,
+   all-11 status, and no-motion entry, and **SUPPORTED — REAL HARDWARE** for
+   the bounded joint-angle-scale feedback domain.
+   SDK command-range compatibility is only diagnostic and is PARTIAL (7/11).
+   Strict canonical-range compatibility is independently PARTIAL (8/11): J7
+   `-6.9324°` is canonical-compatible despite being SDK-command-incompatible;
+   J2 `+18.0833°`, J5 `-0.4285°`, and J10 `-3.9554°` remain unresolved.
+   Exact identity/sign/zero/range mapping is PENDING, so canonical_valid stays
+   False and active movement / AVP / H2 remain BLOCKED. MODE_NULL status.position is FORBIDDEN as
    a mode-7 target (accumulated: ~1854/42604 deg observed).
    History: the joint_angle_map.json divergence itself is closed — the
    The N0 probe proved the runtime file is the on-disk 11-entry map
    (md5 8a0c1de4a7d60a47a016dd453fb49ee3) via strace openat tracing; the
    branch-HEAD variant is not what runs.
+   The prepared next tool is
+   `tools/sg100_mode7_mapping_characterization.py`: one initial zero-output
+   MODE7 configuration followed only by raw MODE7 observation while the
+   operator moves one physical DOF. It has not been executed.
 2. Vendor send clamp semantics hardware-unverified for position targets
    (no position command has ever been sent through the new backend).
-3. MODE_JOINT_POSITION behavior and gain suitability hardware-unverified.
+3. Active MODE_JOINT_POSITION target behavior and gain suitability remain
+   hardware-unverified. This does not undo the passive MODE7 entry/angle-scale
+   milestone.
 
 ## N1 — canonical <-> SDK user-angle mapping (2026-09-03 audit)
 
@@ -336,10 +340,10 @@ a position target).  No redundant state machine is needed.
 `SG100HandFeedback.raw_positions` is the SDK callback number converted back by
 `pi/180` for storage. Its physical meaning depends on the now-preserved
 returned joint mode (`joint_modes`): MODE_NULL is raw/accumulated-like;
-mode 7 is vendor-confirmed intended joint angle but pending this unit's
-hardware verification (`feedback_domain` = MODE7 candidate, `canonical_valid`
-= False). Neither `raw_positions` nor `q_rad` may be described as validated
-canonical state while `canonical_valid` is False.
+mode 7 is real-hardware-supported as bounded joint-angle-scale feedback
+(`feedback_domain` = MODE7 candidate), but its exact canonical map is pending
+(`canonical_valid` = False). Neither `raw_positions` nor `q_rad` may be
+described as validated canonical state while `canonical_valid` is False.
 
 ## Historical hardware baseline (OLD architecture — not transferable)
 

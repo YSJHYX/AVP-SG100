@@ -16,13 +16,17 @@ Authoritative contract this probe is built on:
   from MODE_NULL feedback, so the previous single-gate blocker model
   (SAFE_INITIAL_MODE7_TARGET_SOURCE_VALIDATED) is retired.
 
-Two INDEPENDENT states now govern everything:
+Three INDEPENDENT states now govern everything:
 
   MODE7_ENTRY_CONTRACT_CONFIRMED = True
       allows building/sending the full-hand mode7 FEEDBACK probe frame.
-  MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED = False
-      still BLOCKS active movement, canonical measured state, dataset
-      training, AVP, and H2 until the real hardware probe passes.
+  MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED = True
+      the 2026-09-03 real run proved bounded, finite, stable MODE7
+      joint-angle-scale feedback instead of MODE_NULL multi-turn values.
+  MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED = False
+      exact identity/sign/zero/range mapping F_fb is still pending and
+      therefore still BLOCKS canonical measured state, dataset training,
+      active movement, AVP, and H2.
 
 Probe frame design (feedback-only, deterministic):
   Hand_Control_t ctrl{}  — zero-initialized, then per joint:
@@ -61,8 +65,11 @@ Phases:
      fresh frames without any additional send. Fault, transport stall,
      and non-finite data hard-fail; a >±360-deg position on a joint whose
      own RX mode is 7 is a semantic rejection.  Mode0 accumulated values
-     like 42604 deg remain allowed transitional data.  Position-domain
-     evaluation uses only the final stable all-11-mode7 run.  The operator
+     like 42604 deg remain allowed transitional data.  Joint-angle-scale
+     evaluation uses only the final stable all-11-mode7 run and never
+     depends on SDK command-range equality. SDK command and canonical range
+     compatibility are separate diagnostics; neither establishes F_fb.
+     The operator
      movement prompt ("DID THE HAND MOVE WHEN ENTERING MODE7? [y/N]";
      Enter means no movement observed)
      follows the transition; if a software fault precedes it the result
@@ -108,7 +115,11 @@ MODE7_ENTRY_CONTRACT_SOURCE = (
     "IDs and use MODE_JOINT_POSITION=7 for every joint; in mode7 the "
     "returned position is expected to be the correct joint angle"
 )
-MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED = False
+MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED = True
+MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED = False
+MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED = (
+    "PARTIAL_ANGLE_DOMAIN_SUPPORTED"
+)
 
 MODE_NULL_TARGET_REUSE = "FORBIDDEN"
 
@@ -120,7 +131,8 @@ EXPECTED_HAND_CONTROL_SIZE = 176
 # Observation / classification thresholds.
 MULTI_TURN_ABS_DEG = 360.0       # any |position| > 360 deg => multi-turn
 STABILIZE_SKIP_FRAMES = 0        # input is already the final stable run
-RANGE_TOLERANCE_DEG = 30.0       # plausibility margin around cfg range
+# Diagnostic label only; it NEVER turns an out-of-range value into a pass.
+NEAR_BOUNDARY_OFFSET_CANDIDATE_DEG = 1.0
 
 # MODE7 transition state machine (task sections 3-7).  Real-run evidence
 # 2026-09-03: frame 0 after the mode7 send returned mode0 x11 — the known
@@ -348,50 +360,98 @@ def detect_multi_turn(positions_deg) -> bool:
     return bool(np.any(arr > MULTI_TURN_ABS_DEG))
 
 
-def classify_position_domain(
-    mode7_positions_by_joint,
-    user_ranges: list[tuple[float, float]] | None,
-) -> str:
-    """MODE7_POSITION_DOMAIN classification (task section 12).
+def classify_joint_angle_scale_domain(mode7_positions_by_joint) -> str:
+    """Classify MODE7 as bounded joint-angle-scale feedback.
 
-    REJECTED  — non-finite value or any multi-turn (>360 deg) sample.
-    SUPPORTED — all finite, no multi-turn, and every joint's stabilized
-                median sits inside its configured user range with the
-                min/max within RANGE_TOLERANCE_DEG of that range.
-    AMBIGUOUS — finite and non-multi-turn but range plausibility fails
-                (e.g. a joint whose excursion exceeds its configured
-                range by more than the tolerance, or unknown ranges).
+    This deliberately has no command-range or canonical-range input. Exact
+    identity, sign, zero, and usable physical range belong to F_fb mapping
+    characterization, not to the angle-domain verdict.
     """
 
-    series = [np.asarray(p, dtype=np.float64)
-              for p in mode7_positions_by_joint]
-    for joint_index, values in enumerate(series):
-        if not np.all(np.isfinite(values)):
+    series = [
+        np.asarray(positions, dtype=np.float64)
+        for positions in mode7_positions_by_joint
+    ]
+    if len(series) != EXPECTED_JOINT_COUNT:
+        return "REJECTED"
+    for values in series:
+        if len(values) < MIN_MODE7_FRAMES:
             return "REJECTED"
-        if detect_multi_turn(values):
+        if not np.all(np.isfinite(values)) or detect_multi_turn(values):
             return "REJECTED"
-    if user_ranges is None:
-        return "AMBIGUOUS"
-    for joint_index, values in enumerate(series):
-        low, high = user_ranges[joint_index]
-        stabilized = values[min(STABILIZE_SKIP_FRAMES, len(values) - 1):]
-        median = float(np.median(stabilized))
-        if not (low <= median <= high):
-            return "AMBIGUOUS"
-        if (float(values.min()) < low - RANGE_TOLERANCE_DEG
-                or float(values.max()) > high + RANGE_TOLERANCE_DEG):
-            return "AMBIGUOUS"
-    return "PHYSICAL_JOINT_ANGLE_SUPPORTED"
+    return "SUPPORTED"
+
+
+def canonical_ranges_deg(hardware_map) -> list[tuple[float, float]]:
+    """Read canonical/URDF mechanical limits, without applying F_cmd."""
+
+    lower = np.rad2deg(np.asarray(hardware_map.lower_rad, dtype=np.float64))
+    upper = np.rad2deg(np.asarray(hardware_map.upper_rad, dtype=np.float64))
+    if lower.shape != (EXPECTED_JOINT_COUNT,) or upper.shape != (
+        EXPECTED_JOINT_COUNT,
+    ):
+        raise ValueError("canonical hardware map must contain 11 limits")
+    return [(float(lo), float(hi)) for lo, hi in zip(lower, upper)]
+
+
+def strict_range_compatibility(
+    values_deg,
+    ranges: list[tuple[float, float]] | None,
+) -> tuple[str, list[dict]]:
+    """Compare values to ranges exactly; no tolerance can force a pass."""
+
+    values = np.asarray(values_deg, dtype=np.float64)
+    if values.shape != (EXPECTED_JOINT_COUNT,):
+        raise ValueError("expected 11 MODE7 baseline values")
+    if ranges is None:
+        return "UNAVAILABLE", [
+            {"compatible": None, "distance_outside_deg": None}
+            for _ in range(EXPECTED_JOINT_COUNT)
+        ]
+    if len(ranges) != EXPECTED_JOINT_COUNT:
+        raise ValueError("expected 11 range entries")
+    details = []
+    for value, (low, high) in zip(values, ranges):
+        low = float(low)
+        high = float(high)
+        if (
+            not np.isfinite(value)
+            or not np.isfinite(low)
+            or not np.isfinite(high)
+        ):
+            compatible = False
+            distance = None
+        elif low <= float(value) <= high:
+            compatible = True
+            distance = 0.0
+        else:
+            compatible = False
+            distance = float(low - value if value < low else value - high)
+        details.append({
+            "compatible": compatible,
+            "distance_outside_deg": distance,
+        })
+    passed = sum(detail["compatible"] is True for detail in details)
+    if passed == EXPECTED_JOINT_COUNT:
+        overall = "FULL"
+    elif passed == 0:
+        overall = "NONE"
+    else:
+        overall = "PARTIAL"
+    return overall, details
 
 
 def summarize_joints(
     null_last_deg,
     mode7_frames: list[tuple[int, list[int], list[float]]],
-    user_ranges: list[tuple[float, float]] | None,
+    command_ranges: list[tuple[float, float]] | None,
+    canonical_ranges: list[tuple[float, float]] | None,
+    joint_names: list[str] | None = None,
 ) -> list[dict]:
-    """Per-joint MODE_NULL-last vs MODE7 comparison (task section 9)."""
+    """Report command and canonical range diagnostics independently."""
 
-    summary = []
+    medians = []
+    position_series = []
     for joint_index in range(EXPECTED_JOINT_COUNT):
         positions = np.asarray(
             [positions[joint_index] for _, _, positions in mode7_frames],
@@ -400,31 +460,57 @@ def summarize_joints(
         stabilized = positions[
             min(STABILIZE_SKIP_FRAMES, len(positions) - 1):
         ]
-        cfg = (
-            [float(user_ranges[joint_index][0]),
-             float(user_ranges[joint_index][1])]
-            if user_ranges is not None else None
+        position_series.append((positions, stabilized))
+        medians.append(float(np.median(stabilized)))
+    _, command_details = strict_range_compatibility(medians, command_ranges)
+    _, canonical_details = strict_range_compatibility(medians, canonical_ranges)
+
+    summary = []
+    for joint_index in range(EXPECTED_JOINT_COUNT):
+        positions, stabilized = position_series[joint_index]
+        command_range = (
+            [float(v) for v in command_ranges[joint_index]]
+            if command_ranges is not None else None
         )
-        plausible = None
-        if cfg is not None and np.all(np.isfinite(positions)):
-            low, high = cfg
-            median = float(np.median(stabilized))
-            plausible = bool(
-                low <= median <= high
-                and float(positions.min()) >= low - RANGE_TOLERANCE_DEG
-                and float(positions.max()) <= high + RANGE_TOLERANCE_DEG
-                and not detect_multi_turn(positions)
+        canonical_range = (
+            [float(v) for v in canonical_ranges[joint_index]]
+            if canonical_ranges is not None else None
+        )
+        canonical_detail = canonical_details[joint_index]
+        distance = canonical_detail["distance_outside_deg"]
+        if canonical_detail["compatible"] is True:
+            interpretation = (
+                "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
             )
+        elif distance is not None and distance <= (
+            NEAR_BOUNDARY_OFFSET_CANDIDATE_DEG
+        ):
+            interpretation = (
+                "NEAR_BOUNDARY_OFFSET_CANDIDATE_MAPPING_PENDING"
+            )
+        else:
+            interpretation = "ZERO_SIGN_OR_IDENTITY_MAPPING_PENDING"
         summary.append({
             "joint": f"J{joint_index + 1}",
+            "canonical_joint": (
+                joint_names[joint_index] if joint_names is not None else None
+            ),
             "mode_null_last_deg": float(null_last_deg[joint_index]),
             "mode7_first_deg": float(positions[0]),
             "mode7_median_deg": float(np.median(stabilized)),
             "mode7_min_deg": float(positions.min()),
             "mode7_max_deg": float(positions.max()),
-            "configured_user_range_deg": cfg,
+            "sdk_command_range_deg": command_range,
+            "sdk_command_range_compatible": command_details[joint_index][
+                "compatible"
+            ],
+            "canonical_range_deg": canonical_range,
+            "strict_canonical_range_compatible": canonical_detail[
+                "compatible"
+            ],
+            "canonical_distance_outside_deg": distance,
             "multi_turn_present": bool(detect_multi_turn(positions)),
-            "range_plausible": plausible,
+            "interpretation": interpretation,
         })
     return summary
 
@@ -844,7 +930,8 @@ def _observe_transition(
 
 def run_phase_c(
     driver: SG100SDKDriver,
-    user_ranges,
+    command_ranges,
+    canonical_ranges=None,
     confirm_fn=input,
 ) -> dict:
     """Send the full-hand mode7 frame ONCE, then observe the transition.
@@ -859,6 +946,9 @@ def run_phase_c(
         "status": None,
         "fault_status": "NO_FAULT_OBSERVED",
         "NO_VISIBLE_ENTRY_MOTION": "NOT_CONFIRMED",
+        "MODE7_ENTRY_NO_VISIBLE_MOTION": "NOT_CONFIRMED",
+        "MODE7_CANONICAL_MAPPING": "PENDING",
+        "canonical_valid": False,
         "_tracker": None,
     }
     submitted = False
@@ -943,8 +1033,13 @@ def run_phase_c(
         if tracker.state == STATE_SEMANTIC_REJECTED:
             print(f"[FAIL] {tracker.semantic_rejection_reason}")
             result["status"] = "MODE7_SEMANTIC_REJECTION_FAIL"
+            result["MODE7_CONTROL_STATE"] = "FAIL"
             result["MODE7_STATUS_MODE"] = "FAIL"
-            result["MODE7_POSITION_DOMAIN"] = "REJECTED"
+            result["MODE7_JOINT_ANGLE_SCALE_DOMAIN"] = "REJECTED"
+            result["MODE7_COMMAND_RANGE_COMPATIBILITY"] = "NOT_EVALUATED"
+            result["MODE7_CANONICAL_RANGE_COMPATIBILITY"] = "NOT_EVALUATED"
+            result["MODE7_CANONICAL_MAPPING"] = "PENDING"
+            result["canonical_valid"] = False
             return result
 
         if tracker.state != STATE_MODE7_STABLE:
@@ -957,8 +1052,13 @@ def run_phase_c(
                 f"{'NONE' if tracker.first_all_mode7_index is None else tracker.first_all_mode7_index}"
             )
             result["status"] = "TRANSITION_TIMEOUT_FAIL"
+            result["MODE7_CONTROL_STATE"] = "FAIL"
             result["MODE7_STATUS_MODE"] = "FAIL"
-            result["MODE7_POSITION_DOMAIN"] = "NOT_EVALUATED"
+            result["MODE7_JOINT_ANGLE_SCALE_DOMAIN"] = "NOT_EVALUATED"
+            result["MODE7_COMMAND_RANGE_COMPATIBILITY"] = "NOT_EVALUATED"
+            result["MODE7_CANONICAL_RANGE_COMPATIBILITY"] = "NOT_EVALUATED"
+            result["MODE7_CANONICAL_MAPPING"] = "PENDING"
+            result["canonical_valid"] = False
             return result
 
         # Only the final consecutive run that established stability is used;
@@ -972,10 +1072,17 @@ def run_phase_c(
             f"observation complete with {len(tracker.frames)} total fresh "
             f"post-command frames and {len(stable)} stable-mode7 samples"
         )
-        domain = classify_position_domain(
-            [[f.positions_deg[j] for f in stable]
-             for j in range(EXPECTED_JOINT_COUNT)],
-            user_ranges,
+        stable_positions = [
+            [f.positions_deg[j] for f in stable]
+            for j in range(EXPECTED_JOINT_COUNT)
+        ]
+        angle_domain = classify_joint_angle_scale_domain(stable_positions)
+        medians = [float(np.median(values)) for values in stable_positions]
+        command_compatibility, _ = strict_range_compatibility(
+            medians, command_ranges
+        )
+        canonical_compatibility, _ = strict_range_compatibility(
+            medians, canonical_ranges
         )
         movement_answer = confirm_fn(
             "DID THE HAND MOVE WHEN ENTERING MODE7? [y/N] "
@@ -990,26 +1097,32 @@ def run_phase_c(
             status = "OPERATOR_MOVEMENT_RESPONSE_INVALID"
         elif not no_motion:
             status = "OPERATOR_MOVEMENT_FAIL"
-        elif domain != "PHYSICAL_JOINT_ANGLE_SUPPORTED":
-            status = "MODE7_POSITION_DOMAIN_NOT_SUPPORTED"
+        elif angle_domain != "SUPPORTED":
+            status = "MODE7_JOINT_ANGLE_SCALE_DOMAIN_REJECTED"
         else:
-            status = "COMPLETED_PASS"
+            status = "COMPLETED_PASS_ANGLE_DOMAIN_SUPPORTED"
         result.update({
             "status": status,
+            "MODE7_CONTROL_STATE": "PASS",
             "MODE7_STATUS_MODE": "PASS",
-            "MODE7_POSITION_DOMAIN": domain,
+            "MODE7_JOINT_ANGLE_SCALE_DOMAIN": angle_domain,
+            "MODE7_COMMAND_RANGE_COMPATIBILITY": command_compatibility,
+            "MODE7_CANONICAL_RANGE_COMPATIBILITY": canonical_compatibility,
+            "MODE7_CANONICAL_MAPPING": "PENDING",
             "NO_VISIBLE_ENTRY_MOTION": (
+                "NOT_CONFIRMED" if no_motion is None
+                else ("PASS" if no_motion else "FAIL")
+            ),
+            "MODE7_ENTRY_NO_VISIBLE_MOTION": (
                 "NOT_CONFIRMED" if no_motion is None
                 else ("PASS" if no_motion else "FAIL")
             ),
             "MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED": (
                 MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED
             ),
+            "canonical_valid": False,
             "canonical_valid_autoflip": "NOT_PERFORMED",
-            "_stable_positions": [
-                [f.positions_deg[j] for f in stable]
-                for j in range(EXPECTED_JOINT_COUNT)
-            ],
+            "_stable_positions": stable_positions,
         })
         return result
     except BaseException as exc:
@@ -1083,7 +1196,7 @@ def run_full_probe(
     driver = _probe_driver(port, baudrate, sdk_dir)
     report: dict = {
         "port": port,
-        "schema": "sg100_mode7_feedback_probe_v4",
+        "schema": "sg100_mode7_feedback_probe_v5",
         "MODE7_ENTRY_CONTRACT_CONFIRMED": MODE7_ENTRY_CONTRACT_CONFIRMED,
         "MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED": (
             MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED
@@ -1104,8 +1217,18 @@ def run_full_probe(
             return 4
         print()
         print("[PHASE C] full-hand mode7 feedback observation")
-        user_ranges = driver.vendor_user_ranges
-        phase_c = run_phase_c(driver, user_ranges, confirm_fn=confirm_fn)
+        command_ranges = driver.vendor_user_ranges
+        hardware_map = getattr(driver, "hardware_map", None)
+        canonical_ranges = (
+            canonical_ranges_deg(hardware_map)
+            if hardware_map is not None else None
+        )
+        phase_c = run_phase_c(
+            driver,
+            command_ranges,
+            canonical_ranges,
+            confirm_fn=confirm_fn,
+        )
         tracker = phase_c.get("_tracker")
         if phase_c.get("_stable_positions") is not None and tracker:
             phase_c["per_joint"] = summarize_joints(
@@ -1114,7 +1237,12 @@ def run_full_probe(
                     (f.timestamp_ns, list(f.modes), list(f.positions_deg))
                     for f in tracker.stable_frames()
                 ],
-                user_ranges,
+                command_ranges,
+                canonical_ranges,
+                joint_names=(
+                    list(hardware_map.software_joint_order)
+                    if hardware_map is not None else None
+                ),
             )
         report["phase_c"] = phase_c
         print(json.dumps(
@@ -1122,12 +1250,12 @@ def run_full_probe(
             indent=2, default=str,
         ))
         return {
-            "COMPLETED_PASS": 0,
+            "COMPLETED_PASS_ANGLE_DOMAIN_SUPPORTED": 0,
             "OPERATOR_ABORT_BEFORE_SEND": 4,
             "TRANSITION_TIMEOUT_FAIL": 6,
             "MODE7_SEMANTIC_REJECTION_FAIL": 7,
             "OPERATOR_MOVEMENT_FAIL": 8,
-            "MODE7_POSITION_DOMAIN_NOT_SUPPORTED": 9,
+            "MODE7_JOINT_ANGLE_SCALE_DOMAIN_REJECTED": 9,
             "OPERATOR_MOVEMENT_RESPONSE_INVALID": 10,
         }.get(str(phase_c.get("status")), 9)
     except Mode7ProbeHardFail as exc:
@@ -1228,6 +1356,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"MODE7_ENTRY_CONTRACT_CONFIRMED="
               f"{MODE7_ENTRY_CONTRACT_CONFIRMED}")
         print(f"  source: {MODE7_ENTRY_CONTRACT_SOURCE}")
+        print("MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED="
+              f"{MODE7_JOINT_ANGLE_SCALE_HARDWARE_SUPPORTED}")
+        print("MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED="
+              f"{MODE7_CANONICAL_MAPPING_HARDWARE_VALIDATED}")
         print("MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED="
               f"{MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED}"
               " (active motion / canonical / dataset / AVP / H2 stay BLOCKED)")

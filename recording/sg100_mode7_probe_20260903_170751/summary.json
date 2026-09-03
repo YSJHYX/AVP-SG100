@@ -1,0 +1,309 @@
+{
+  "status": "COMPLETED_PASS_ANGLE_DOMAIN_SUPPORTED",
+  "fault_status": "NO_FAULT_OBSERVED",
+  "NO_VISIBLE_ENTRY_MOTION": "PASS",
+  "MODE7_ENTRY_NO_VISIBLE_MOTION": "PASS",
+  "MODE7_CANONICAL_MAPPING": "PENDING",
+  "canonical_valid": false,
+  "tx_audit": {
+    "native_path": "SG100SDKDriver.send_mode7_feedback_probe -> sg100_set_hand_control -> SG100Device::SetHandControl(Hand_Control_t)",
+    "set_hand_control_calls_this_send": 1,
+    "latest_cached_requested_joint_modes": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "requested_positions_deg": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "p": 0,
+    "i": 0,
+    "d": 0,
+    "output_limit": 0,
+    "scheduler_alive": true,
+    "transition_window_s": 0.5
+  },
+  "COMMAND_SUBMITTED": true,
+  "frames_recorded": 20,
+  "FIRST_RX": 2.57943,
+  "FIRST_MODE7_ANY": 32.576693,
+  "FIRST_MODE7_ALL": 32.576693,
+  "MODE7_STABLE": 72.578853,
+  "TIMEOUT": false,
+  "SEMANTIC_REJECTION": null,
+  "OBSERVATION_COMPLETE": true,
+  "post_command_frames_target": 20,
+  "stable_mode7_samples_captured": 17,
+  "best_consecutive_all_mode7": 17,
+  "state": "MODE7_STABLE",
+  "MODE7_CONTROL_STATE": "PASS",
+  "MODE7_STATUS_MODE": "PASS",
+  "MODE7_JOINT_ANGLE_SCALE_DOMAIN": "SUPPORTED",
+  "MODE7_COMMAND_RANGE_COMPATIBILITY": "PARTIAL",
+  "MODE7_CANONICAL_RANGE_COMPATIBILITY": "PARTIAL",
+  "MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED": "PARTIAL_ANGLE_DOMAIN_SUPPORTED",
+  "canonical_valid_autoflip": "NOT_PERFORMED",
+  "mode_null_restore_after_mode7": true,
+  "per_joint": [
+    {
+      "joint": "J1",
+      "canonical_joint": "thumb_j1",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": 10.096781730651855,
+      "mode7_median_deg": 10.096781730651855,
+      "mode7_min_deg": 10.096781730651855,
+      "mode7_max_deg": 10.096781730651855,
+      "sdk_command_range_deg": [
+        0.0,
+        125.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        0.0,
+        125.01939089754562
+      ],
+      "strict_canonical_range_compatible": true,
+      "canonical_distance_outside_deg": 0.0,
+      "multi_turn_present": false,
+      "interpretation": "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J2",
+      "canonical_joint": "thumb_j2",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": 18.456865310668945,
+      "mode7_median_deg": 18.456865310668945,
+      "mode7_min_deg": 18.456865310668945,
+      "mode7_max_deg": 18.456865310668945,
+      "sdk_command_range_deg": [
+        -150.0,
+        0.0
+      ],
+      "sdk_command_range_compatible": false,
+      "canonical_range_deg": [
+        -149.54198452914486,
+        0.0
+      ],
+      "strict_canonical_range_compatible": false,
+      "canonical_distance_outside_deg": 18.456865310668945,
+      "multi_turn_present": false,
+      "interpretation": "ZERO_SIGN_OR_IDENTITY_MAPPING_PENDING"
+    },
+    {
+      "joint": "J3",
+      "canonical_joint": "thumb_j3",
+      "mode_null_last_deg": -0.054914720356464386,
+      "mode7_first_deg": -7.635386466979981,
+      "mode7_median_deg": -7.635386466979981,
+      "mode7_min_deg": -7.635386466979981,
+      "mode7_max_deg": -7.635386466979981,
+      "sdk_command_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        -60.04597692971028,
+        89.95437383553924
+      ],
+      "strict_canonical_range_compatible": true,
+      "canonical_distance_outside_deg": 0.0,
+      "multi_turn_present": false,
+      "interpretation": "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J4",
+      "canonical_joint": "index_j1",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": -0.26350870728492737,
+      "mode7_median_deg": -0.26350870728492737,
+      "mode7_min_deg": -0.26350870728492737,
+      "mode7_max_deg": -0.26350870728492737,
+      "sdk_command_range_deg": [
+        0.0,
+        90.0
+      ],
+      "sdk_command_range_compatible": false,
+      "canonical_range_deg": [
+        0.0,
+        89.95437383553924
+      ],
+      "strict_canonical_range_compatible": false,
+      "canonical_distance_outside_deg": 0.26350870728492737,
+      "multi_turn_present": false,
+      "interpretation": "NEAR_BOUNDARY_OFFSET_CANDIDATE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J5",
+      "canonical_joint": "index_j2",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": 1.5816942453384402,
+      "mode7_median_deg": 1.5816942453384402,
+      "mode7_min_deg": 1.5816942453384402,
+      "mode7_max_deg": 1.5816942453384402,
+      "sdk_command_range_deg": [
+        0.0,
+        125.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        0.0,
+        124.90479933851947
+      ],
+      "strict_canonical_range_compatible": true,
+      "canonical_distance_outside_deg": 0.0,
+      "multi_turn_present": false,
+      "interpretation": "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J6",
+      "canonical_joint": "index_j3",
+      "mode_null_last_deg": -0.0,
+      "mode7_first_deg": 0.4063279628753662,
+      "mode7_median_deg": 0.4063279628753662,
+      "mode7_min_deg": 0.4063279628753662,
+      "mode7_max_deg": 0.4063279628753662,
+      "sdk_command_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        -60.160568488736445,
+        89.95437383553924
+      ],
+      "strict_canonical_range_compatible": true,
+      "canonical_distance_outside_deg": 0.0,
+      "multi_turn_present": false,
+      "interpretation": "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J7",
+      "canonical_joint": "middle_j1",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": 0.6702191233634949,
+      "mode7_median_deg": 0.6702191233634949,
+      "mode7_min_deg": 0.6702191233634949,
+      "mode7_max_deg": 0.6702191233634949,
+      "sdk_command_range_deg": [
+        0.0,
+        125.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        -124.90479933851947,
+        0.0
+      ],
+      "strict_canonical_range_compatible": false,
+      "canonical_distance_outside_deg": 0.6702191233634949,
+      "multi_turn_present": false,
+      "interpretation": "NEAR_BOUNDARY_OFFSET_CANDIDATE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J8",
+      "canonical_joint": "middle_j2",
+      "mode_null_last_deg": -0.0,
+      "mode7_first_deg": -9.755696296691895,
+      "mode7_median_deg": -9.755696296691895,
+      "mode7_min_deg": -9.755696296691895,
+      "mode7_max_deg": -9.755696296691895,
+      "sdk_command_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        -60.160568488736445,
+        89.95437383553924
+      ],
+      "strict_canonical_range_compatible": true,
+      "canonical_distance_outside_deg": 0.0,
+      "multi_turn_present": false,
+      "interpretation": "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J9",
+      "canonical_joint": "little_j1",
+      "mode_null_last_deg": -0.054914720356464386,
+      "mode7_first_deg": -0.3516044914722443,
+      "mode7_median_deg": -0.3516044914722443,
+      "mode7_min_deg": -0.3516044914722443,
+      "mode7_max_deg": -0.3516044914722443,
+      "sdk_command_range_deg": [
+        -180.0,
+        0.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        -179.9087476710785,
+        0.0
+      ],
+      "strict_canonical_range_compatible": true,
+      "canonical_distance_outside_deg": 0.0,
+      "multi_turn_present": false,
+      "interpretation": "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    },
+    {
+      "joint": "J10",
+      "canonical_joint": "little_j2",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": -1.3626364469528198,
+      "mode7_median_deg": -1.3626364469528198,
+      "mode7_min_deg": -1.3626364469528198,
+      "mode7_max_deg": -1.3626364469528198,
+      "sdk_command_range_deg": [
+        0.0,
+        125.0
+      ],
+      "sdk_command_range_compatible": false,
+      "canonical_range_deg": [
+        0.0,
+        124.90479933851947
+      ],
+      "strict_canonical_range_compatible": false,
+      "canonical_distance_outside_deg": 1.3626364469528198,
+      "multi_turn_present": false,
+      "interpretation": "ZERO_SIGN_OR_IDENTITY_MAPPING_PENDING"
+    },
+    {
+      "joint": "J11",
+      "canonical_joint": "little_j3",
+      "mode_null_last_deg": -0.0,
+      "mode7_first_deg": -5.88871431350708,
+      "mode7_median_deg": -5.88871431350708,
+      "mode7_min_deg": -5.88871431350708,
+      "mode7_max_deg": -5.88871431350708,
+      "sdk_command_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "sdk_command_range_compatible": true,
+      "canonical_range_deg": [
+        -60.160568488736445,
+        89.95437383553924
+      ],
+      "strict_canonical_range_compatible": true,
+      "canonical_distance_outside_deg": 0.0,
+      "multi_turn_present": false,
+      "interpretation": "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
+    }
+  ]
+}

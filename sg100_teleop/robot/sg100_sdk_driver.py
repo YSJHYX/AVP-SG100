@@ -341,10 +341,10 @@ class SG100SDKDriver(SG100Driver):
             sdk_dir if sdk_dir is not None else DEFAULT_SDK_DIR
         )
         self.control_mode = int(control_mode)
-        # Stays False until the planned one-joint MODE7 hardware validation
-        # proves that returned mode-7 position equals physical joint angle
-        # on this unit.  While False, read_feedback() never reports
-        # canonical_valid=True, so measured data stays quarantined.
+        # Historical name retained for API compatibility. This now means
+        # exact MODE7 feedback-to-canonical identity/sign/zero/range mapping
+        # has been hardware-validated, not merely that MODE7 is an angle-scale
+        # domain. While False, measured data stays quarantined.
         self._mode7_hardware_validated = bool(mode7_hardware_validated)
         self._pid_p = quantize_gain(kp)
         self._pid_i = quantize_gain(ki)
@@ -493,8 +493,8 @@ class SG100SDKDriver(SG100Driver):
         echo).  ``feedback_domain`` classifies the sample conservatively:
         all-7 -> MODE7_JOINT_POSITION_CANDIDATE, anything else ->
         NON_CANONICAL_DIAGNOSTIC.  ``canonical_valid`` additionally
-        requires ``mode7_hardware_validated`` (default False; flip only
-        after the real-hardware MODE7 physical-angle validation passes).
+        requires ``mode7_hardware_validated`` (historical name; default
+        False; flip only after exact F_fb canonical mapping validation).
 
         ``q_rad`` retains the existing hardware-map conversion for API
         compatibility, but its numeric meaning is returned-mode-dependent
@@ -521,8 +521,9 @@ class SG100SDKDriver(SG100Driver):
         joint_modes = tuple(int(m) for m in modes)
         feedback_domain = classify_feedback_domain(joint_modes)
         # This numerically reverses the SDK's callback degree rendering only.
-        # MODE_NULL is raw/accumulated-like; mode-7 physical semantics and its
-        # zero/scale path remain pending hardware verification.
+        # MODE_NULL is raw/accumulated-like. MODE7 is hardware-supported as
+        # joint-angle-scale feedback, but its exact canonical identity/sign/
+        # zero/range map remains pending.
         sdk_user_rad = np.deg2rad(positions_deg)
         canonical = self.hardware_map.actual_to_canonical(sdk_user_rad)
         feedback = SG100HandFeedback(

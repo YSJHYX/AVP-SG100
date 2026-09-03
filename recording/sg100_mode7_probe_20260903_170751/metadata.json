@@ -1,0 +1,42 @@
+{
+  "port": "/dev/ttyUSB0",
+  "schema": "sg100_mode7_feedback_probe_v5",
+  "MODE7_ENTRY_CONTRACT_CONFIRMED": true,
+  "MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED": "PARTIAL_ANGLE_DOMAIN_SUPPORTED",
+  "phase_a": {
+    "feedback_rate_hz": 99.97179399814429,
+    "fault": 0,
+    "modes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "null_last_deg": [
+      0.0,
+      0.0,
+      -0.054914720356464386,
+      0.0,
+      0.0,
+      -0.0,
+      0.0,
+      -0.0,
+      -0.054914720356464386,
+      0.0,
+      -0.0
+    ],
+    "domain": "NON_CANONICAL_DIAGNOSTIC"
+  },
+  "cleanup": {
+    "hold_passive": true,
+    "stop": "ATTEMPTED",
+    "disconnect": "ATTEMPTED"
+  }
+}

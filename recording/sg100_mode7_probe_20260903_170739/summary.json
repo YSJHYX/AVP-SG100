@@ -1,0 +1,6 @@
+{
+  "status": "UNEXPECTED_EXCEPTION",
+  "exception_type": "SG100SDKDriverError",
+  "exception_reason": "vendor SwitchToRealtimeMode failed",
+  "NO_VISIBLE_ENTRY_MOTION": "NOT_CONFIRMED"
+}

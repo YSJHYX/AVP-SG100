@@ -14,11 +14,10 @@ docs/Realtime_Performance_Analysis.md, include/sg100_types.h):
   wire radians when the scheduler transmits
 - the hand status callback applies the SDK inverse map and rad-to-degree
   conversion without consulting returned joint mode. Real N1 proved
-  MODE_NULL position is raw/accumulated-like; the vendor CONFIRMED that
-  mode-7 (MODE_JOINT_POSITION) position is the intended correct joint
-  angle, which historical vendor logs strongly support — but physical
-  correctness on this unit is still pending hardware verification. It is
-  measured state, never a command echo.
+  MODE_NULL position is raw/accumulated-like. The 2026-09-03 real MODE7
+  probe established bounded joint-angle-scale feedback, but exact inbound
+  identity/sign/zero/range mapping to canonical coordinates is pending. It
+  is measured state, never a command echo.
 
 This module defines the ONLY place where software-canonical radians
 meet vendor-domain values.  Everything above this boundary works in
@@ -60,9 +59,10 @@ MODE_JOINT_POSITION = 7
 # Feedback-domain classification (mode-aware, conservative):
 #   MODE7_JOINT_POSITION_CANDIDATE — every expected joint reported
 #     MODE_JOINT_POSITION(7).  Vendor confirmed mode-7 feedback is the
-#     intended correct joint angle, but physical correctness on this unit
-#     is NOT yet hardware-verified, so canonical_valid stays False until
-#     that validation passes (driver flag mode7_hardware_validated).
+#     intended correct joint angle; real hardware now supports the bounded
+#     joint-angle-scale domain. Exact feedback-to-canonical mapping F_fb is
+#     NOT yet validated, so canonical_valid stays False until that separate
+#     validation passes (historical driver flag mode7_hardware_validated).
 #   NON_CANONICAL_DIAGNOSTIC — any joint reported another mode (e.g.
 #     MODE_NULL).  Real N1 proved MODE_NULL position is a raw/accumulated
 #     multi-turn coordinate (~1854 callback deg for ~15-30 physical deg),
@@ -78,9 +78,9 @@ FEEDBACK_EVIDENCE = (
     "Hand_Status_t reaches the SDK status callback from the palm response "
     "to the realtime control exchange and is never a command echo; "
     "position semantics are returned-mode-dependent: MODE_NULL is "
-    "real-hardware-proven raw/accumulated-like, MODE_JOINT_POSITION is "
-    "vendor-confirmed as the intended correct joint angle but still "
-    "pending hardware verification on this unit"
+    "real-hardware-proven raw/accumulated-like; MODE_JOINT_POSITION is "
+    "real-hardware-supported as bounded joint-angle-scale feedback, while "
+    "its exact feedback-to-canonical mapping remains pending"
 )
 
 
@@ -122,9 +122,9 @@ class SG100HandFeedback:
     joint_modes: tuple[int, ...] | None = None
     # Mode-aware classification of this sample (classify_feedback_domain).
     feedback_domain: str = FEEDBACK_DOMAIN_UNCLASSIFIED
-    # FALSE until mode-7 physical-angle semantics are validated on this
-    # unit's real hardware.  A MODE7_CANDIDATE domain alone does NOT set
-    # this: the vendor statement is necessary but not sufficient.
+    # FALSE until the exact mode-7 feedback-to-canonical identity/sign/zero/
+    # range map is validated on this unit. Angle-scale support alone is not
+    # sufficient.
     canonical_valid: bool = False
 
     @property
@@ -193,8 +193,9 @@ class SG100HardwareMap:
 
     The result is the SDK API coordinate expressed in radians; the vendor
     then applies ``joint_angle_map.json`` on commands.  An identity map does
-    NOT establish physical 1:1 scale.  Real N1 left the physical canonical
-    mapping blocked; this class must not be read as hardware validation.
+    NOT establish physical 1:1 scale. Real MODE7 entry established the
+    joint-angle-scale domain but left the physical canonical mapping blocked;
+    this class must not be read as inbound mapping validation.
     """
 
     def __init__(
