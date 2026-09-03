@@ -471,6 +471,7 @@ python -m sg100_teleop.tests.test_sg100_physical_joint_semantics
 python -m sg100_teleop.tests.test_sg100_driver
 python -m sg100_teleop.tests.test_sg100_latest_sdk_driver
 python -m sg100_teleop.tests.test_sg100_no_legacy_backend
+python -m sg100_teleop.tests.test_sg100_sign_characterization
 python -m sg100_teleop.tests.test_rm65_fk_tcp
 python -m sg100_teleop.tests.test_rm65_tcp_jacobian
 python -m sg100_teleop.tests.test_rm65_ik_position_only

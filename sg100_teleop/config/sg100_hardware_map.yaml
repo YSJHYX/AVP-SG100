@@ -8,19 +8,28 @@
 # index.  Vendor layout (SG100_SDK_User_Guide.md §5.1):
 #   thumb 1,2,3 | index 4,5,6 | middle 7,8 | little 9,10,11
 #
-# gain / offset_rad: SDK public/user-angle radians relate to canonical
-# software radians by
+# gain / offset_rad: SDK user-angle radians relate to canonical software
+# radians by
 #     sdk_user  = gain * canonical + offset_rad      (send)
 #     canonical = gain * (sdk_user - offset_rad)     (receive)
-# The vendor SDK separately applies its joint_angle_map.json mapping between
-# this public degree-valued API domain and the low-level wire radians.
+# The vendor SDK separately applies its RUNTIME joint_angle_map.json
+# (PROVEN by N0: ~/SG100_SDK_Publish/joint_angle_map.json, md5
+# 8a0c1de4a7d60a47a016dd453fb49ee3) between this user-degree domain and
+# the wire radians — a/b there describe user->wire, NOT canonical->user.
 #
-# Defaults are the IDENTITY map.  They are provisional until the first
-# hardware session: the H1 single-joint smoke tests
-# (sg100_teleop/tools/sg100_joint_smoke_test.py) verify each joint's
-# direction against measured feedback and this file is then updated
-# per-joint from that evidence.  Do NOT change the canonical model
-# ordering to match the vendor API — conversions live here only.
+# Evidence status (N1 audit, 2026-09-03):
+#   joint order / ids     PROVEN (vendor layout + semantics)
+#   offset_rad = 0        PROVEN by N0 static probe: mechanical zero pose
+#                         reads ~0 deg (±0.055°) on every SDK joint
+#   gain = +1 (10 joints) morphology: canonical mechanical ranges equal
+#                         the runtime SDK user ranges numerically
+#   gain(middle_j1)       range shape MIRRORS (canonical [-2.18,0] rad vs
+#                         SDK J7 user [0,125] deg) -> candidate -1, NOT
+#                         APPLIED: a wrong sign commands the joint the
+#                         opposite way inside range, so it waits for the
+#                         passive teaching-mode sign characterization.
+#                         Until then middle_j1 outbound targets are
+#                         range-rejected by the driver (fail-closed).
 #
 # Canonical-domain mechanical limits come from sg100_joint_semantics.yaml
 # and are enforced on every outbound command in SG100HardwareMap.

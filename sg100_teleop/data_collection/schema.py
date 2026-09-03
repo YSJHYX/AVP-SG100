@@ -46,6 +46,11 @@ class RejectionReason(str, Enum):
     STALE_PRE_HAND_STATE = "STALE_PRE_HAND_STATE"
     STALE_POST_HAND_STATE = "STALE_POST_HAND_STATE"
     HAND_FEEDBACK_INVALID = "HAND_FEEDBACK_INVALID"
+    # Returned joint modes are present but not all MODE_JOINT_POSITION(7)
+    # (or mode-7 semantics are not yet hardware-validated): the position
+    # payload is a diagnostic/non-canonical coordinate (e.g. MODE_NULL
+    # accumulated ~1854 deg) and must never enter measured_hand_q.
+    HAND_FEEDBACK_NON_CANONICAL_MODE = "HAND_FEEDBACK_NON_CANONICAL_MODE"
     HAND_COMMAND_NOT_SENT = "HAND_COMMAND_NOT_SENT"
     INTERVENING_HAND_COMMAND = "INTERVENING_HAND_COMMAND"
     HAND_SENT_WITHOUT_DECISION = "HAND_SENT_WITHOUT_DECISION"

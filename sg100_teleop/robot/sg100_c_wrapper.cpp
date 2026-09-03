@@ -15,7 +15,7 @@
 //   switch_to_realtime SG100Device::SwitchToRealtimeMode
 //                      (0x25 -> 0xA5 ACK -> scheduler restart)
 //   request_status     SG100Device::RequestHandStatus (0x26 query)
-//   poll_status        latest callback snapshot (SDK user DEG) + sequence
+//   poll_status        latest callback snapshot + sequence
 //
 // There is deliberately NO raw protocol, CRC, framing, mode-query, or
 // transport code here: those were workarounds for the previous
@@ -23,8 +23,11 @@
 //
 // Public position semantics (docs/Realtime_Performance_Analysis.md 2.2,
 // docs/SG100_SDK_User_Guide.md 6.2): every public position API and the
-// status callback are in USER DEGREES; the SDK applies joint_angle_map.json
-// (clamp + a*x + b) and converts to wire radians internally.
+// SDK docs call callback position USER DEGREES.  Real N1 proved that while
+// joints report MODE_NULL this is only a numeric inverse-map/rad-to-deg
+// rendering of a raw/accumulated-like coordinate.  Vendor guidance says
+// MODE_JOINT_POSITION feedback has joint-angle semantics; hardware
+// verification is pending, so the wrapper preserves every returned mode.
 
 #include "sg100_device.h"
 #include "sg100_types.h"
@@ -46,7 +49,7 @@ SG100Device* g_device = nullptr;
 bool g_started = false;
 
 struct StatusSnapshot {
-    double position_deg[JOINT_COUNT]{};
+    double callback_position[JOINT_COUNT]{};
     double current[JOINT_COUNT]{};
     uint8_t mode[JOINT_COUNT]{};
     uint64_t received_monotonic_ns = 0;
@@ -60,6 +63,7 @@ std::atomic<uint64_t> g_error_frames{0};
 std::atomic<uint64_t> g_hand_status_callbacks{0};
 std::atomic<uint64_t> g_hand_control_calls{0};
 std::atomic<uint64_t> g_switch_to_realtime_calls{0};
+std::atomic<uint64_t> g_zero_status_queries{0};
 
 uint64_t monotonic_ns_now() {
     return static_cast<uint64_t>(
@@ -75,7 +79,7 @@ void on_hand_status(const Hand_Status_t& status) {
         if (id < 1 || id > JOINT_COUNT) {
             return;  // malformed frame: drop the whole snapshot
         }
-        g_latest.position_deg[id - 1] =
+        g_latest.callback_position[id - 1] =
             static_cast<double>(status.joints[i].position);
         g_latest.current[id - 1] = static_cast<double>(
             SG100_Quant::decodeCurQ(status.joints[i].cur_q));
@@ -188,15 +192,15 @@ int sg100_is_connected(void) {
 // Copy the newest callback snapshot.  Returns its sequence number, or 0
 // when no hand status has been received yet.  Sequence changes are the
 // freshness signal: same value means the cache did not refresh.
-uint64_t sg100_poll_status(double* position_deg_out, double* current_out,
+uint64_t sg100_poll_status(double* callback_position_out, double* current_out,
                            uint8_t* mode_out, uint64_t* recv_ns_out) {
     std::lock_guard<std::mutex> lock(g_status_mutex);
-    if (!g_latest.valid || !position_deg_out || !current_out ||
+    if (!g_latest.valid || !callback_position_out || !current_out ||
         !mode_out || !recv_ns_out) {
         return 0;
     }
-    std::memcpy(position_deg_out, g_latest.position_deg,
-                sizeof(g_latest.position_deg));
+    std::memcpy(callback_position_out, g_latest.callback_position,
+                sizeof(g_latest.callback_position));
     std::memcpy(current_out, g_latest.current, sizeof(g_latest.current));
     std::memcpy(mode_out, g_latest.mode, sizeof(g_latest.mode));
     *recv_ns_out = g_latest.received_monotonic_ns;
@@ -274,7 +278,6 @@ int sg100_get_work_mode(void) {
 }
 
 // -- diagnostics -------------------------------------------------------------
-
 uint64_t sg100_error_frames(void) {
     return g_error_frames.load();
 }
@@ -286,6 +289,83 @@ uint64_t sg100_hand_control_calls(void) {
 }
 uint64_t sg100_switch_to_realtime_calls(void) {
     return g_switch_to_realtime_calls.load();
+}
+
+// -- read-only joint zero / calibration status -------------------------------
+//
+// Zero-relevant READ-ONLY sources in the SDK (no write, no homing):
+//   RuntimeStatusFrame_t  (CMD_GET_RUNTIME_STATUS 0x17): runtime_state
+//     (JointState_e, incl. JOINT_STATE_HOMING), foc_ready, runtime_fault,
+//     calibration_flags, target_* — cached via GetJointRuntimeStatus.
+//   ParamCalibrationGroup_t (CMD_PARAM_READ_CALIB 0x14): joint_zero_rad
+//     ("关节机械零点角度"), electrical_angle_zero, calibration_flags —
+//     cached via GetJointParamCalib.
+// CAVEAT: both queries are joint-level PASSTHROUGH commands.  The vendor
+// scheduler only drains the passthrough queue in WORK_MODE_PASSTHROUGH,
+// so on hardware these require an explicit pause/resume cycle around the
+// query.  These exports only queue the query and read the cache; the
+// pause/resume orchestration is deliberately NOT automated here.
+
+// Queue one per-joint runtime-status query (delivered only in passthrough
+// mode; see caveat above).  Returns 1 when queued.
+int sg100_read_runtime_status(uint8_t joint_id) {
+    std::lock_guard<std::mutex> lock(g_device_mutex);
+    if (!g_device || !g_started || joint_id < 1 || joint_id > JOINT_COUNT) {
+        return 0;
+    }
+    ++g_zero_status_queries;
+    return g_device->GetRuntimeStatus(joint_id) ? 1 : 0;
+}
+
+// Copy the cached RuntimeStatusFrame_t for one joint.  out must hold
+// sizeof(RuntimeStatusFrame_t) bytes; returns 1 when the cache is valid.
+int sg100_get_cached_runtime_status(uint8_t joint_id, uint8_t* out,
+                                    int capacity) {
+    std::lock_guard<std::mutex> lock(g_device_mutex);
+    if (!g_device || !out ||
+        capacity < static_cast<int>(sizeof(RuntimeStatusFrame_t)) ||
+        joint_id < 1 || joint_id > JOINT_COUNT) {
+        return 0;
+    }
+    RuntimeStatusFrame_t frame{};
+    if (!g_device->GetJointRuntimeStatus(joint_id, frame)) {
+        return 0;
+    }
+    std::memcpy(out, &frame, sizeof(frame));
+    return 1;
+}
+
+// Queue one per-joint calibration-parameter READ (joint_zero_rad source;
+// passthrough caveat above).  Returns 1 when queued.
+int sg100_read_param_calib(uint8_t joint_id) {
+    std::lock_guard<std::mutex> lock(g_device_mutex);
+    if (!g_device || !g_started || joint_id < 1 || joint_id > JOINT_COUNT) {
+        return 0;
+    }
+    ++g_zero_status_queries;
+    return g_device->ReadParamCalib(joint_id) ? 1 : 0;
+}
+
+// Copy the cached ParamCalibrationGroup_t for one joint.  Returns 1 when
+// the cache is valid.
+int sg100_get_cached_param_calib(uint8_t joint_id, uint8_t* out,
+                                 int capacity) {
+    std::lock_guard<std::mutex> lock(g_device_mutex);
+    if (!g_device || !out ||
+        capacity < static_cast<int>(sizeof(ParamCalibrationGroup_t)) ||
+        joint_id < 1 || joint_id > JOINT_COUNT) {
+        return 0;
+    }
+    ParamCalibrationGroup_t group{};
+    if (!g_device->GetJointParamCalib(joint_id, group)) {
+        return 0;
+    }
+    std::memcpy(out, &group, sizeof(group));
+    return 1;
+}
+
+uint64_t sg100_zero_status_queries(void) {
+    return g_zero_status_queries.load();
 }
 
 // -- offline ABI/construction verification (no device, no serial) ------------

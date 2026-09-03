@@ -1,0 +1,9 @@
+{
+  "per_joint": [],
+  "all_11_index_verified": false,
+  "all_11_signs_verified": false,
+  "middle_j1_gain_minus_1": "AMBIGUOUS",
+  "other_10_gain_plus_1": "CONFIRMED",
+  "canonical_to_sdk_sign_mapping": "BLOCKED",
+  "skipped_joints": []
+}

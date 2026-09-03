@@ -52,11 +52,15 @@ Sources are fixed:
 - `hand_action_source = "final_hardware_sent_qcmd"`
 - `hand_hardware_present = true`
 - `hand_feedback_available = true`
-- `hand_feedback_valid = true`
+- `hand_feedback_valid = true` (currently finite/transport-valid only; it does
+  not mean physical/canonical-valid until the future mode-7 gate exists)
 - `hand_feedback_semantics = "sg100_driver_reported_joint_feedback"`
-  (the SDK 0x05 response `Joint_Status_t.position` is the joint
-  board's accumulated position in rad — a measurement, not a command
-  echo)
+  (the SDK 0x05 response is a measurement, not a command echo; position
+  semantics depend on returned joint mode: MODE_NULL is proven
+  raw/accumulated-like, while mode 7 is vendor-confirmed intended joint
+  angle and pending physical verification on this unit)
+- `hand_feedback_physical_scale = "UNCHARACTERIZED"`
+- `hand_canonical_mapping_verdict = "BLOCKED"`
 - `hand_feedback_timestamp_source = "host_monotonic_receive"` (the
   vendor SDK provides no device timestamp; none is fabricated)
 - `hand_action_hardware_applied = false` — the SDK can only prove the
@@ -195,11 +199,21 @@ cannot build a full 17D transition until an explicit baseline is established.
 The inspector independently compares `state[0, 6:17]` with the serialized raw
 baseline using the same strict raw/canonical tolerance policy.
 
-In MEASURED mode the baseline role is replaced by the first measured
-feedback sample (`hand_measured_baseline` raw event, replay seed /
-audit only); canonical hand states come from measured feedback at the
-action boundaries, so the V1 requirement that the baseline equal
-`state[0, 6:17]` deliberately does not apply.
+In MEASURED mode the baseline role is replaced by the first measured feedback
+sample (`hand_measured_baseline` raw event, replay seed / audit only). MODE_NULL
+samples are raw/accumulated-like SDK callback coordinates and must never be
+silently interpreted as physical/canonical hand state. Canonical eligibility
+requires all expected joints to return mode 7 **and** hardware verification of
+mode-7 physical-angle semantics (vendor confirmed mode 7 is the intended
+correct-joint-angle mode on 2026-09-03; this unit's verification is pending).
+**The mode gate is now implemented** (2026-09-03): the driver preserves
+`joint_modes`/`feedback_domain`/`canonical_valid` per sample, and the
+collector rejects any sample that carries mode information but is not
+canonical-valid with `HAND_FEEDBACK_NON_CANONICAL_MODE` — a MODE_NULL
+accumulated value (e.g. the N1 ~1854-deg trace) can no longer enter
+`measured_hand_q`. Until mode-7 hardware validation passes
+(`canonical_valid` becomes attainable), every measured SG100 episode remains
+quarantined and non-training-eligible.
 
 ## Raw audit stream
 
@@ -249,7 +263,9 @@ arm_hand_data/
   arm_hand_manifest.json
 ```
 
-The NPZ contains physical `float64` arrays:
+The NPZ contains `float64` arrays.  RM65 coordinates are physical; SG100
+measured coordinates are quarantined as unscaled while the N1 blocker is
+open:
 
 - `state [N,17]`
 - `action [N,17]`

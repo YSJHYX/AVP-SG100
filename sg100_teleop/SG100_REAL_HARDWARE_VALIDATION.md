@@ -1,5 +1,16 @@
 # SG100 Real Hardware Validation Guide
 
+> **STOP (2026-09-03): DO NOT RUN ANY COMMAND IN THIS GUIDE.**  Real N1
+> tested only thumb_j1 with all joints commanded MODE_NULL and exposed that mode's
+> raw/accumulated scale mismatch (~15–30° physical motion -> +1854 callback
+> units). Vendor guidance says mode-7 feedback should instead be joint angle;
+> A later preserved v4 probe artifact reached stable all-11 mode7 with no
+> visible movement and fault 0, but returned signs disagreed with configured
+> ranges on J2/J5/J7/J10, so its physical position-domain result is AMBIGUOUS.
+> Canonical physical-angle semantics therefore remain unverified. H2 and all
+> later hardware stages are blocked. See
+> [SG100_LATEST_SDK_INTEGRATION.md](SG100_LATEST_SDK_INTEGRATION.md).
+
 > **HISTORICAL (2026-09-02, OLD SDK architecture).**  The H0–H5 flow and
 > every command below were written for the deleted CANFD-passive / raw
 > 0x25/0x27/audited-0x05 backend (`sg100_realtime_hold_test.py`,
@@ -10,7 +21,7 @@
 > They are NOT a validation of the new backend.  Current architecture,
 > pending hardware steps, and the probe command live in
 > [SG100_LATEST_SDK_INTEGRATION.md](SG100_LATEST_SDK_INTEGRATION.md);
-> new-SDK hardware status: **NOT YET VALIDATED**.
+> new-SDK status: N0 link/cadence validated; physical mapping **BLOCKED**.
 
 > 当前阶段定义已更新：H1 是 **SAFE REALTIME BOOTSTRAP / current-pose
 > hold**，原文中的单关节 smoke 顺延为 H2。H1 的 SDK cache 审计、安全序列、
@@ -40,7 +51,8 @@ READ-ONLY 或 DRY-RUN，真实运动必须显式 `--execute`。
 
 ## 最终运行行为要求（H3 实现时必须满足）
 
-- **startup measured pose**：程序启动后 MuJoCo 中的 SG100 必须显示真机
+- **startup measured pose（当前未满足，BLOCKED）**：只有全部关节返回 mode 7
+  且 mode-7 物理角语义经真机验证后，MuJoCo 中的 SG100 才能显示真机
   当前 **measured** 姿态（`--hand-backend real` 时 hand qpos 来自
   `read_feedback()`）。真机在 0 位则显示 0 位；真机不在 0 位则必须显示
   实际非 0 姿态。**禁止 startup 自动拉回 0 / home。**

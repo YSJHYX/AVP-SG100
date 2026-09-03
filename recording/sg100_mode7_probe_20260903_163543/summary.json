@@ -1,0 +1,215 @@
+{
+  "status": "MODE7_POSITION_DOMAIN_NOT_SUPPORTED",
+  "fault_status": "NO_FAULT_OBSERVED",
+  "NO_VISIBLE_ENTRY_MOTION": "PASS",
+  "tx_audit": {
+    "native_path": "SG100SDKDriver.send_mode7_feedback_probe -> sg100_set_hand_control -> SG100Device::SetHandControl(Hand_Control_t)",
+    "set_hand_control_calls_this_send": 1,
+    "latest_cached_requested_joint_modes": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "requested_positions_deg": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "p": 0,
+    "i": 0,
+    "d": 0,
+    "output_limit": 0,
+    "scheduler_alive": true,
+    "transition_window_s": 0.5
+  },
+  "COMMAND_SUBMITTED": true,
+  "frames_recorded": 20,
+  "FIRST_RX": 9.406706,
+  "FIRST_MODE7_ANY": 39.395807,
+  "FIRST_MODE7_ALL": 39.395807,
+  "MODE7_STABLE": 79.400609,
+  "TIMEOUT": false,
+  "SEMANTIC_REJECTION": null,
+  "OBSERVATION_COMPLETE": true,
+  "post_command_frames_target": 20,
+  "stable_mode7_samples_captured": 17,
+  "best_consecutive_all_mode7": 17,
+  "state": "MODE7_STABLE",
+  "MODE7_STATUS_MODE": "PASS",
+  "MODE7_POSITION_DOMAIN": "AMBIGUOUS",
+  "MODE7_PHYSICAL_FEEDBACK_HARDWARE_VALIDATED": false,
+  "canonical_valid_autoflip": "NOT_PERFORMED",
+  "mode_null_restore_after_mode7": true,
+  "per_joint": [
+    {
+      "joint": "J1",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": 10.2289457321167,
+      "mode7_median_deg": 10.2289457321167,
+      "mode7_min_deg": 10.2289457321167,
+      "mode7_max_deg": 10.2289457321167,
+      "configured_user_range_deg": [
+        0.0,
+        125.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": true
+    },
+    {
+      "joint": "J2",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": 18.083322525024414,
+      "mode7_median_deg": 18.083322525024414,
+      "mode7_min_deg": 18.083322525024414,
+      "mode7_max_deg": 18.083322525024414,
+      "configured_user_range_deg": [
+        -150.0,
+        0.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": false
+    },
+    {
+      "joint": "J3",
+      "mode_null_last_deg": -0.0,
+      "mode7_first_deg": 7.229345321655273,
+      "mode7_median_deg": 7.229345321655273,
+      "mode7_min_deg": 7.229345321655273,
+      "mode7_max_deg": 7.229345321655273,
+      "configured_user_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": true
+    },
+    {
+      "joint": "J4",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": 0.13200023770332336,
+      "mode7_median_deg": 0.13200023770332336,
+      "mode7_min_deg": 0.13200023770332336,
+      "mode7_max_deg": 0.13200023770332336,
+      "configured_user_range_deg": [
+        0.0,
+        90.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": true
+    },
+    {
+      "joint": "J5",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": -0.4284714460372925,
+      "mode7_median_deg": -0.4284714460372925,
+      "mode7_min_deg": -0.4284714460372925,
+      "mode7_max_deg": -0.4284714460372925,
+      "configured_user_range_deg": [
+        0.0,
+        125.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": false
+    },
+    {
+      "joint": "J6",
+      "mode_null_last_deg": -0.0,
+      "mode7_first_deg": -9.283442497253418,
+      "mode7_median_deg": -9.283442497253418,
+      "mode7_min_deg": -9.283442497253418,
+      "mode7_max_deg": -9.283442497253418,
+      "configured_user_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": true
+    },
+    {
+      "joint": "J7",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": -6.932403087615967,
+      "mode7_median_deg": -6.932403087615967,
+      "mode7_min_deg": -6.932403087615967,
+      "mode7_max_deg": -6.932403087615967,
+      "configured_user_range_deg": [
+        0.0,
+        125.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": false
+    },
+    {
+      "joint": "J8",
+      "mode_null_last_deg": -0.0,
+      "mode7_first_deg": -0.03279173746705055,
+      "mode7_median_deg": -0.03279173746705055,
+      "mode7_min_deg": -0.03279173746705055,
+      "mode7_max_deg": -0.03279173746705055,
+      "configured_user_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": true
+    },
+    {
+      "joint": "J9",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": -0.31862491369247437,
+      "mode7_median_deg": -0.31862491369247437,
+      "mode7_min_deg": -0.31862491369247437,
+      "mode7_max_deg": -0.31862491369247437,
+      "configured_user_range_deg": [
+        -180.0,
+        0.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": true
+    },
+    {
+      "joint": "J10",
+      "mode_null_last_deg": 0.0,
+      "mode7_first_deg": -3.955403566360473,
+      "mode7_median_deg": -3.955403566360473,
+      "mode7_min_deg": -3.955403566360473,
+      "mode7_max_deg": -3.955403566360473,
+      "configured_user_range_deg": [
+        0.0,
+        125.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": false
+    },
+    {
+      "joint": "J11",
+      "mode_null_last_deg": -0.0,
+      "mode7_first_deg": -8.811077117919922,
+      "mode7_median_deg": -8.811077117919922,
+      "mode7_min_deg": -8.811077117919922,
+      "mode7_max_deg": -8.811077117919922,
+      "configured_user_range_deg": [
+        -60.0,
+        90.0
+      ],
+      "multi_turn_present": false,
+      "range_plausible": true
+    }
+  ]
+}

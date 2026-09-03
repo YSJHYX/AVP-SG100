@@ -394,3 +394,109 @@ def test_probe_null_construction_verifies_11_mode_bytes(wrapper_lib) -> None:
     ok, mode_bytes = verify_null_construction(wrapper_lib)
     assert ok
     assert mode_bytes == [MODE_NULL] * HAND_DOF
+
+
+# -- N1: canonical <-> SDK user-angle candidate mapping ----------------------
+#
+# Candidate (PROPOSED, not applied to the production map): gain +1 on all
+# joints except middle_j1 (canonical range mirrors the runtime SDK user
+# range), offset 0 (N0 static probe read ~0 deg at the mechanical zero
+# pose).  The a/b coefficients in joint_angle_map.json describe
+# user->wire and are deliberately NOT used to derive this sign.
+
+N1_CANDIDATE_GAIN = [1.0] * 11
+N1_CANDIDATE_GAIN[6] = -1.0  # middle_j1: canonical [-2.18,0] rad vs J7 [0,125] deg
+N1_CANDIDATE_OFFSET_DEG = [0.0] * 11
+
+
+def test_n1_candidate_mapping_fits_runtime_sdk_ranges() -> None:
+    hardware_map = SG100HardwareMap()
+    ranges = load_vendor_user_ranges(Path(DEFAULT_SDK_DIR))
+    # The file this reads is the N0-runtime-PROVEN joint_angle_map.json
+    # (md5 8a0c1de4a7d60a47a016dd453fb49ee3).  If the SDK install changes,
+    # this test intentionally re-checks against whatever is installed.
+    assert ranges is not None
+
+    for joint in range(HAND_DOF):
+        gain = N1_CANDIDATE_GAIN[joint]
+        user_deg = sorted(
+            np.rad2deg(
+                gain * np.array(
+                    [hardware_map.lower_rad[joint],
+                     hardware_map.upper_rad[joint]]
+                )
+            )
+        )
+        sdk_low, sdk_high = ranges[joint]
+        assert user_deg[0] >= sdk_low - 0.5, (
+            f"joint {joint}: canonical min maps below the SDK user range"
+        )
+        assert user_deg[1] <= sdk_high + 0.5, (
+            f"joint {joint}: canonical max maps above the SDK user range"
+        )
+
+
+def test_n1_candidate_mapping_roundtrips_all_11_axes() -> None:
+    hardware_map = SG100HardwareMap()
+    rng = np.random.default_rng(20260903)
+    canonical = rng.uniform(
+        hardware_map.lower_rad, hardware_map.upper_rad
+    )
+    gain = np.asarray(N1_CANDIDATE_GAIN)
+    sdk_user_deg = gain * np.rad2deg(canonical)  # offset 0
+    recovered = np.deg2rad(sdk_user_deg / gain)
+    np.testing.assert_allclose(recovered, canonical, atol=1e-12)
+
+
+def test_n1_middle_j1_mirror_is_real_not_assumed() -> None:
+    # Document WHY middle_j1 is the only -1: its canonical range is the
+    # numeric mirror of the runtime SDK user range.  Every other joint's
+    # canonical range equals its SDK user range numerically.
+    hardware_map = SG100HardwareMap()
+    ranges = load_vendor_user_ranges(Path(DEFAULT_SDK_DIR))
+    assert ranges is not None
+    for joint in range(HAND_DOF):
+        canonical_deg = sorted(
+            np.rad2deg(
+                [hardware_map.lower_rad[joint],
+                 hardware_map.upper_rad[joint]]
+            )
+        )
+        sdk_range = sorted(ranges[joint])
+        mirrored = (
+            abs(canonical_deg[0] + sdk_range[1]) < 0.5
+            and abs(canonical_deg[1] + sdk_range[0]) < 0.5
+        )
+        equal = (
+            abs(canonical_deg[0] - sdk_range[0]) < 0.5
+            and abs(canonical_deg[1] - sdk_range[1]) < 0.5
+        )
+        if joint == 6:  # middle_j1
+            assert mirrored and not equal
+        else:
+            assert equal and not mirrored, f"joint {joint} changed shape"
+
+
+# -- N1: read-only zero/calibration status surface ---------------------------
+
+
+def test_n1_zero_status_exports_exist(wrapper_lib) -> None:
+    for export in (
+        "sg100_read_runtime_status",
+        "sg100_get_cached_runtime_status",
+        "sg100_read_param_calib",
+        "sg100_get_cached_param_calib",
+        "sg100_zero_status_queries",
+    ):
+        assert hasattr(wrapper_lib, export)
+
+
+def test_n1_zero_status_methods_fail_closed_when_disconnected(tmp_path) -> None:
+    driver = SG100SDKDriver(
+        "/dev/null", hardware_map=SG100HardwareMap(),
+        sdk_dir=Path(DEFAULT_SDK_DIR),
+    )
+    assert driver.read_runtime_status(1) is False
+    assert driver.cached_runtime_status(1) is None
+    assert driver.read_param_calib(1) is False
+    assert driver.cached_param_calib(1) is None

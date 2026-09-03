@@ -7,10 +7,15 @@ description; this docstring summarizes the load-bearing facts):
   Its CommScheduler drives the 10 ms realtime exchange; this module never
   builds protocol frames, parses CRC, or manages raw commands (0x05/0x25/
   0x26/0x27 are vendor-internal details that upper layers must not see).
-- ``SetHandControl`` input domain is the SDK USER-ANGLE domain in DEGREES.
+- ``SetHandControl`` input domain is documented by the SDK as its user-angle
+  coordinate in degrees.
   The SDK applies ``joint_angle_map.json`` (per-joint clamp + a*x + b) and
-  converts to wire radians internally.  The status callback returns the
-  same user-degree domain (inverse map, no receive clamp).
+  converts to wire radians internally. Status applies the inverse map and
+  rad-to-degree conversion without mode branching. Real N1 proved MODE_NULL
+  position is raw/accumulated-like; the vendor CONFIRMED mode-7
+  (MODE_JOINT_POSITION) position is the intended correct joint angle
+  (historical vendor production logs strongly support it), but physical
+  correctness on this unit remains pending hardware verification.
 - This module is the ONLY place where canonical software radians meet the
   vendor user-degree domain, through ``SG100HardwareMap`` (canonical rad
   <-> user rad) plus a single rad<->deg conversion.
@@ -31,19 +36,25 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import struct
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from sg100_teleop.robot.sg100_driver import (
+    FEEDBACK_DOMAIN_MODE7_CANDIDATE,
+    FEEDBACK_DOMAIN_NON_CANONICAL_DIAGNOSTIC,
     HAND_DOF,
+    MODE_JOINT_POSITION,
     SG100CommandSent,
     SG100Driver,
     SG100HandFeedback,
     SG100HardwareMap,
+    classify_feedback_domain,
 )
 
 
@@ -57,13 +68,36 @@ WRAPPER_LIBRARY = (
 
 DEFAULT_BAUDRATE = 1_000_000
 
-# CtrlMode_e (sg100_types.h).  MODE_NULL = no drive output (safe passive
-# hold); MODE_JOINT_POSITION = absolute joint-position control referenced
-# to the joint board zero — the vendor's own teleop-style examples
-# (teaching_mode, interpolated motion) use it.
+# CtrlMode_e (sg100_types.h @ V1.5_NO_TACTILE, lines 165-176) — per-JOINT
+# control modes, distinct from the palm runtime mode (SwitchToRealtimeMode).
+# MODE_NULL = no drive output (safe passive hold); MODE_JOINT_POSITION =
+# absolute joint-position control referenced to the joint board zero
+# (header comment: "关节位置控制 (基于 joint_zero_rad 的绝对位置)") — the
+# vendor's own teleop-style examples (teaching_mode, interpolated motion)
+# use it, and the vendor production logs run mode 7 end to end.
 MODE_NULL = 0
 MODE_POSITION = 1
 MODE_JOINT_POSITION = 7
+MODE_IMPEDANCE = 8
+MODE_JOINT_IMPEDANCE = 9
+
+
+@dataclass(frozen=True)
+class SG100Mode7ProbeSubmission:
+    """Accepted feedback-probe cache update in the SDK user domain.
+
+    This is deliberately separate from :class:`SG100CommandSent`: the
+    fixed zero-degree payload is a diagnostic MODE7 entry request, not a
+    canonical physical-position action.
+    """
+
+    sent_monotonic_ns: int
+    requested_positions_deg: tuple[float, ...]
+    requested_modes: tuple[int, ...]
+    p: int = 0
+    i: int = 0
+    d: int = 0
+    output_limit: int = 0
 
 # Whole-hand control gains, matching teaching_mode_example.cpp.
 DEFAULT_KP = 0.5
@@ -193,10 +227,34 @@ def _load_wrapper_library(
         "sg100_hand_status_callbacks",
         "sg100_hand_control_calls",
         "sg100_switch_to_realtime_calls",
+        "sg100_zero_status_queries",
     ):
         func = getattr(lib, name)
         func.argtypes = []
         func.restype = ctypes.c_uint64
+
+    # Read-only joint zero/calibration status (see driver methods; the
+    # packed frame layouts mirror sg100_types.h under #pragma pack(1)).
+    runtime_status_array = np.ctypeslib.ndpointer(
+        dtype=np.uint8, shape=(64,)
+    )
+    lib.sg100_read_runtime_status.argtypes = [ctypes.c_uint8]
+    lib.sg100_read_runtime_status.restype = ctypes.c_int
+    lib.sg100_get_cached_runtime_status.argtypes = [
+        ctypes.c_uint8,
+        runtime_status_array,
+        ctypes.c_int,
+    ]
+    lib.sg100_get_cached_runtime_status.restype = ctypes.c_int
+    param_calib_array = np.ctypeslib.ndpointer(dtype=np.uint8, shape=(32,))
+    lib.sg100_read_param_calib.argtypes = [ctypes.c_uint8]
+    lib.sg100_read_param_calib.restype = ctypes.c_int
+    lib.sg100_get_cached_param_calib.argtypes = [
+        ctypes.c_uint8,
+        param_calib_array,
+        ctypes.c_int,
+    ]
+    lib.sg100_get_cached_param_calib.restype = ctypes.c_int
 
     lib.sg100_test_struct_sizes.argtypes = [
         np.ctypeslib.ndpointer(dtype=np.int32, shape=(6,)),
@@ -270,6 +328,7 @@ class SG100SDKDriver(SG100Driver):
         ki: float = DEFAULT_KI,
         kd: float = DEFAULT_KD,
         output_limit: float = DEFAULT_OUTPUT_LIMIT,
+        mode7_hardware_validated: bool = False,
     ) -> None:
         self.port = str(port)
         self.baudrate = int(baudrate)
@@ -282,6 +341,11 @@ class SG100SDKDriver(SG100Driver):
             sdk_dir if sdk_dir is not None else DEFAULT_SDK_DIR
         )
         self.control_mode = int(control_mode)
+        # Stays False until the planned one-joint MODE7 hardware validation
+        # proves that returned mode-7 position equals physical joint angle
+        # on this unit.  While False, read_feedback() never reports
+        # canonical_valid=True, so measured data stays quarantined.
+        self._mode7_hardware_validated = bool(mode7_hardware_validated)
         self._pid_p = quantize_gain(kp)
         self._pid_i = quantize_gain(ki)
         self._pid_d = quantize_gain(kd)
@@ -421,7 +485,22 @@ class SG100SDKDriver(SG100Driver):
     # -- feedback -----------------------------------------------------------
 
     def read_feedback(self) -> SG100HandFeedback | None:
-        """Newest SDK callback sample in canonical form (deduped)."""
+        """Newest deduped callback with per-joint modes preserved.
+
+        The returned ``joint_modes`` are the hardware ``Joint_Status.mode``
+        bytes (real joint-board state — vendor logs show mode 0/7 changing
+        on the RX side while TX stays mode 7, so this is not a command
+        echo).  ``feedback_domain`` classifies the sample conservatively:
+        all-7 -> MODE7_JOINT_POSITION_CANDIDATE, anything else ->
+        NON_CANONICAL_DIAGNOSTIC.  ``canonical_valid`` additionally
+        requires ``mode7_hardware_validated`` (default False; flip only
+        after the real-hardware MODE7 physical-angle validation passes).
+
+        ``q_rad`` retains the existing hardware-map conversion for API
+        compatibility, but its numeric meaning is returned-mode-dependent
+        (MODE_NULL is raw/accumulated-like) and it is NOT validated
+        canonical q while ``canonical_valid`` is False.
+        """
 
         if not self._connected:
             return None
@@ -439,6 +518,11 @@ class SG100SDKDriver(SG100Driver):
         if sequence == self._last_sequence:
             return self._last_feedback  # cache not refreshed
 
+        joint_modes = tuple(int(m) for m in modes)
+        feedback_domain = classify_feedback_domain(joint_modes)
+        # This numerically reverses the SDK's callback degree rendering only.
+        # MODE_NULL is raw/accumulated-like; mode-7 physical semantics and its
+        # zero/scale path remain pending hardware verification.
         sdk_user_rad = np.deg2rad(positions_deg)
         canonical = self.hardware_map.actual_to_canonical(sdk_user_rad)
         feedback = SG100HandFeedback(
@@ -451,6 +535,12 @@ class SG100SDKDriver(SG100Driver):
             ),
             raw_positions=sdk_user_rad.copy(),
             currents=currents.copy(),
+            joint_modes=joint_modes,
+            feedback_domain=feedback_domain,
+            canonical_valid=bool(
+                feedback_domain == FEEDBACK_DOMAIN_MODE7_CANDIDATE
+                and self._mode7_hardware_validated
+            ),
         )
         self._last_sequence = sequence
         self._last_feedback = feedback
@@ -526,6 +616,49 @@ class SG100SDKDriver(SG100Driver):
         with self._events_lock:
             self._events.append(event)
         return event
+
+    def send_mode7_feedback_probe(
+        self,
+    ) -> SG100Mode7ProbeSubmission | None:
+        """Submit the one fixed, zero-output MODE7 feedback-probe frame.
+
+        Unlike :meth:`send_positions_rad`, this narrowly scoped diagnostic
+        path does not interpret its payload as canonical physical radians,
+        apply ``SG100HardwareMap``, clamp canonical limits, or inject the
+        driver's production PID/output settings.  It calls the same native
+        ``sg100_set_hand_control`` wrapper exactly once with SDK user-domain
+        positions 0.0 degrees, mode 7, and p=i=d=output_limit=0 for all 11
+        joints.  The vendor scheduler owns subsequent ~100 Hz retransmission
+        of that cached control.
+
+        The zero-output configuration is intended to produce no active
+        drive; absence of physical motion remains a hardware acceptance
+        criterion, not a software guarantee.
+        """
+
+        if not self._connected or not self._realtime:
+            return None
+        positions_deg = np.zeros(HAND_DOF, dtype=np.float32)
+        accepted = int(
+            self._wrapper().sg100_set_hand_control(
+                positions_deg,
+                HAND_DOF,
+                MODE_JOINT_POSITION,
+                0,
+                0,
+                0,
+                0,
+            )
+        )
+        if accepted != 1:
+            return None
+        return SG100Mode7ProbeSubmission(
+            # Timestamp after SetHandControl returns: only callback samples
+            # strictly newer than this marker count as post-submission RX.
+            sent_monotonic_ns=time.monotonic_ns(),
+            requested_positions_deg=(0.0,) * HAND_DOF,
+            requested_modes=(MODE_JOINT_POSITION,) * HAND_DOF,
+        )
 
     def hold_passive(self) -> bool:
         """Seed MODE_NULL without leaving realtime (safe no-drive hold)."""
@@ -604,3 +737,90 @@ class SG100SDKDriver(SG100Driver):
     @property
     def vendor_user_ranges(self) -> list[tuple[float, float]] | None:
         return self._vendor_user_ranges
+
+    # -- read-only joint zero / calibration status ---------------------------
+    #
+    # RuntimeStatusFrame_t / ParamCalibrationGroup_t carry the zero-relevant
+    # READ-ONLY facts (runtime_state incl. JOINT_STATE_HOMING, foc_ready,
+    # calibration_flags, joint_zero_rad).  Both queries are joint-level
+    # PASSTHROUGH commands: the vendor scheduler delivers them only in
+    # WORK_MODE_PASSTHROUGH, so on hardware a manual pause/resume cycle is
+    # required around the query.  These methods never switch modes
+    # themselves and never write anything.
+
+    def read_runtime_status(self, joint_id: int) -> bool:
+        """Queue a per-joint runtime-status query (passthrough caveat)."""
+
+        if not self._connected:
+            return False
+        return bool(
+            self._wrapper().sg100_read_runtime_status(int(joint_id))
+        )
+
+    def cached_runtime_status(self, joint_id: int) -> dict | None:
+        """Decoded RuntimeStatusFrame_t cache for one joint, if valid."""
+
+        if not self._connected:
+            return None
+        buffer = np.zeros(64, dtype=np.uint8)
+        if self._wrapper().sg100_get_cached_runtime_status(
+            int(joint_id), buffer, buffer.size
+        ) != 1:
+            return None
+        (
+            frame_id, foc_ready, runtime_fault, runtime_state,
+            control_mode, foc_mode, driver_fault_active,
+            adc_offset_ready, telemetry_running, calibration_flags,
+            target_position, target_speed, target_torque_d,
+            target_torque_q, max_speed, max_torque_norm,
+            rotor_zero_angle,
+        ) = struct.unpack_from("<9B I 7f", buffer, 0)
+        return {
+            "id": frame_id,
+            "foc_ready": foc_ready,
+            "runtime_fault": runtime_fault,
+            "runtime_state": runtime_state,  # JointState_e (7=HOMING)
+            "control_mode": control_mode,
+            "foc_mode": foc_mode,
+            "driver_fault_active": driver_fault_active,
+            "adc_offset_ready": adc_offset_ready,
+            "telemetry_running": telemetry_running,
+            "calibration_flags": calibration_flags,
+            "target_position": target_position,
+            "target_speed": target_speed,
+            "target_torque_d": target_torque_d,
+            "target_torque_q": target_torque_q,
+            "max_speed": max_speed,
+            "max_torque_norm": max_torque_norm,
+            "rotor_zero_angle": rotor_zero_angle,
+        }
+
+    def read_param_calib(self, joint_id: int) -> bool:
+        """Queue a per-joint calibration READ (joint_zero_rad source)."""
+
+        if not self._connected:
+            return False
+        return bool(self._wrapper().sg100_read_param_calib(int(joint_id)))
+
+    def cached_param_calib(self, joint_id: int) -> dict | None:
+        """Decoded ParamCalibrationGroup_t cache for one joint, if valid."""
+
+        if not self._connected:
+            return None
+        buffer = np.zeros(32, dtype=np.uint8)
+        if self._wrapper().sg100_get_cached_param_calib(
+            int(joint_id), buffer, buffer.size
+        ) != 1:
+            return None
+        (
+            electrical_angle_zero, foc_mode, calibration_flags,
+            align_voltage_d, align_time_ms, joint_zero_rad,
+        ) = struct.unpack_from("<f B I f I f", buffer, 0)
+        return {
+            "electrical_angle_zero": electrical_angle_zero,
+            "foc_mode": foc_mode,
+            "calibration_flags": calibration_flags,
+            "align_voltage_d": align_voltage_d,
+            "align_time_ms": align_time_ms,
+            "joint_zero_rad": joint_zero_rad,
+        }

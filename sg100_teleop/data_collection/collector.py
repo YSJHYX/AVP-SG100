@@ -334,6 +334,23 @@ class ArmHandDataCollector:
             "sequence": feedback.sequence,
             "q_rad": feedback.q_rad,
             "raw_positions": feedback.raw_positions,
+            # Numeric callback value converted by pi/180. Its physical
+            # meaning is returned-mode-dependent: MODE_NULL is
+            # real-hardware-proven raw/accumulated-like, mode 7 is
+            # vendor-confirmed intended joint angle but unverified here.
+            "raw_positions_domain": (
+                "sdk_callback_rad_equivalent_mode_dependent_unverified"
+            ),
+            # Hardware Joint_Status.mode bytes and the mode-aware
+            # classification, preserved end to end by the SDK driver.
+            "joint_modes": (
+                list(feedback.joint_modes)
+                if feedback.joint_modes is not None
+                else None
+            ),
+            "feedback_domain": feedback.feedback_domain,
+            "canonical_valid": feedback.canonical_valid,
+            "physical_scale_characterized": False,
             "valid": feedback.valid,
             "measured": True,
             "hardware_feedback": True,
@@ -373,6 +390,28 @@ class ArmHandDataCollector:
                 RejectionReason.HAND_FEEDBACK_INVALID,
                 timestamp,
                 f"valid={feedback.valid}",
+            )
+            return
+
+        if feedback.joint_modes is not None and not feedback.canonical_valid:
+            # Mode gate (ARM_HAND_DATA_CONTRACT_V1 / MODE7 audit): only
+            # mode-7 feedback whose physical-angle semantics are
+            # hardware-validated may become measured_hand_q.  Anything
+            # else with mode information — MODE_NULL accumulated values
+            # (e.g. the real N1 ~1854 deg trace), mode-1 samples, mixed
+            # modes, or unvalidated mode-7 candidates — is diagnostic
+            # only and is rejected as a measurement.  Samples without
+            # mode information (mock/legacy drivers) keep the previous
+            # manifest-level quarantine path.
+            self._reject(
+                None,
+                RejectionReason.HAND_FEEDBACK_NON_CANONICAL_MODE,
+                timestamp,
+                (
+                    f"feedback_domain={feedback.feedback_domain}, "
+                    f"joint_modes={list(feedback.joint_modes)}, "
+                    "mode7 canonical validation pending"
+                ),
             )
             return
 
@@ -989,6 +1028,8 @@ class ArmHandDataCollector:
                 "hand_feedback_available": True,
                 "hand_feedback_valid": True,
                 "hand_feedback_semantics": "sg100_driver_reported_joint_feedback",
+                "hand_feedback_physical_scale": "UNCHARACTERIZED",
+                "hand_canonical_mapping_verdict": "BLOCKED",
                 "hand_feedback_timestamp_source": "host_monotonic_receive",
                 "hand_action_hardware_applied": False,
                 "hand_action_hardware_sent": True,
@@ -1013,6 +1054,8 @@ class ArmHandDataCollector:
                 "hand_action_hardware_applied": False,
                 "hand_feedback_available": False,
                 "hand_feedback_valid": False,
+                "hand_feedback_physical_scale": "NOT_APPLICABLE_PROXY",
+                "hand_canonical_mapping_verdict": "BLOCKED",
             }
         manifest = {
             "schema": SCHEMA_NAME,
@@ -1027,9 +1070,28 @@ class ArmHandDataCollector:
             "rejection_count": len(self.rejections),
             "rejection_counts": dict(sorted(counts.items())),
             "markov_diagnostic": markov.value,
-            "quarantined": markov is MarkovStatus.MARKOV_SUSPECT,
+            "quarantined": (
+                markov is MarkovStatus.MARKOV_SUSPECT
+                or self.hand_measured_feedback
+            ),
+            "quarantine_reasons": [
+                reason
+                for reason, active in (
+                    ("MARKOV_SUSPECT", markov is MarkovStatus.MARKOV_SUSPECT),
+                    (
+                        "SG100_PHYSICAL_SCALE_UNCHARACTERIZED",
+                        self.hand_measured_feedback,
+                    ),
+                )
+                if active
+            ],
             "training_eligible_indices": (
-                [] if markov is MarkovStatus.MARKOV_SUSPECT else list(range(len(self.transitions)))
+                []
+                if (
+                    markov is MarkovStatus.MARKOV_SUSPECT
+                    or self.hand_measured_feedback
+                )
+                else list(range(len(self.transitions)))
             ),
             "camera": self.camera_provider.metadata(),
             "raw_events_file": raw_path.name,
