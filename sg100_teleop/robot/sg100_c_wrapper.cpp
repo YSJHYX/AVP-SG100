@@ -8,7 +8,8 @@
 //   connect            SetConfig + SetConfigSearchDir + Init +
 //                      RegisterHandStatusCallback/RegisterErrorCallback +
 //                      Start()            (scheduler thread starts)
-//   set_hand_control   Hand_Control_t (id=i+1, caller mode, user DEG)
+//   set_hand_control   Hand_Control_t (id=i+1, per-joint mode/gains,
+//                      user DEG)
 //                      -> SG100Device::SetHandControl
 //                      (RS485: updates cached_control_; the scheduler
 //                      encodes clamp+map+deg->rad and sends 0x05 at 100 Hz)
@@ -95,22 +96,25 @@ void on_error(uint8_t, uint8_t) {
     ++g_error_frames;
 }
 
-// Build the whole-hand control frame exactly as the vendor examples do
-// (teaching_mode_example.cpp): id=i+1, caller-selected mode, position in
-// USER DEGREES, quantized PID/output gains shared by all joints.
+// Build the whole-hand control frame exactly as the vendor examples do.
+// Every field is supplied per joint because the active micro-motion safety
+// harness must keep ten MODE7 joints at zero output while enabling exactly
+// one MODE7 position loop.  This still produces one Hand_Control_t and one
+// SG100Device::SetHandControl call; no sender or protocol path is added.
 Hand_Control_t build_hand_control(const float* positions_deg,
-                                  uint8_t mode,
-                                  uint16_t p, uint16_t i, uint16_t d,
-                                  uint16_t output_limit) {
+                                  const uint8_t* modes,
+                                  const uint16_t* p, const uint16_t* i,
+                                  const uint16_t* d,
+                                  const uint16_t* output_limits) {
     Hand_Control_t control{};
     for (int j = 0; j < JOINT_COUNT; ++j) {
         control.joints[j].id = static_cast<uint8_t>(j + 1);
-        control.joints[j].mode = mode;
+        control.joints[j].mode = modes[j];
         control.joints[j].position = positions_deg[j];
-        control.joints[j].p = p;
-        control.joints[j].i = i;
-        control.joints[j].d = d;
-        control.joints[j].output_limit = output_limit;
+        control.joints[j].p = p[j];
+        control.joints[j].i = i[j];
+        control.joints[j].d = d[j];
+        control.joints[j].output_limit = output_limits[j];
     }
     return control;
 }
@@ -227,18 +231,21 @@ int sg100_request_hand_status(void) {
 // -- control -----------------------------------------------------------------
 
 // Whole-hand realtime control through the vendor production API.
-// positions_deg: 11 USER-DEGREE values; mode: CtrlMode_e byte
+// positions_deg: 11 USER-DEGREE values; modes: 11 CtrlMode_e bytes
 // (1=MODE_POSITION, 7=MODE_JOINT_POSITION, 0=MODE_NULL); p/i/d and
-// output_limit are pre-quantized u16 (SG100_Quant::encodePid/encodeOutLim).
+// output_limits are 11 pre-quantized u16 values
+// (SG100_Quant::encodePid/encodeOutLim).
 // RS485 semantics: updates cached_control_ and returns; the 10 ms
 // scheduler encodes and transmits.  Returns 1 when accepted.
-int sg100_set_hand_control(const float* positions_deg, int count,
-                           uint8_t mode,
-                           uint16_t p, uint16_t i, uint16_t d,
-                           uint16_t output_limit) {
+int sg100_set_hand_control(const float* positions_deg,
+                           const uint8_t* modes,
+                           const uint16_t* p, const uint16_t* i,
+                           const uint16_t* d,
+                           const uint16_t* output_limits,
+                           int count) {
     std::lock_guard<std::mutex> lock(g_device_mutex);
-    if (!g_device || !g_started || !positions_deg ||
-        count != JOINT_COUNT) {
+    if (!g_device || !g_started || !positions_deg || !modes || !p || !i ||
+        !d || !output_limits || count != JOINT_COUNT) {
         return 0;
     }
     for (int j = 0; j < JOINT_COUNT; ++j) {
@@ -247,7 +254,7 @@ int sg100_set_hand_control(const float* positions_deg, int count,
         }
     }
     const Hand_Control_t control = build_hand_control(
-        positions_deg, mode, p, i, d, output_limit);
+        positions_deg, modes, p, i, d, output_limits);
     ++g_hand_control_calls;
     return g_device->SetHandControl(control) ? 1 : 0;
 }
@@ -401,8 +408,39 @@ int sg100_test_serialize_hand_control(const float* positions_deg, int count,
         capacity < static_cast<int>(sizeof(Hand_Control_t))) {
         return 0;
     }
+    std::array<uint8_t, JOINT_COUNT> modes{};
+    std::array<uint16_t, JOINT_COUNT> ps{};
+    std::array<uint16_t, JOINT_COUNT> is{};
+    std::array<uint16_t, JOINT_COUNT> ds{};
+    std::array<uint16_t, JOINT_COUNT> limits{};
+    modes.fill(mode);
+    ps.fill(p);
+    is.fill(i);
+    ds.fill(d);
+    limits.fill(output_limit);
     const Hand_Control_t control = build_hand_control(
-        positions_deg, mode, p, i, d, output_limit);
+        positions_deg, modes.data(), ps.data(), is.data(), ds.data(),
+        limits.data());
+    std::memcpy(out, &control, sizeof(control));
+    return static_cast<int>(sizeof(control));
+}
+
+// Serialize a per-joint Hand_Control_t for offline safety verification.
+int sg100_test_serialize_hand_control_per_joint(
+        const float* positions_deg, const uint8_t* modes,
+        const uint16_t* p, const uint16_t* i, const uint16_t* d,
+        const uint16_t* output_limits, int count,
+        uint8_t* out, int capacity) {
+    if (!positions_deg || !modes || !p || !i || !d || !output_limits ||
+        count != JOINT_COUNT || !out ||
+        capacity < static_cast<int>(sizeof(Hand_Control_t))) {
+        return 0;
+    }
+    for (int j = 0; j < JOINT_COUNT; ++j) {
+        if (!std::isfinite(positions_deg[j])) return 0;
+    }
+    const Hand_Control_t control = build_hand_control(
+        positions_deg, modes, p, i, d, output_limits);
     std::memcpy(out, &control, sizeof(control));
     return static_cast<int>(sizeof(control));
 }

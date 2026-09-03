@@ -11,7 +11,10 @@
 # gain / offset_rad: SDK user-angle radians relate to canonical software
 # radians by
 #     sdk_user  = gain * canonical + offset_rad      (send)
-#     canonical = gain * (sdk_user - offset_rad)     (receive)
+# The algebraic inverse exists only as a legacy mock/round-trip helper. It is
+# NOT the inbound feedback map. Real callback conversion is the separately
+# configured/validated SG100FeedbackMap (F_fb); F_fb must never be inferred
+# from these outbound gain/offset values.
 # The vendor SDK separately applies its RUNTIME joint_angle_map.json
 # (PROVEN by N0: ~/SG100_SDK_Publish/joint_angle_map.json, md5
 # 8a0c1de4a7d60a47a016dd453fb49ee3) between this user-degree domain and

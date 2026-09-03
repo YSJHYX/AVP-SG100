@@ -155,6 +155,26 @@ class SG100Mode7ProbeSubmission:
     d: int = 0
     output_limit: int = 0
 
+
+@dataclass(frozen=True)
+class SG100Mode7ActiveSubmission:
+    """One mixed-output MODE7 cache update in the SDK degree domain.
+
+    This diagnostic event is intentionally not :class:`SG100CommandSent`:
+    its target is seeded from MODE7 callback coordinates and does not claim
+    canonical/F_cmd validation.  Exactly one joint may carry non-zero
+    position-loop output; the other ten remain MODE7 with zero gains/output.
+    """
+
+    sent_monotonic_ns: int
+    active_joint_index: int
+    requested_positions_deg: tuple[float, ...]
+    requested_modes: tuple[int, ...]
+    p: tuple[int, ...]
+    i: tuple[int, ...]
+    d: tuple[int, ...]
+    output_limit: tuple[int, ...]
+
 # Whole-hand control gains, matching teaching_mode_example.cpp.
 DEFAULT_KP = 0.5
 DEFAULT_KI = 0.0
@@ -249,6 +269,17 @@ def _load_wrapper_library(
             ) from exc
 
     lib = ctypes.CDLL(str(path))
+    # The wrapper is checked into this repository for convenient startup.
+    # A checkout can preserve timestamps such that the source-mtime test
+    # alone misses an older C ABI.  The per-joint serializer is the explicit
+    # ABI marker for the mixed-output MODE7 update; rebuild before binding
+    # signatures if the marker is absent.
+    if (
+        library_path is None
+        and not hasattr(lib, "sg100_test_serialize_hand_control_per_joint")
+    ):
+        _build_wrapper(sdk_dir=sdk_dir, output_path=path)
+        lib = ctypes.CDLL(str(path))
 
     lib.sg100_connect.argtypes = [
         ctypes.c_char_p,
@@ -273,14 +304,12 @@ def _load_wrapper_library(
     lib.sg100_request_hand_status.argtypes = []
     lib.sg100_request_hand_status.restype = ctypes.c_int
 
+    float11 = np.ctypeslib.ndpointer(dtype=np.float32, shape=(HAND_DOF,))
+    uint8_11 = np.ctypeslib.ndpointer(dtype=np.uint8, shape=(HAND_DOF,))
+    uint16_11 = np.ctypeslib.ndpointer(dtype=np.uint16, shape=(HAND_DOF,))
     lib.sg100_set_hand_control.argtypes = [
-        np.ctypeslib.ndpointer(dtype=np.float32, shape=(HAND_DOF,)),
+        float11, uint8_11, uint16_11, uint16_11, uint16_11, uint16_11,
         ctypes.c_int,
-        ctypes.c_uint8,
-        ctypes.c_uint16,
-        ctypes.c_uint16,
-        ctypes.c_uint16,
-        ctypes.c_uint16,
     ]
     lib.sg100_set_hand_control.restype = ctypes.c_int
     lib.sg100_switch_to_realtime_mode.argtypes = []
@@ -339,6 +368,13 @@ def _load_wrapper_library(
         ctypes.c_int,
     ]
     lib.sg100_test_serialize_hand_control.restype = ctypes.c_int
+    lib.sg100_test_serialize_hand_control_per_joint.argtypes = [
+        float11, uint8_11, uint16_11, uint16_11, uint16_11, uint16_11,
+        ctypes.c_int,
+        np.ctypeslib.ndpointer(dtype=np.uint8, shape=(176,)),
+        ctypes.c_int,
+    ]
+    lib.sg100_test_serialize_hand_control_per_joint.restype = ctypes.c_int
     return lib
 
 
@@ -365,6 +401,7 @@ _WRAPPER_EXPORTS = (
     "sg100_zero_status_queries",
     "sg100_test_struct_sizes",
     "sg100_test_serialize_hand_control",
+    "sg100_test_serialize_hand_control_per_joint",
 )
 
 
@@ -784,15 +821,14 @@ class SG100SDKDriver(SG100Driver):
         payload = np.ascontiguousarray(
             positions_deg, dtype=np.float32
         )
+        modes = np.full(HAND_DOF, self.control_mode, dtype=np.uint8)
+        ps = np.full(HAND_DOF, self._pid_p, dtype=np.uint16)
+        is_ = np.full(HAND_DOF, self._pid_i, dtype=np.uint16)
+        ds = np.full(HAND_DOF, self._pid_d, dtype=np.uint16)
+        limits = np.full(HAND_DOF, self._output_limit, dtype=np.uint16)
         accepted = int(
             self._wrapper().sg100_set_hand_control(
-                payload,
-                HAND_DOF,
-                self.control_mode,
-                self._pid_p,
-                self._pid_i,
-                self._pid_d,
-                self._output_limit,
+                payload, modes, ps, is_, ds, limits, HAND_DOF,
             )
         )
         if accepted != 1:
@@ -830,15 +866,11 @@ class SG100SDKDriver(SG100Driver):
         if not self._connected or not self._realtime:
             return None
         positions_deg = np.zeros(HAND_DOF, dtype=np.float32)
+        modes = np.full(HAND_DOF, MODE_JOINT_POSITION, dtype=np.uint8)
+        zeros = np.zeros(HAND_DOF, dtype=np.uint16)
         accepted = int(
             self._wrapper().sg100_set_hand_control(
-                positions_deg,
-                HAND_DOF,
-                MODE_JOINT_POSITION,
-                0,
-                0,
-                0,
-                0,
+                positions_deg, modes, zeros, zeros, zeros, zeros, HAND_DOF,
             )
         )
         if accepted != 1:
@@ -849,6 +881,76 @@ class SG100SDKDriver(SG100Driver):
             sent_monotonic_ns=time.monotonic_ns(),
             requested_positions_deg=(0.0,) * HAND_DOF,
             requested_modes=(MODE_JOINT_POSITION,) * HAND_DOF,
+        )
+
+    def send_mode7_active_single_joint(
+        self,
+        active_joint_index: int,
+        positions_deg: np.ndarray,
+        *,
+        kp: float = 0.1,
+        ki: float = 0.0,
+        kd: float = 0.0,
+        output_limit: float = 0.5,
+    ) -> SG100Mode7ActiveSubmission | None:
+        """Submit one SDK-domain MODE7 frame with exactly one driven joint.
+
+        This narrow test-only path never calls ``SG100HardwareMap`` and never
+        clamps.  The caller must seed ``positions_deg`` from fresh all-MODE7
+        feedback.  Every value is range-checked against the runtime vendor
+        map, and the call is rejected if the active fields do not describe
+        exactly one positive-output position loop.
+        """
+
+        if not self._connected or not self._realtime:
+            return None
+        joint = int(active_joint_index)
+        if joint < 0 or joint >= HAND_DOF:
+            raise ValueError("active_joint_index must be in 0..10")
+        positions = np.asarray(positions_deg, dtype=np.float64)
+        if positions.shape != (HAND_DOF,) or not np.all(np.isfinite(positions)):
+            raise ValueError("positions_deg must contain 11 finite values")
+        # No clamp: rejection preserves the evidentiary value of the target.
+        if not self._user_deg_within_vendor_range(positions):
+            self._rejected_commands += 1
+            return None
+        gains = [float(kp), float(ki), float(kd), float(output_limit)]
+        if not all(np.isfinite(value) for value in gains):
+            raise ValueError("PID/output_limit values must be finite")
+        if tuple(gains) != (0.1, 0.0, 0.0, 0.5):
+            raise ValueError(
+                "active micro-motion path only permits the vendor-evidenced "
+                "p/i/d/output_limit = 0.1/0/0/0.5 candidate"
+            )
+
+        payload = np.ascontiguousarray(positions, dtype=np.float32)
+        modes = np.full(HAND_DOF, MODE_JOINT_POSITION, dtype=np.uint8)
+        ps = np.zeros(HAND_DOF, dtype=np.uint16)
+        is_ = np.zeros(HAND_DOF, dtype=np.uint16)
+        ds = np.zeros(HAND_DOF, dtype=np.uint16)
+        limits = np.zeros(HAND_DOF, dtype=np.uint16)
+        ps[joint] = quantize_gain(kp)
+        is_[joint] = quantize_gain(ki)
+        ds[joint] = quantize_gain(kd)
+        limits[joint] = quantize_gain(output_limit)
+        producing = np.flatnonzero((ps != 0) | (is_ != 0) | (ds != 0) |
+                                   (limits != 0))
+        if producing.tolist() != [joint]:
+            raise ValueError("exactly one driven joint is required")
+        accepted = int(self._wrapper().sg100_set_hand_control(
+            payload, modes, ps, is_, ds, limits, HAND_DOF,
+        ))
+        if accepted != 1:
+            return None
+        return SG100Mode7ActiveSubmission(
+            sent_monotonic_ns=time.monotonic_ns(),
+            active_joint_index=joint,
+            requested_positions_deg=tuple(float(v) for v in positions),
+            requested_modes=tuple(int(v) for v in modes),
+            p=tuple(int(v) for v in ps),
+            i=tuple(int(v) for v in is_),
+            d=tuple(int(v) for v in ds),
+            output_limit=tuple(int(v) for v in limits),
         )
 
     def hold_passive(self) -> bool:
@@ -868,15 +970,11 @@ class SG100SDKDriver(SG100Driver):
 
     def _send_null_control(self) -> bool:
         payload = np.zeros(HAND_DOF, dtype=np.float32)
+        modes = np.full(HAND_DOF, MODE_NULL, dtype=np.uint8)
+        zeros = np.zeros(HAND_DOF, dtype=np.uint16)
         return bool(
             self._wrapper().sg100_set_hand_control(
-                payload,
-                HAND_DOF,
-                MODE_NULL,
-                self._pid_p,
-                self._pid_i,
-                self._pid_d,
-                self._output_limit,
+                payload, modes, zeros, zeros, zeros, zeros, HAND_DOF,
             )
         )
 

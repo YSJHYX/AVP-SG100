@@ -1,6 +1,6 @@
 # SG100 Real Hardware Validation Guide
 
-> **STOP (2026-09-03): DO NOT RUN ANY COMMAND IN THIS GUIDE.**  Real N1
+> **CURRENT (2026-09-03): N3 TOOL PREP ONLY; THIS AGENT RAN NO HARDWARE.** Real N1
 > tested only thumb_j1 with all joints commanded MODE_NULL and exposed that mode's
 > raw/accumulated scale mismatch (~15–30° physical motion -> +1854 callback
 > units). Vendor guidance says mode-7 feedback should instead be joint angle;
@@ -9,7 +9,8 @@
 > entry/all-11 status/no-motion entry and supports a bounded joint-angle-scale
 > feedback domain. The old AMBIGUOUS verdict incorrectly compared feedback to
 > SDK command ranges. Exact feedback-to-canonical identity/sign/zero/range
-> mapping is still pending, so H2 and all active later stages remain blocked. See
+> mapping is still pending. The next user-operated hardware stage is now the
+> guarded N3 ACTIVE HOLD + one micro delta test; AVP/full-hand/data remain blocked. See
 > [SG100_LATEST_SDK_INTEGRATION.md](SG100_LATEST_SDK_INTEGRATION.md).
 
 > **HISTORICAL (2026-09-02, OLD SDK architecture).**  The H0–H5 flow and
@@ -39,24 +40,40 @@ READ-ONLY 或 DRY-RUN，真实运动必须显式 `--execute`。
 
 ## 阶段总览
 
-| 阶段 | 内容 | 风险 |
+| 阶段 | 内容 | 状态 |
 |------|------|------|
-| H0 | 只读 probe（无任何命令）— **PASS（真机）** | 零 |
-| H1 | safe realtime bootstrap，保持当前实测姿态 | 低 |
-| H2 | realtime 11D 单轴小幅 smoke（逐关节验证） | 低 |
-| H3 | AVP + C anchor + whole-hand teleop（OPEN/PARTIAL/POWER/RELEASE/PINCH） | 中 |
-| H4 | SG100 feedback + DATA CONTRACT 采集验证 | 低 |
-| H5 | RM65 + SG100 combined（仅前面全 PASS 后） | 中 |
+| N0 | MODE_NULL realtime | PASS — REAL HARDWARE |
+| N1 | full-hand MODE7 safe entry | PASS — REAL HARDWARE |
+| N2 | MODE7 joint-angle-scale feedback | SUPPORTED — REAL HARDWARE |
+| N3 | single-joint active hold + micro-motion | TOOL PREP / HARDWARE PENDING |
+| N4 | F_cmd/F_fb per-joint mapping | PENDING |
+| N5 | full-hand active integration | BLOCKED |
+| N6 | AVP integration | BLOCKED |
+| N7 | dataset enable | BLOCKED / QUARANTINED |
 
-## 当前下一阶段（仅设计，未执行）
+## 当前下一阶段（工具已准备，真机待用户执行）
 
-不要重复 MODE7 entry probe，也不要进入 H2 active target motion。下一项是
-`tools/sg100_mode7_mapping_characterization.py` 的被动 `F_fb` 映射采集：每次
-只选择一个物理 DOF，先且仅先发送一次已经过真机 no-motion 验证的全手
-MODE7/position=0/PID=0/output=0 配置，随后操作员手动移动该 DOF，软件只记录
-raw MODE7 feedback。任何 fault 或 mode loss 立即失败并恢复 MODE_NULL；不发送
-后续 target、不 homing/zeroing、不计算 startup offset、不修改 outbound map。
-本轮仅完成工具准备，**没有执行硬件**。
+不再要求人工掰动关节。`tools/sg100_mode7_mapping_characterization.py` 保留历史
+代码和证据，但退出主验证路径。新工具
+`tools/sg100_mode7_active_micro_motion.py` 分两阶段：Stage A 以 fresh MODE7
+feedback 给所选轴播种当前目标并观察至少 400 ms；数值无跳变且用户回答无可见
+运动后，Stage B 再输入 `MOVE`，只发送一次默认 0.5° micro delta。结束直接
+MODE_NULL，不发送反向回位、不 homing、不 set-zero、不改 production map。
+
+首轴不是硬编码。工具只从 J3/J6/J8/J11 中筛选当前 `F_cmd` identity、canonical/
+SDK 数值范围同向、历史反馈稳定且 live headroom 足够者；按最新成功 artifact
+`sg100_mode7_probe_20260903_193914` 的历史姿态，dry-run 选择 J6/index_j3：
+feedback `-0.725093°`，range `[-60,90]°`，负/正 headroom
+`59.274907°/90.725093°`，故选择 `+0.5°`，目标 `-0.225093°`。真机运行时会用
+fresh baseline 重新选择和计算，余量不足即 ABORT，绝不 clamp。
+
+安全参数来自当前 SDK example 和 vendor production log：`p=0.1, i=0, d=0,
+output_limit=0.5`。delta 硬上限 1.0°；目标轴 excursion guard 1.5°，其他轴
+0.75°，ACTIVE HOLD jump guard 0.5°。fault、mode loss、wrong dominant joint、
+反向、过大运动、stall、NaN、Ctrl-C/EOF/exception 均触发 MODE_NULL cleanup 并
+保留 artifact。1.5° 是默认命令的 3 倍：给 0.5° 微动留出反馈噪声/瞬态余量，
+同时在进入多度运动前 fail-closed；单帧目标轴跳变超过 0.75° 或持续反向摆动
+同样判为 rapid motion/oscillation。
 
 ---
 
@@ -105,53 +122,29 @@ python -m sg100_teleop.tools.sg100_hardware_probe \
 python -m sg100_teleop.tools.sg100_hardware_probe --mock
 ```
 
-## H1 — Safe realtime bootstrap
+## N3 — MODE7 active hold + single micro delta（N0/N1/N2 已 PASS 后）
 
 DRY RUN（默认，不连接串口）：
 
 ```bash
-.venv/bin/python -m sg100_teleop.tools.sg100_realtime_hold_test
+.venv/bin/python -m sg100_teleop.tools.sg100_mode7_active_micro_motion
 ```
 
-真实 H1 只保持当前 measured pose，不接受 AVP 或 delta：
+未来唯一获准的首次真机命令（必须由用户操作，本轮未执行）：
 
 ```bash
-.venv/bin/python -m sg100_teleop.tools.sg100_realtime_hold_test \
-    --port /dev/ttyUSB0 --duration-s 4 --execute
+.venv/bin/python -m sg100_teleop.tools.sg100_mode7_active_micro_motion \
+    --port /dev/ttyUSB0 --delta-deg 0.5 --execute
 ```
 
-只有输出 `SAFE REALTIME BOOTSTRAP: PASS` 才能准备 H2。
+运行中必须依次输入 `HOLD`、确认无可见 hold jump，再输入 `MOVE`。默认回答均
+ABORT。只有 N3 人工复核 PASS 后才能准备 N4 逐关节映射，不能直接进入 AVP。
 
-## H2 — realtime 11D 单轴 smoke（H1 PASS 后）
+## 旧 H2 smoke 方案（已废止）
 
-> **DO NOT RUN UNTIL H1 PASS.** 当前只准备了 11D single-axis target builder，
-> 尚未提供 H2 真机执行命令。不得用 passthrough `SetJointPosition` 作为
-> production H2 路径。
-
-H2 将以 H1 的 11D hold 为基准，10 轴保持不变，只给 `index_j2` 依次增加
-0.5°、1°、2°，并始终通过 production realtime whole-hand sender 发送。
-
-判定：
-- `measured delta` 与 commanded 同号且量级接近（>20%）→ 方向正确；
-- 方向相反 → **停止**，按实测修 `sg100_teleop/config/sg100_hardware_map.yaml`
-  的 `gain`（该关节 -1），再重测；
-- 几乎不动 → 停止并调查状态；不要猜测或重复调用 enable；
-- 任何 fault/反馈失效 → 工具自动停止发送后续命令。
-
-### 后续其余关节逐一验证
-
-推荐顺序（先非拇指、拇指 opposition 最后）：
-
-```text
-index_j2 → middle_j1 → little_j2 → index_j3 → middle_j2
-→ little_j1 → index_j1 → little_j3 → thumb_j3 → thumb_j2 → thumb_j1
-```
-
-thumb_j1（最后测）：确认正方向确实是拇指**朝 index/middle 闭合区**
-对掌、无自碰撞、无指连杆干涉、无异响/异常电流、能顺畅返回。
-
-逐关节把结论（方向 OK / 需翻 gain / 需 offset）记录到
-`sg100_hardware_map.yaml` 的注释里。
+旧方案从 `index_j2` 开始并连续使用 0.5°/1°/2°，不满足当前“两阶段、首轴
+自动筛选、第一次只发一个 delta”的门禁，禁止执行。N3 首次真机证据经人工
+复核后，再另行审核 N4 的逐关节验证顺序；任何单次结果都不得自动写入 map。
 
 ## H3 — AVP + C anchor + whole-hand teleop（RM65 保持关闭）
 
@@ -253,8 +246,10 @@ H4 的完整命令即 H5（arm real + hand real + collect）。首次运行请
 - [x] H0 probe PASS（2026-09-02，真机 /dev/ttyUSB0：serial PASS；
       RequestHandStatus 0x26 120 TX / 120 RX = 100%；Hand_Status decoded
       120；valid measured 11D 120；timestamps monotonic；motion commands 0）
-- [ ] H1 safe realtime current-pose hold PASS
-- [ ] H2 11D realtime 单轴 smoke / 11 关节逐一 PASS
+- [x] N1 full-hand MODE7 safe entry PASS（真机）
+- [x] N2 MODE7 joint-angle-scale feedback SUPPORTED（真机）
+- [ ] N3 single-joint MODE7 active hold + one micro delta PASS
+- [ ] N4 F_cmd/F_fb 逐关节映射审核完成
 - [ ] H3 AVP + C anchor + whole-hand teleop PASS
       （OPEN/PARTIAL/POWER/RELEASE/PINCH）
 - [ ] H3 thumb lock 分级 10/20/30/40 PASS（每级日期）

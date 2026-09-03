@@ -1258,16 +1258,16 @@ def test_probe_driver_api_bypasses_canonical_map_and_sends_exact_native_fields()
             self.calls = []
 
         def sg100_set_hand_control(
-            self, positions, count, mode, p, i, d, output_limit
+            self, positions, modes, p, i, d, output_limit, count
         ):
             self.calls.append({
                 "positions": np.asarray(positions).copy(),
                 "count": count,
-                "mode": mode,
-                "p": p,
-                "i": i,
-                "d": d,
-                "output_limit": output_limit,
+                "modes": np.asarray(modes).copy(),
+                "p": np.asarray(p).copy(),
+                "i": np.asarray(i).copy(),
+                "d": np.asarray(d).copy(),
+                "output_limit": np.asarray(output_limit).copy(),
             })
             return 1
 
@@ -1285,10 +1285,9 @@ def test_probe_driver_api_bypasses_canonical_map_and_sends_exact_native_fields()
     call = capture.calls[0]
     np.testing.assert_array_equal(call["positions"], np.zeros(11, np.float32))
     assert call["count"] == 11
-    assert call["mode"] == MODE_JOINT_POSITION
-    assert (call["p"], call["i"], call["d"], call["output_limit"]) == (
-        0, 0, 0, 0
-    )
+    np.testing.assert_array_equal(call["modes"], [MODE_JOINT_POSITION] * 11)
+    for field in ("p", "i", "d", "output_limit"):
+        np.testing.assert_array_equal(call[field], np.zeros(11, dtype=np.uint16))
     assert submission.requested_modes == (MODE_JOINT_POSITION,) * 11
     # Probe submission is not normal canonical action bookkeeping.
     assert driver.drain_command_events() == ()

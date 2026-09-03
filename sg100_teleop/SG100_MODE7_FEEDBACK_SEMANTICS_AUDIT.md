@@ -1,6 +1,6 @@
 # SG100 Mode-7 Feedback Semantics Audit
 
-**Date:** 2026-09-03 (rev 5: command/feedback domains separated)  
+**Date:** 2026-09-03 (rev 6: active micro-motion tool prepared)
 **Method:** static SDK/protocol/binary audit plus read-only review of the
 preserved real artifact `recording/sg100_mode7_probe_20260903_163543`.  
 **Hardware execution this review:** none. No homing, zeroing, active position
@@ -8,6 +8,18 @@ command, or H2 work was performed.
 **Decision:** MODE7 entry/control **PASS — REAL HARDWARE**; MODE7 bounded
 joint-angle-scale feedback **SUPPORTED — REAL HARDWARE**; exact MODE7
 feedback-to-canonical map `F_fb` **PENDING**.
+
+本轮方向已改变：人工掰动的
+`sg100_mode7_mapping_characterization.py` 只保留为历史工具，不再是下一条
+正式硬件路径，也不得由 Agent 执行。新的 N3 是
+`sg100_mode7_active_micro_motion.py`：先以 fresh MODE7 feedback 为目标做单轴
+ACTIVE HOLD，再经第二次 `MOVE` 确认只发送一条不超过 1° 的 micro delta。
+软件准备和离线测试完成，**本轮没有执行硬件**。
+
+`F_cmd` 与 `F_fb` 仍完全分离：N3 只为 identity-command candidate 和 MODE7
+delta channel/sign 产生待复核证据，绝不从 `F_cmd` 逆推 `F_fb`，也不自动更新
+production map。`feedback_map_valid=False`、`canonical_valid=False`、dataset
+`QUARANTINED` 保持不变。
 
 The vendor guidance for this audit is **CONFIRMED** (user-vendor
 communication, 2026-09-03):
@@ -442,11 +454,11 @@ joint; this is a stability criterion, not a range tolerance. SDK command ranges
 are diagnostic only. Canonical range checks are separate and strict: no
 tolerance converts an out-of-range baseline into a pass.
 
-The next hardware stage is `tools/sg100_mode7_mapping_characterization.py`,
-prepared but not executed. It submits the proven zero-output MODE7 frame once,
-then only observes raw MODE7 feedback while the operator manually moves one
-physical DOF in a stated canonical direction and returns it. It fails on fault
-or mode loss, restores MODE_NULL on every exit, and never sends a later target,
-homes/zeros, derives offsets, applies the outbound map, or modifies
-`sg100_hardware_map.yaml`. Only reviewed 11-joint identity/sign/zero/range
-evidence may eventually enable the historical `mode7_hardware_validated` gate.
+The next hardware stage is the **two-stage active micro-motion** tool
+`tools/sg100_mode7_active_micro_motion.py`, prepared but not executed. The
+old manual characterization tool remains preserved but is retired as the
+primary next step. N3 selects only an identity-range candidate from J3/J6/J8/
+J11, re-evaluates live headroom, enables one position-producing joint, and
+keeps the other ten in MODE7 with zero PID/output. It never homes, zeros,
+clamps an invalid target, sends a return motion, derives offsets, or modifies
+`sg100_hardware_map.yaml`.

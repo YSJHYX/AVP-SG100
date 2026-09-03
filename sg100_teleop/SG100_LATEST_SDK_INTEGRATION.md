@@ -1,18 +1,19 @@
 # SG100 Latest SDK Integration (V1.5_NO_TACTILE)
 
 Status: **MODE7 ENTRY PASS / ANGLE-SCALE DOMAIN SUPPORTED ON REAL HARDWARE;
-EXACT CANONICAL MAPPING PENDING.**
+ACTIVE MICRO-MOTION TOOL PREPARED / HARDWARE PENDING.**
 N0 established the link and feedback cadence.  Real N1 artifact
 `sg100_n1_sign_20260903_135111` tested only thumb_j1 while all joints were
 commanded MODE_NULL and exposed that mode's uncharacterized
 accumulated/raw-like scale.  The vendor CONFIRMED (2026-09-03) that mode-7
 feedback is the intended correct joint angle AND supplied the full-hand entry
 contract (ids 1..11 + mode 7 on every joint), so the zero-gain full-hand
-mode7 FEEDBACK probe may run on hardware next; this unit's physical-angle
-verification is still pending, and the driver/collector enforce the
-returned-mode gate (`canonical_valid` stays False, non-mode7 measured samples
-are rejected).  Do not run active movement, start H2, or treat any callback
-as physical joint angle until the probe passes.  See
+mode7 FEEDBACK probe has since passed on real hardware with all 11 RX modes=7,
+fault 0 and no visible entry motion. It supports a finite, stable,
+non-multiturn joint-angle-scale domain, but exact `F_fb` remains pending and
+the driver/collector still enforce `canonical_valid=False`. The next stage is
+the prepared two-stage single-joint ACTIVE HOLD + one micro delta harness; it
+has not been executed. See
 [SG100_MODE7_FEEDBACK_SEMANTICS_AUDIT.md](SG100_MODE7_FEEDBACK_SEMANTICS_AUDIT.md).
 
 ## SDK version
@@ -59,6 +60,13 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
 - Out-of-range guard: the driver loads `joint_angle_map.json` user ranges
   and REJECTS targets outside them instead of letting the vendor clamp
   silently — the recorded action always equals the encoded action.
+- N3 does not use the general 11-axis command helper. Its narrow diagnostic
+  API builds one `Hand_Control_t` with per-joint fields and calls the same
+  `sg100_set_hand_control -> SG100Device::SetHandControl` path exactly once per
+  stage. Only the selected joint has `p=0.1, i=0, d=0,
+  output_limit=0.5`; the other ten remain MODE7 with zero output. Those active
+  values are evidenced by the current SDK realtime example and vendor MODE7
+  production log (quantized 328/0/0/1638).
 
 ## Feedback API
 
@@ -185,21 +193,35 @@ coordinates rather than validated canonical physical radians.
    `-6.9324°` is canonical-compatible despite being SDK-command-incompatible;
    J2 `+18.0833°`, J5 `-0.4285°`, and J10 `-3.9554°` remain unresolved.
    Exact identity/sign/zero/range mapping is PENDING, so canonical_valid stays
-   False and active movement / AVP / H2 remain BLOCKED. MODE_NULL status.position is FORBIDDEN as
+   False and AVP/full-hand movement/dataset remain BLOCKED. MODE_NULL status.position is FORBIDDEN as
    a mode-7 target (accumulated: ~1854/42604 deg observed).
    History: the joint_angle_map.json divergence itself is closed — the
    The N0 probe proved the runtime file is the on-disk 11-entry map
    (md5 8a0c1de4a7d60a47a016dd453fb49ee3) via strace openat tracing; the
    branch-HEAD variant is not what runs.
    The prepared next tool is
-   `tools/sg100_mode7_mapping_characterization.py`: one initial zero-output
-   MODE7 configuration followed only by raw MODE7 observation while the
-   operator moves one physical DOF. It has not been executed.
+   `tools/sg100_mode7_active_micro_motion.py`: full-hand zero-output MODE7,
+   then active hold at fresh MODE7 current position, then one independently
+   confirmed micro delta. It has not been executed. The manual-move tool is
+   preserved but retired as the primary path.
 2. Vendor send clamp semantics hardware-unverified for position targets
    (no position command has ever been sent through the new backend).
 3. Active MODE_JOINT_POSITION target behavior and gain suitability remain
    hardware-unverified. This does not undo the passive MODE7 entry/angle-scale
    milestone.
+
+## Current N-stage gates
+
+| Gate | Status |
+|---|---|
+| N0 MODE_NULL realtime | PASS — REAL HARDWARE |
+| N1 full-hand MODE7 safe entry | PASS — REAL HARDWARE |
+| N2 MODE7 joint-angle-scale feedback | SUPPORTED — REAL HARDWARE |
+| N3 single-joint active hold + micro-motion | TOOL PREP / HARDWARE PENDING |
+| N4 per-joint F_cmd/F_fb mapping | PENDING |
+| N5 full-hand active command integration | BLOCKED |
+| N6 AVP integration | BLOCKED |
+| N7 dataset enable | BLOCKED / QUARANTINED |
 
 ## N1 — canonical <-> SDK user-angle mapping (2026-09-03 audit)
 
