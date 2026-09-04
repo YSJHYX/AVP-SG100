@@ -1,0 +1,3819 @@
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import math
+import time
+from pathlib import Path
+
+import mujoco
+import mujoco.viewer
+import numpy as np
+
+from avp_stream import VisionProStreamer
+
+from sg100_teleop.calibration.io import load_calibration
+
+from sg100_teleop.hand.canonical_hand import CanonicalHandState
+
+from sg100_teleop.control.joint_command_filter import JointCommandFilter
+
+from sg100_teleop.control.tcp_target_filter import TcpTargetFilter
+
+from sg100_teleop.control.teleop_arming import (
+    TeleopArmingController,
+)
+
+from sg100_teleop.data_collection.collector import (
+    ArmHandDataCollector,
+    CollectorConfig,
+)
+
+from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
+
+from sg100_teleop.retargeting.thumb_debug import (
+    build_lock_disabled_retargeter,
+    format_thumb_retarget_debug,
+    hand_tip_geometry_mm,
+)
+
+from sg100_teleop.robot.sg100_driver import SG100HardwareMap
+
+from sg100_teleop.robot.sg100_mock_driver import MockSG100Driver
+
+from sg100_teleop.recording.mujoco_state_recorder import (
+    MujocoStateRecorder,
+)
+
+from sg100_teleop.sim.combined_robot_layout import (
+    ARM_DOF,
+    HAND_DOF,
+    SG100_JOINT_ORDER,
+    initialize_robot_state,
+    resolve_robot_layout,
+    write_robot_controls,
+)
+
+from sg100_teleop.sim.hammer_impact_diagnostic import (
+    HammerImpactDiagnostic,
+    enable_collision_debug_visualization,
+)
+
+from sg100_teleop.tracking.avp_adapter import AVPHandAdapter
+
+from sg100_teleop.tracking.avp_source import get_hand_from_tracking
+
+from sg100_teleop.tracking.avp_to_tcp_config import (
+    load_avp_to_tcp_config,
+)
+
+from sg100_teleop.tracking.frame_gate import (
+    TrackingFrameGate,
+    TrackingFrameStatus,
+)
+
+from sg100_teleop.tracking.avp_wrist_mapper import AVPWristRelativeMapper, make_transform
+
+# ============================================================
+# AUBO i7_30 kinematics and decoupled position IK
+# ============================================================
+#
+# These constants and the solver structure follow
+# RealmanRM65B_VR_Teleop/teleop/aubo_i7_decoupled_ik.py, which is exercised
+# by tests/test_aubo_i7_decoupled_ik.py in the reference project.  In
+# particular, J1..J5 solve the TCP position task and J6 is deliberately kept
+# outside the position pseudoinverse.  The MJCF scene below uses these exact
+# official-URDF joint origins, fixed RPY transforms, and local +Z axes.
+
+AUBO_I7_TELEOP_READY_Q = np.radians(
+    (0.0, -60.0, -75.0, 0.0, -75.0, 0.0)
+).astype(np.float64)
+
+_AUBO_I7_JOINT_ORIGIN_XYZ = np.asarray(
+    (
+        (0.0, 0.0, 0.122),
+        (0.0, 0.1215, 0.0),
+        (0.368, 0.0, 0.0),
+        (0.316, 0.0, 0.0),
+        (0.0, 0.1025, 0.0),
+        (0.0, -0.094, 0.0),
+    ),
+    dtype=np.float64,
+)
+
+_AUBO_I7_JOINT_ORIGIN_RPY = np.asarray(
+    (
+        (0.0, 0.0, math.pi),
+        (-math.pi / 2.0, -math.pi / 2.0, 0.0),
+        (-math.pi, 0.0, 0.0),
+        (math.pi, 0.0, math.pi / 2.0),
+        (-math.pi / 2.0, 0.0, 0.0),
+        (math.pi / 2.0, 0.0, 0.0),
+    ),
+    dtype=np.float64,
+)
+
+
+def _aubo_i7_rpy_matrix(rpy: np.ndarray) -> np.ndarray:
+    """Return the URDF fixed-axis roll-pitch-yaw rotation matrix."""
+
+    roll, pitch, yaw = rpy
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rx = np.asarray(
+        ((1.0, 0.0, 0.0), (0.0, cr, -sr), (0.0, sr, cr)),
+        dtype=np.float64,
+    )
+    ry = np.asarray(
+        ((cp, 0.0, sp), (0.0, 1.0, 0.0), (-sp, 0.0, cp)),
+        dtype=np.float64,
+    )
+    rz = np.asarray(
+        ((cy, -sy, 0.0), (sy, cy, 0.0), (0.0, 0.0, 1.0)),
+        dtype=np.float64,
+    )
+    return rz @ ry @ rx
+
+
+def _aubo_i7_axis_angle_matrix(axis: np.ndarray, angle: float) -> np.ndarray:
+    unit = np.asarray(axis, dtype=np.float64)
+    unit /= np.linalg.norm(unit)
+    x, y, z = unit
+    skew = np.asarray(
+        ((0.0, -z, y), (z, 0.0, -x), (-y, x, 0.0)),
+        dtype=np.float64,
+    )
+    identity = np.eye(3, dtype=np.float64)
+    return identity + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (
+        skew @ skew
+    )
+
+
+def _aubo_i7_joint_frames(
+    joints_rad: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    joints = np.asarray(joints_rad, dtype=np.float64)
+    if joints.shape != (6,) or not np.all(np.isfinite(joints)):
+        raise ValueError("AUBO i7 joints must be a finite 6-vector")
+
+    transform = np.eye(4, dtype=np.float64)
+    origins = np.empty((6, 3), dtype=np.float64)
+    axes = np.empty((6, 3), dtype=np.float64)
+    local_axis = np.asarray((0.0, 0.0, 1.0), dtype=np.float64)
+
+    for index in range(6):
+        origin = np.eye(4, dtype=np.float64)
+        origin[:3, :3] = _aubo_i7_rpy_matrix(
+            _AUBO_I7_JOINT_ORIGIN_RPY[index]
+        )
+        origin[:3, 3] = _AUBO_I7_JOINT_ORIGIN_XYZ[index]
+        transform = transform @ origin
+        origins[index] = transform[:3, 3]
+        axes[index] = transform[:3, :3] @ local_axis
+
+        rotation = np.eye(4, dtype=np.float64)
+        rotation[:3, :3] = _aubo_i7_axis_angle_matrix(
+            local_axis,
+            float(joints[index]),
+        )
+        transform = transform @ rotation
+
+    return transform, origins, axes
+
+
+def aubo_i7_forward_kinematics(joints_rad: np.ndarray) -> np.ndarray:
+    """Return the base-to-SG100 mounting transform for AUBO i7."""
+
+    transform, _, _ = _aubo_i7_joint_frames(joints_rad)
+    return transform
+
+
+def aubo_i7_position_jacobian(joints_rad: np.ndarray) -> np.ndarray:
+    """Return the analytic 3x6 TCP position Jacobian in the base frame."""
+
+    transform, origins, axes = _aubo_i7_joint_frames(joints_rad)
+    tcp_position = transform[:3, 3]
+    jacobian = np.empty((3, 6), dtype=np.float64)
+    for index in range(6):
+        jacobian[:, index] = np.cross(
+            axes[index],
+            tcp_position - origins[index],
+        )
+    return jacobian
+
+
+@dataclass(frozen=True)
+class AuboI7IKResult:
+    """Compatibility result used by the existing AVP control loop."""
+
+    converged: bool
+    iterations: int
+    position_error: float
+    rotation_error: float
+    sigma_min: float
+    condition_number: float
+    damping: float
+    reason: str
+
+
+class AuboI7IKSolver:
+    """Continuity-preserving AUBO i7 position IK with independent J6.
+
+    Each call is local to the previous accepted command: J1..J5 are bounded
+    to a 20-degree trust region, each numerical iteration is capped at four
+    degrees, and a damped pseudoinverse is used near singularities.  J6 is
+    never part of the position solve; wrist-roll mode writes it through its
+    own bounded channel later in the control loop.
+    """
+
+    _MAX_ITERATIONS = 80
+    _POSITION_TOLERANCE_M = 2.0e-5
+    _DAMPING_MIN = 1.0e-4
+    _DAMPING_MAX = 5.0e-2
+    _SINGULAR_VALUE_THRESHOLD = 4.0e-2
+    _MAX_ITERATION_STEP_RAD = math.radians(4.0)
+    _MAX_SOLUTION_DELTA_RAD = math.radians(20.0)
+    _POSTURE_GAIN_RAD = math.radians(0.20)
+    _LIMIT_AVOIDANCE_GAIN_RAD = math.radians(1.0)
+    _LIMIT_ACTIVATION_FRACTION = 0.12
+    _JOINT_LIMIT_MARGIN_RAD = math.radians(0.25)
+    _MINIMUM_LINE_SEARCH_SCALE = 1.0 / 128.0
+
+    def __init__(self, model: mujoco.MjModel, *, tcp_body_name: str) -> None:
+        if tcp_body_name != TCP_BODY:
+            raise ValueError(f"AUBO i7 TCP must be {TCP_BODY}")
+
+        limits = np.empty((6, 2), dtype=np.float64)
+        for index in range(6):
+            joint_name = f"joint_{index + 1}"
+            joint_id = mujoco.mj_name2id(
+                model,
+                mujoco.mjtObj.mjOBJ_JOINT,
+                joint_name,
+            )
+            if joint_id < 0:
+                raise RuntimeError(f"AUBO i7 joint not found: {joint_name}")
+            if not bool(model.jnt_limited[joint_id]):
+                raise RuntimeError(f"AUBO i7 joint must be limited: {joint_name}")
+            limits[index] = model.jnt_range[joint_id]
+
+        if np.any(limits[:, 0] >= limits[:, 1]):
+            raise RuntimeError("AUBO i7 MJCF contains invalid joint limits")
+        self.lower = limits[:, 0].copy()
+        self.upper = limits[:, 1].copy()
+
+    def fk(self, joints_rad: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        transform = aubo_i7_forward_kinematics(joints_rad)
+        return transform[:3, 3].copy(), transform[:3, :3].copy()
+
+    def _adaptive_damping(self, sigma_min: float) -> float:
+        ratio = max(
+            0.0,
+            1.0 - sigma_min / self._SINGULAR_VALUE_THRESHOLD,
+        )
+        return self._DAMPING_MIN + (
+            self._DAMPING_MAX - self._DAMPING_MIN
+        ) * ratio * ratio
+
+    def _limit_direction(self, joints: np.ndarray) -> np.ndarray:
+        span = self.upper[:5] - self.lower[:5]
+        lower_fraction = (joints - self.lower[:5]) / span
+        upper_fraction = (self.upper[:5] - joints) / span
+        activation = self._LIMIT_ACTIVATION_FRACTION
+        direction = np.zeros(5, dtype=np.float64)
+        lower_active = lower_fraction < activation
+        upper_active = upper_fraction < activation
+        direction[lower_active] += (
+            (activation - lower_fraction[lower_active]) / activation
+        ) ** 2
+        direction[upper_active] -= (
+            (activation - upper_fraction[upper_active]) / activation
+        ) ** 2
+        return np.clip(direction, -1.0, 1.0)
+
+    def _bounds_near_seed(
+        self,
+        seed: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        soft_lower = self.lower[:5] + self._JOINT_LIMIT_MARGIN_RAD
+        soft_upper = self.upper[:5] - self._JOINT_LIMIT_MARGIN_RAD
+        lower = np.where(seed < soft_lower, seed, soft_lower)
+        upper = np.where(seed > soft_upper, seed, soft_upper)
+        lower = np.maximum(lower, seed - self._MAX_SOLUTION_DELTA_RAD)
+        upper = np.minimum(upper, seed + self._MAX_SOLUTION_DELTA_RAD)
+        return lower, upper
+
+    def solve(
+        self,
+        *,
+        q_seed: np.ndarray,
+        target_position: np.ndarray,
+        target_rotation: np.ndarray | None = None,
+        position_only: bool = True,
+        best_effort: bool = False,
+        target_axis: np.ndarray | None = None,
+        tcp_axis_local: np.ndarray | None = None,
+        posture_reference: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, AuboI7IKResult]:
+        del best_effort, tcp_axis_local
+        if target_axis is not None:
+            raise ValueError("AUBO i7 runner does not support axis-constrained IK")
+        if target_rotation is not None and not position_only:
+            raise ValueError(
+                "AUBO i7 runner uses decoupled position IK; full-pose IK "
+                "is intentionally unsupported"
+            )
+
+        target = np.asarray(target_position, dtype=np.float64)
+        seed = np.asarray(q_seed, dtype=np.float64)
+        if target.shape != (3,) or not np.all(np.isfinite(target)):
+            raise ValueError("target_position must be a finite 3-vector")
+        if seed.shape != (6,) or not np.all(np.isfinite(seed)):
+            raise ValueError("q_seed must be a finite 6-vector")
+        if np.any(seed < self.lower) or np.any(seed > self.upper):
+            raise ValueError("q_seed violates the AUBO i7 joint limits")
+
+        if posture_reference is None:
+            reference = seed[:5].copy()
+        else:
+            supplied = np.asarray(posture_reference, dtype=np.float64)
+            if supplied.shape not in ((5,), (6,)) or not np.all(
+                np.isfinite(supplied)
+            ):
+                raise ValueError(
+                    "posture_reference must contain five or six finite values"
+                )
+            reference = np.clip(
+                supplied[:5],
+                self.lower[:5],
+                self.upper[:5],
+            )
+
+        joints = seed.copy()
+        lower, upper = self._bounds_near_seed(seed[:5])
+        reason = "max_iterations"
+        iterations = 0
+
+        for iterations in range(1, self._MAX_ITERATIONS + 1):
+            position = aubo_i7_forward_kinematics(joints)[:3, 3]
+            error = target - position
+            error_norm = float(np.linalg.norm(error))
+            if error_norm <= self._POSITION_TOLERANCE_M:
+                reason = "converged"
+                break
+
+            jacobian = aubo_i7_position_jacobian(joints)[:, :5]
+            singular_values = np.linalg.svd(jacobian, compute_uv=False)
+            sigma_min = float(singular_values[-1])
+            damping = self._adaptive_damping(sigma_min)
+            gram = jacobian @ jacobian.T + damping * damping * np.eye(3)
+            damped_inverse = jacobian.T @ np.linalg.solve(gram, np.eye(3))
+            task_step = damped_inverse @ error
+
+            projector = (
+                np.eye(5)
+                - np.linalg.pinv(jacobian, rcond=1.0e-8) @ jacobian
+            )
+            half_range = (self.upper[:5] - self.lower[:5]) / 2.0
+            posture_direction = (reference - joints[:5]) / half_range
+            secondary = (
+                self._POSTURE_GAIN_RAD * posture_direction
+                + self._LIMIT_AVOIDANCE_GAIN_RAD
+                * self._limit_direction(joints[:5])
+            )
+            combined_step = task_step + projector @ secondary
+
+            def cap_step(step: np.ndarray) -> np.ndarray:
+                capped = step.copy()
+                largest = float(np.max(np.abs(capped)))
+                if largest > self._MAX_ITERATION_STEP_RAD:
+                    capped *= self._MAX_ITERATION_STEP_RAD / largest
+                return capped
+
+            accepted = False
+            for direction in (cap_step(combined_step), cap_step(task_step)):
+                scale = 1.0
+                while scale >= self._MINIMUM_LINE_SEARCH_SCALE:
+                    trial = joints.copy()
+                    trial[:5] = np.clip(
+                        joints[:5] + scale * direction,
+                        lower,
+                        upper,
+                    )
+                    trial_error = target - aubo_i7_forward_kinematics(
+                        trial
+                    )[:3, 3]
+                    if float(np.linalg.norm(trial_error)) < error_norm - 1.0e-12:
+                        joints = trial
+                        accepted = True
+                        break
+                    scale *= 0.5
+                if accepted:
+                    break
+            if not accepted:
+                reason = "stagnated"
+                break
+
+        final_position = aubo_i7_forward_kinematics(joints)[:3, 3]
+        final_error = float(np.linalg.norm(target - final_position))
+        final_jacobian = aubo_i7_position_jacobian(joints)[:, :5]
+        final_singular_values = np.linalg.svd(final_jacobian, compute_uv=False)
+        sigma_min = float(final_singular_values[-1])
+        sigma_max = float(final_singular_values[0])
+        damping = self._adaptive_damping(sigma_min)
+        converged = final_error <= self._POSITION_TOLERANCE_M
+        if converged:
+            reason = "converged"
+        elif np.any(np.isclose(joints[:5], lower, atol=1.0e-10)) or np.any(
+            np.isclose(joints[:5], upper, atol=1.0e-10)
+        ):
+            reason = "trust_region_or_limit_reached"
+
+        result = AuboI7IKResult(
+            converged=converged,
+            iterations=iterations,
+            position_error=final_error,
+            rotation_error=0.0,
+            sigma_min=sigma_min,
+            condition_number=(
+                sigma_max / sigma_min if sigma_min > 1.0e-12 else float("inf")
+            ),
+            damping=damping,
+            reason=reason,
+        )
+        return joints.copy(), result
+
+# ============================================================
+# Default files
+# ============================================================
+
+DEFAULT_MODEL = (
+    "sg100_teleop/assets/rm65_sg100/"
+    "mjcf/auboi7_sg100_realworld_teleop_scene.xml"
+)
+
+DEFAULT_CALIBRATION = (
+    "sg100_teleop/config/"
+    "avp_right_calibration.yaml"
+)
+
+DEFAULT_AVP_TO_TCP_CONFIG = (
+    "sg100_teleop/config/"
+    "avp_to_tcp_identity.yaml"
+)
+
+TCP_BODY = "sg100_base_link"
+TCP_FOREARM_AXIS_LOCAL = np.array(
+    [0.0, 0.0, 1.0],
+    dtype=np.float64,
+)
+FOREARM_DIRECTION_EPSILON_M = 1e-6
+
+# Verbose-only: an accepted IK solution whose largest single-frame joint
+# step exceeds this is logged as a suspected discontinuity.  Large dq
+# with a small pos_err means the same pose was reached from very
+# different joints (branch flip); large dq with a large pos_err means a
+# HOLD-release catch-up.  Normal 60 Hz teleop stays far below it.
+IK_ACCEPT_JUMP_LOG_RAD = 0.2
+
+# Per-frame joint-step clamp applied to accepted best-effort fallback
+# solutions so a single solve can never produce a visible jump.  0.05
+# rad per tracking frame aligns the fallback ceiling with the physics-
+# rate arm command filter (~3 rad/s) so boundary following cannot
+# out-slew the resume catch-up.
+IK_FALLBACK_MAX_STEP_RAD = 0.05
+
+# ============================================================
+# Wrist-roll (position + forearm roll) teleoperation mode
+#
+# Task decomposition ported from the Quest teleop
+# TCP translation drives a
+# best-effort position task, and the forearm roll extracted from
+# the AVP wrist rotation drives joint 6 directly.  Wrist pitch and
+# yaw deliberately do not feed the arm.  joint 6's position
+# Jacobian column is exactly zero because sg100_base_link sits on
+# the joint-6 axis, so the roll overwrite cannot disturb the
+# position solution.
+# ============================================================
+
+WRIST_ROLL_MAX_RAD = np.radians(90.0)
+
+# Roll gain and direction.  Flip the sign if joint 6 turns against
+# the operator's wrist during the one-time visual validation.
+WRIST_ROLL_SCALE = 1.0
+WRIST_ROLL_SIGN = 1.0
+
+# One-pole low-pass on the roll scalar (seconds).
+WRIST_ROLL_FILTER_TAU = 0.06
+
+# Fallback roll axis (wrist-local) when the calibration frame has
+# no valid 27-joint forearm direction.
+WRIST_ROLL_FALLBACK_AXIS_LOCAL = np.array(
+    [0.0, 0.0, 1.0],
+    dtype=np.float64,
+)
+
+
+def _wrap_to_pi(angle: float) -> float:
+    """Wrap one angle to [-pi, pi]."""
+    return math.atan2(
+        math.sin(angle),
+        math.cos(angle),
+    )
+
+
+def extract_wrist_roll(
+    rotation: np.ndarray,
+    axis: np.ndarray,
+) -> float:
+    """Extract the signed twist (roll) of ``rotation`` about ``axis``.
+
+    Swing-twist decomposition ported from the Quest teleop: both
+    arguments are expressed in the same frame, and the returned
+    angle is the rotation's twist component about ``axis``.  q and
+    -q encode the same rotation; keeping w non-negative selects the
+    shortest signed twist and avoids a discontinuity at ordinary
+    poses.
+    """
+    axis = np.asarray(axis, dtype=np.float64)
+    axis_norm = float(np.linalg.norm(axis))
+    if axis.shape != (3,) or axis_norm < 1e-12:
+        raise ValueError("roll axis must be a non-zero 3-vector")
+
+    quaternion = np.empty(4)
+    mujoco.mju_mat2Quat(
+        quaternion,
+        np.asarray(rotation, dtype=np.float64).reshape(9),
+    )
+    if quaternion[0] < 0.0:
+        quaternion *= -1.0
+
+    unit_axis = axis / axis_norm
+    projected = float(np.dot(quaternion[1:], unit_axis))
+    twist_norm = math.hypot(float(quaternion[0]), projected)
+    if twist_norm < 1e-12:
+        # A 180-degree pure swing has no uniquely defined twist.
+        # Holding the calibrated wrist angle is the safest behaviour
+        # at that singularity.
+        return 0.0
+
+    angle = 2.0 * math.atan2(projected, float(quaternion[0]))
+    return _wrap_to_pi(angle)
+
+
+def extract_forearm_axis(
+    hand: np.ndarray,
+    *,
+    epsilon_m: float = FOREARM_DIRECTION_EPSILON_M,
+) -> np.ndarray | None:
+    """Return normalized AVP forearmArm -> forearmWrist direction.
+
+    Legacy 25-joint frames and malformed/degenerate 27-joint samples are
+    deliberately reported as unavailable so forearm-axis mode can fall back
+    to position-only IK without indexing invalid data.
+    """
+
+    joints = np.asarray(hand, dtype=np.float64)
+    if joints.ndim != 3 or joints.shape[0] < 27:
+        return None
+    if joints.shape[1:] != (4, 4):
+        return None
+    if not np.isfinite(epsilon_m) or epsilon_m <= 0.0:
+        raise ValueError("epsilon_m must be finite and > 0")
+
+    p_forearm_wrist = joints[25, :3, 3]
+    p_forearm_arm = joints[26, :3, 3]
+    if (
+        not np.all(np.isfinite(p_forearm_wrist))
+        or not np.all(np.isfinite(p_forearm_arm))
+    ):
+        return None
+
+    direction = p_forearm_wrist - p_forearm_arm
+    norm = float(np.linalg.norm(direction))
+    if not np.isfinite(norm) or norm <= epsilon_m:
+        return None
+    return direction / norm
+
+
+def solve_forearm_axis_or_position(
+    ik_solver,
+    wrist_mapper: AVPWristRelativeMapper,
+    q_seed: np.ndarray,
+    target_position: np.ndarray,
+    n_forearm_avp: np.ndarray | None,
+    forearm_axis_calibrated: bool,
+    posture_reference: np.ndarray | None = None,
+):
+    """Run the 5-DoF task, or its required position-only fallback."""
+
+    a_target = (
+        wrist_mapper.map_forearm_direction(
+            n_forearm_avp,
+            TCP_FOREARM_AXIS_LOCAL,
+        )
+        if forearm_axis_calibrated and n_forearm_avp is not None
+        else None
+    )
+    if a_target is None:
+        return ik_solver.solve(
+            q_seed=q_seed,
+            target_position=target_position,
+            target_rotation=None,
+            position_only=True,
+            posture_reference=posture_reference,
+        )
+
+    return ik_solver.solve(
+        q_seed=q_seed,
+        target_position=target_position,
+        target_rotation=None,
+        target_axis=a_target,
+        tcp_axis_local=TCP_FOREARM_AXIS_LOCAL,
+        posture_reference=posture_reference,
+    )
+
+
+def select_full_pose_target_rotation(
+    T_tcp_target: np.ndarray,
+    *,
+    lock_tcp_rotation: bool,
+    R_tcp_rotation_lock: np.ndarray | None,
+) -> np.ndarray:
+    """Select mapped relative rotation unless the A/B lock is requested."""
+
+    target = np.asarray(T_tcp_target, dtype=np.float64)
+    if target.shape != (4, 4):
+        raise ValueError("T_tcp_target must have shape (4,4)")
+
+    if not lock_tcp_rotation:
+        return target[:3, :3].copy()
+
+    if R_tcp_rotation_lock is None:
+        raise RuntimeError(
+            "--lock-tcp-rotation requires a calibrated TCP rotation anchor"
+        )
+    rotation_lock = np.asarray(R_tcp_rotation_lock, dtype=np.float64)
+    if rotation_lock.shape != (3, 3):
+        raise ValueError("R_tcp_rotation_lock must have shape (3,3)")
+    return rotation_lock.copy()
+
+# ============================================================
+# AUBO i7 teleoperation start configuration
+# ============================================================
+
+def compute_startup_arm_q(model, data, ik_solver):
+    """Return the tested, bent and non-singular AUBO i7 posture."""
+
+    del model, data, ik_solver
+    return AUBO_I7_TELEOP_READY_Q.copy()
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Apple Vision Pro -> "
+            "AUBO i7 + SG100 MuJoCo teleoperation"
+        )
+    )
+
+    parser.add_argument(
+        "--ip",
+        required=True,
+        help="Apple Vision Pro IP address",
+    )
+
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help="Combined AUBO i7 + SG100 MuJoCo XML",
+    )
+
+    parser.add_argument(
+        "--calibration",
+        default=DEFAULT_CALIBRATION,
+        help="AVP right-hand calibration YAML",
+    )
+
+    parser.add_argument(
+        "--usdz",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Prebuilt MuJoCo USDZ scene. When provided, "
+            "cache and conversion are bypassed."
+        ),
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=50051,
+        help="gRPC port used by AVP MuJoCo streaming",
+    )
+
+    parser.add_argument(
+        "--tracking-hz",
+        type=float,
+        default=60.0,
+        help="AVP tracking query frequency",
+    )
+
+    parser.add_argument(
+        "--stream-hz",
+        type=float,
+        default=60.0,
+        help="MuJoCo state streaming frequency back to AVP",
+    )
+
+    parser.add_argument(
+        "--avp-to-tcp-config",
+        default=DEFAULT_AVP_TO_TCP_CONFIG,
+        help=(
+            "YAML containing translation_scale and the proper "
+            "fixed AVP-world to robot-world controller-axis basis"
+        ),
+    )
+
+    parser.add_argument(
+        "--filter-tau",
+        type=float,
+        default=0.06,
+        help="SG100 hand command low-pass time constant",
+    )
+
+    parser.add_argument(
+        "--max-hand-velocity",
+        type=float,
+        default=4.0,
+        help="Maximum SG100 hand joint velocity (rad/s)",
+    )
+
+    parser.add_argument(
+        "--arm-filter-tau",
+        type=float,
+        default=0.03,
+        help="AUBO i7 arm command low-pass time constant (s)",
+    )
+
+    parser.add_argument(
+        "--max-arm-velocity",
+        type=float,
+        default=3.0,
+        help="Maximum AUBO i7 joint velocity (rad/s)",
+    )
+
+    parser.add_argument(
+        "--tracking-timeout",
+        type=float,
+        default=2.0,
+        help=(
+            "Seconds without valid right-hand trackiing "
+            "before reporting tracking loss"
+        ),
+    )
+
+    parser.add_argument(
+        "--recording-dir",
+        default="recording",
+        help=(
+            "Session root for lightweight MuJoCo visual-state recordings "
+            "(default: recording)"
+        ),
+    )
+
+    parser.add_argument(
+        "--video-fps",
+        type=float,
+        default=30.0,
+        help="Simulation-time visual-state sampling frequency (default: 30 Hz)",
+    )
+
+    parser.add_argument(
+        "--collect-arm-hand-data",
+        action="store_true",
+        help=(
+            "Record causal rm65_sg100_joint17_v1 transitions. Requires "
+            "--arm-backend real because arm state must be measured feedback."
+        ),
+    )
+
+    parser.add_argument(
+        "--data-stale-pre-ms",
+        type=float,
+        default=100.0,
+        help="Maximum age of pre-action arm feedback (default: 100 ms)",
+    )
+
+    parser.add_argument(
+        "--data-stale-post-ms",
+        type=float,
+        default=250.0,
+        help="Maximum wait for post-action arm feedback (default: 250 ms)",
+    )
+
+    # Teleop arm-IK mode: exactly one of these may be selected.
+    mode_group = parser.add_mutually_exclusive_group()
+
+    mode_group.add_argument(
+        "--lock-tcp-rotation",
+        action="store_true",
+        help=(
+            "Lock the TCP target orientation to the rotation "
+            "captured at neutral calibration; only wrist "
+            "translation (xyz) drives the arm. IK still solves "
+            "the full 6D pose against the fixed orientation."
+        ),
+    )
+
+    mode_group.add_argument(
+        "--position-only-ik",
+        action="store_true",
+        help=(
+            "AUBO i7 decoupled IK (the default): J1..J5 follow "
+            "wrist xyz while J6 is held independently."
+        ),
+    )
+
+    mode_group.add_argument(
+        "--forearm-axis-ik",
+        action="store_true",
+        help=(
+            "5-DoF IK: wrist translation controls TCP xyz and the "
+            "AVP forearm axis controls TCP local +Z; roll about +Z "
+            "remains unconstrained. Invalid/legacy forearm tracking "
+            "falls back to position-only IK."
+        ),
+    )
+
+    mode_group.add_argument(
+        "--wrist-roll-ik",
+        action="store_true",
+        help=(
+            "4-DoF IK: wrist translation controls TCP xyz and the "
+            "AVP forearm roll drives joint 6 directly; wrist "
+            "pitch/yaw are ignored. Position solving is best-effort "
+            "damped least squares, so targets beyond the reachable "
+            "set are followed along the workspace boundary instead "
+            "of failing."
+        ),
+    )
+
+    # ========================================================
+    # Legacy real-arm CLI compatibility. This dedicated AUBO runner rejects
+    # real mode in main() until an AUBO-specific backend is implemented.
+    # ========================================================
+
+    parser.add_argument(
+        "--arm-backend",
+        choices=("sim", "real"),
+        default="sim",
+        help=(
+            "AUBO i7 runner currently supports the MuJoCo 'sim' backend. "
+            "The legacy 'real' choice is rejected to prevent accidental "
+            "use of the RM65 backend."
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-ip",
+        default=None,
+        help="Reserved for a future AUBO real-arm backend",
+    )
+
+    # ========================================================
+    # Real SG100 hand backend (H3+).  The sim default keeps the
+    # current behaviour unchanged; the real backend sends the final
+    # post-filter qcmd over the vendor SDK UART link and ingests the
+    # measured joint feedback for the DATA CONTRACT.
+    # ========================================================
+
+    parser.add_argument(
+        "--hand-backend",
+        choices=("sim", "real", "mock"),
+        default="sim",
+        help=(
+            "Hand execution backend: 'sim' keeps the software-only "
+            "command proxy (current behaviour); 'real' sends the final "
+            "qcmd to the SG100 over UART and records measured joint "
+            "feedback; 'mock' exercises the real-hand data path "
+            "against MockSG100Driver (no hardware)"
+        ),
+    )
+
+    parser.add_argument(
+        "--hand-port",
+        default="/dev/ttyUSB0",
+        help="UART port of the SG100 palm board for --hand-backend real",
+    )
+
+    parser.add_argument(
+        "--hand-baudrate",
+        type=int,
+        default=1_000_000,
+        help="SG100 UART baudrate (vendor default 1000000)",
+    )
+
+    parser.add_argument(
+        "--hand-sdk-dir",
+        default=None,
+        help="SG100 SDK root (default: $SG100_SDK_DIR, else "
+        "<repo>/../SG100_SDK_Publish, else ~/SG100_SDK_Publish)",
+    )
+
+    parser.add_argument(
+        "--hand-feedback-poll-hz",
+        type=float,
+        default=100.0,
+        help="SG100 measured-feedback polling rate",
+    )
+
+    parser.add_argument(
+        "--thumb-lock-hardware-cap-deg",
+        type=float,
+        default=None,
+        help=(
+            "HARDWARE VALIDATION CAP ONLY: clamps the configured "
+            "power-grasp thumb_j1 lock bias to at most this many "
+            "degrees for this run (staged first-hardware testing: "
+            "10 -> 20 -> 30 -> 40). Default None keeps the production "
+            "config unchanged; the cap never alters the blend "
+            "semantics, only the bias amplitude for this session."
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-port",
+        type=int,
+        default=8080,
+        help="Reserved real-arm controller TCP port",
+    )
+
+    parser.add_argument(
+        "--arm-follow",
+        choices=("low", "filter", "high"),
+        default="low",
+        help=(
+            "rm_movej_canfd follow mode: low (follow=False), filter "
+            "(follow=True + trajectory_mode=2), high (follow=True raw); "
+            "see v3 §A2.2 (default: low)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-radio",
+        type=int,
+        default=0,
+        help="rm_movej_canfd smoothing coefficient for filter mode (default: 0)",
+    )
+
+    parser.add_argument(
+        "--arm-send-hz",
+        type=float,
+        default=100.0,
+        help="Real backend CANFD sender rate in Hz (default: 100)",
+    )
+
+    parser.add_argument(
+        "--arm-safety-profile",
+        type=int,
+        choices=(10, 25, 50),
+        default=10,
+        help=(
+            "Software safety profile scaling the real-arm limiter: "
+            "10 -> qdot 0.5 / qddot 2.0, 25 -> 1.25 / 5.0, "
+            "50 -> 2.5 / 10.0 (rad, rad/s, rad/s^2) (default: 10)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-tool-profile",
+        choices=("flange_only", "sg100_attached"),
+        default="flange_only",
+        help="Tool profile for the real arm (default: flange_only)",
+    )
+
+    parser.add_argument(
+        "--arm-target-timeout-ms",
+        type=int,
+        default=150,
+        help="Real backend stale-target watchdog in ms (default: 150)",
+    )
+
+    parser.add_argument(
+        "--arm-feedback-timeout-ms",
+        type=int,
+        default=200,
+        help="Real backend stale-feedback watchdog in ms (default: 200)",
+    )
+
+    parser.add_argument(
+        "--arm-max-follow-error-deg",
+        type=float,
+        default=20.0,
+        help=(
+            "Gross cmd-vs-actual position mismatch bound in deg for "
+            "the real backend. Primary liveness check is velocity-based "
+            "dead-arm detection; ordinary low-follow lag never reaches "
+            "this bound (default: 20)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-verbose",
+        action="store_true",
+        help="Print real backend events and timing statistics",
+    )
+
+    parser.add_argument(
+        "--attach",
+        nargs=4,
+        type=float,
+        default=[0.0, 0.0, 0.8, 90],
+        metavar=("X", "Y", "Z", "YAW_DEG"),
+        help=(
+            "Placement of the MuJoCo robot "
+            "inside the AVP scene: x y z yaw_deg"
+        ),
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print low-rate runtime diagnostics",
+    )
+
+    parser.add_argument(
+        "--thumb-retarget-debug",
+        action="store_true",
+        help=(
+            "Print a low-rate (~5 Hz) thumb retargeting diagnostic: "
+            "grasp/lock weights, human thumb features, raw/bias/final "
+            "SG100 thumb q, and live thumb tip geometry"
+        ),
+    )
+
+    parser.add_argument(
+        "--hammer-impact-diagnostic",
+        action="store_true",
+        help=(
+            "Record bounded Hammer-head/Peg impact traces and print one "
+            "summary per impact (default: disabled)"
+        ),
+    )
+
+    parser.add_argument(
+        "--show-hammer-collision-debug",
+        action="store_true",
+        help=(
+            "Show Hammer/Peg collision proxies and MuJoCo contact points "
+            "without changing production physics (default: disabled)"
+        ),
+    )
+
+    return parser
+
+
+def main():
+    # ========================================================
+    # Command-line arguments
+    # ========================================================
+
+    parser = build_arg_parser()
+
+    args = parser.parse_args()
+
+    # The reference AUBO controller intentionally implements decoupled
+    # position IK, not a six-dimensional pose or forearm-axis task.  Make that
+    # safe mode the default while retaining the explicit wrist-roll variant.
+    if not any(
+        (
+            args.lock_tcp_rotation,
+            args.position_only_ik,
+            args.forearm_axis_ik,
+            args.wrist_roll_ik,
+        )
+    ):
+        args.position_only_ik = True
+
+    if args.lock_tcp_rotation or args.forearm_axis_ik:
+        parser.error(
+            "AUBO i7 supports --position-only-ik (default) or "
+            "--wrist-roll-ik; full-pose and forearm-axis IK are not "
+            "part of the validated decoupled solver"
+        )
+
+    # ========================================================
+    # Argument validation
+    # ========================================================
+
+    if args.tracking_hz <= 0.0:
+        raise ValueError(
+            "--tracking-hz must be > 0"
+        )
+
+    if args.stream_hz <= 0.0:
+        raise ValueError(
+            "--stream-hz must be > 0"
+        )
+
+    if args.filter_tau <= 0.0:
+        raise ValueError(
+            "--filter-tau must be > 0"
+        )
+
+    if args.arm_filter_tau <= 0.0:
+        raise ValueError(
+            "--arm-filter-tau must be > 0"
+        )
+
+    if args.max_arm_velocity <= 0.0:
+        raise ValueError(
+            "--max-arm-velocity must be > 0"
+        )
+
+    if args.max_hand_velocity <= 0.0:
+        raise ValueError(
+            "--max-hand-velocity must be > 0"
+        )
+
+    if args.tracking_timeout <= 0.0:
+        raise ValueError(
+            "--tracking-timeout must be > 0"
+        )
+
+    if args.arm_backend != "sim":
+        parser.error(
+            "this AUBO i7 entry point is simulation-only; the legacy RM65 "
+            "real-arm backend is intentionally disabled"
+        )
+
+    if args.collect_arm_hand_data and args.arm_backend != "real":
+        raise ValueError(
+            "--collect-arm-hand-data requires --arm-backend real; "
+            "simulated qpos is not measured AUBO feedback"
+        )
+
+    if args.hammer_impact_diagnostic and args.arm_backend != "sim":
+        raise ValueError(
+            "--hammer-impact-diagnostic requires --arm-backend sim; the "
+            "real backend uses a kinematic MuJoCo twin without mj_step"
+        )
+
+    if args.data_stale_pre_ms <= 0.0 or args.data_stale_post_ms <= 0.0:
+        raise ValueError("data stale-state thresholds must be > 0")
+
+    if args.arm_send_hz <= 0.0:
+        raise ValueError(
+            "--arm-send-hz must be > 0"
+        )
+
+    if args.arm_target_timeout_ms <= 0:
+        raise ValueError(
+            "--arm-target-timeout-ms must be > 0"
+        )
+
+    if args.arm_feedback_timeout_ms <= 0:
+        raise ValueError(
+            "--arm-feedback-timeout-ms must be > 0"
+        )
+
+    if args.arm_max_follow_error_deg <= 0.0:
+        raise ValueError(
+            "--arm-max-follow-error-deg must be > 0"
+        )
+
+    if not np.isfinite(args.video_fps) or args.video_fps <= 0.0:
+        raise ValueError(
+            "--video-fps must be finite and > 0"
+        )
+
+    # ========================================================
+    # Resolve input files
+    # ========================================================
+
+    model_path = Path(args.model)
+
+    calibration_path = Path(args.calibration)
+
+    avp_to_tcp_config_path = Path(
+        args.avp_to_tcp_config
+    )
+
+    prebuilt_usdz_path = None
+
+    if args.usdz is not None:
+        prebuilt_usdz_path = (
+            VisionProStreamer._validate_prebuilt_usdz(
+                args.usdz
+            )
+        )
+
+    if not model_path.exists():
+        raise FileNotFoundError(
+            "Combined MuJoCo model not found: "
+            f"{model_path}"
+        )
+
+    if not calibration_path.exists():
+        raise FileNotFoundError(
+            "AVP calibration file not found: "
+            f"{calibration_path}\n"
+            "Run calibrate_avp_hand first."
+        )
+
+    if not avp_to_tcp_config_path.exists():
+        raise FileNotFoundError(
+            "AVP-to-TCP config file not found: "
+            f"{avp_to_tcp_config_path}"
+        )
+
+    avp_to_tcp_config = load_avp_to_tcp_config(
+        avp_to_tcp_config_path
+    )
+
+    # ========================================================
+    # Startup information
+    # ========================================================
+
+    print(
+        "===== AVP -> AUBO i7 + SG100 SIM ====="
+    )
+
+    print(
+        "model             :",
+        model_path,
+    )
+
+    print(
+        "hand calibration  :",
+        calibration_path,
+    )
+
+    print(
+        "Vision Pro        :",
+        args.ip,
+    )
+
+    print(
+        "tracking rate     :",
+        args.tracking_hz,
+        "Hz",
+    )
+
+    print(
+        "AVP stream rate   :",
+        args.stream_hz,
+        "Hz",
+    )
+
+    print(
+        "AVP/TCP config    :",
+        avp_to_tcp_config_path,
+    )
+
+    print(
+        "arm IK mode       :",
+        (
+            "wrist-roll (position + forearm roll, pitch/yaw free)"
+            if args.wrist_roll_ik
+            else (
+                "forearm-axis (5-DoF, TCP +Z / roll free)"
+                if args.forearm_axis_ik
+                else (
+                    "position-only (orientation free)"
+                    if args.position_only_ik
+                    else (
+                        "fixed-orientation (calibration anchor)"
+                        if args.lock_tcp_rotation
+                        else "6-DoF pose (follows wrist)"
+                    )
+                )
+            )
+        ),
+    )
+
+    print(
+        "USDZ source       :",
+        (
+            "prebuilt"
+            if prebuilt_usdz_path is not None
+            else "cache/converter"
+        ),
+    )
+
+    if prebuilt_usdz_path is not None:
+        print(
+            "USDZ path         :",
+            prebuilt_usdz_path,
+        )
+        print(
+            "USDZ size         :",
+            f"{Path(prebuilt_usdz_path).stat().st_size / (1024 * 1024):.2f} MB",
+        )
+
+    print(
+        "basis source      :",
+        avp_to_tcp_config.source,
+    )
+
+    print(
+        "translation scale :",
+        avp_to_tcp_config.translation_scale,
+    )
+
+    print(
+        "AVP -> TCP fixed-axis basis:\n",
+        avp_to_tcp_config.avp_to_tcp_local_rotation,
+    )
+
+    print(
+        "TCP filter         :",
+        avp_to_tcp_config.filter,
+    )
+
+    # ========================================================
+    # MuJoCo combined model
+    # ========================================================
+
+    model = mujoco.MjModel.from_xml_path(
+        str(model_path)
+    )
+
+    data = mujoco.MjData(
+        model
+    )
+
+
+    # Resolve the named robot layout instead of assuming that the
+    # complete scene contains exactly 17 qpos / DoFs. Extra passive
+    # scene state (for example a bottle freejoint) is allowed.
+    robot_layout = resolve_robot_layout(model)
+
+
+    # ========================================================
+    # Validate teleoperation TCP
+    # ========================================================
+
+    tcp_body_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        TCP_BODY,
+    )
+
+    if tcp_body_id < 0:
+        raise RuntimeError(
+            "Teleoperation TCP body not found: "
+            f"{TCP_BODY}"
+        )
+
+    tcp_parent_id = int(
+        model.body_parentid[
+            tcp_body_id
+        ]
+    )
+
+    tcp_parent_name = (
+        mujoco.mj_id2name(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            tcp_parent_id,
+        )
+    )
+
+    if tcp_parent_name != "wrist3_Link":
+        raise RuntimeError(
+            "Unexpected TCP attachment.\n"
+            f"{TCP_BODY} parent should be "
+            f"wrist3_Link, got {tcp_parent_name}"
+        )
+
+
+    # ========================================================
+    # Physics timing
+    # ========================================================
+
+    physics_dt = float(
+        model.opt.timestep
+    )
+
+    if physics_dt <= 0.0:
+        raise RuntimeError(
+            "MuJoCo timestep must be > 0"
+        )
+
+    physics_hz = (
+        1.0
+        / physics_dt
+    )
+
+
+    # ========================================================
+    # Startup arm pose: tested AUBO i7 nominal posture
+    # ========================================================
+
+    ik_solver = AuboI7IKSolver(
+        model,
+        tcp_body_name=TCP_BODY,
+    )
+
+    # ========================================================
+    # Real-arm execution is intentionally unavailable in this entry point.
+    # The sentinel keeps the shared simulation/recording path fail-closed.
+    real_arm_backend = None
+
+    startup_arm_q = compute_startup_arm_q(model, data, ik_solver)
+    print(
+        "startup pose      : AUBO i7 nominal, "
+        f"q = {np.round(startup_arm_q, 5).tolist()}"
+    )
+
+    # ========================================================
+    # Initialize simulation state
+    # ========================================================
+
+    initialize_robot_state(
+        model,
+        data,
+        robot_layout,
+        startup_arm_q,
+        np.zeros(HAND_DOF, dtype=np.float64),
+    )
+
+
+    # ========================================================
+    # Model diagnostics
+    # ========================================================
+
+    print()
+    print(
+        "Combined MuJoCo model validated."
+    )
+
+    print(
+        "nq / nv / nu      :",
+        model.nq,
+        "/",
+        model.nv,
+        "/",
+        model.nu,
+    )
+
+    print(
+        "physics rate      :",
+        physics_hz,
+        "Hz",
+    )
+
+    print(
+        "teleop TCP        :",
+        TCP_BODY,
+    )
+
+    print(
+        "TCP parent        :",
+        tcp_parent_name,
+    )
+
+    print(
+        "arm qpos          :",
+        robot_layout.arm_qpos_indices.tolist(),
+    )
+
+    print(
+        "hand qpos         :",
+        robot_layout.hand_qpos_indices.tolist(),
+    )
+        # ========================================================
+    # SG100 hand retargeting pipeline
+    # ========================================================
+
+    calibration = load_calibration(
+        calibration_path
+    )
+
+    avp_adapter = AVPHandAdapter(
+        calibration
+    )
+
+    retargeter = SG100Retargeter()
+
+    # Optional FIRST-HARDWARE validation cap on the power-grasp lock
+    # bias (staged 10 -> 20 -> 30 -> 40 deg).  Implemented as a session
+    # bias override so the blend semantics stay untouched; without the
+    # flag the production config (+40 deg) is used unchanged.
+    if args.thumb_lock_hardware_cap_deg is not None:
+        cap = float(args.thumb_lock_hardware_cap_deg)
+        if not (0.0 < cap <= 40.0 + 1e-9):
+            raise SystemExit(
+                "--thumb-lock-hardware-cap-deg must lie in (0, 40]"
+            )
+        import tempfile as _tempfile
+
+        import yaml as _yaml
+
+        _semantics_path = (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "sg100_joint_semantics.yaml"
+        )
+        with _semantics_path.open("r") as f:
+            _semantics = _yaml.safe_load(f)
+        _biases = _semantics["power_grasp_thumb_lock"]["biases_deg"]
+        _biases["thumb_j1"] = min(float(_biases["thumb_j1"]), cap)
+        with _tempfile.NamedTemporaryFile(
+            "w", suffix=".yaml", delete=False
+        ) as f:
+            _yaml.safe_dump(_semantics, f)
+            _semantics_temp_path = f.name
+        retargeter = SG100Retargeter(_semantics_temp_path)
+        print(
+            "thumb lock hardware cap :",
+            f"thumb_j1 bias limited to {_biases['thumb_j1']:.1f} deg "
+            "(validation session)",
+        )
+
+    # RAW (pre-lock) thumb commands for the debug overlay only; the
+    # production retarget path is untouched.
+    retargeter_no_lock = (
+        build_lock_disabled_retargeter()
+        if args.thumb_retarget_debug
+        else None
+    )
+
+    last_thumb_debug = -float("inf")
+
+
+    # ========================================================
+    # Validate SG100 retargeter joint ordering
+    # ========================================================
+
+    if (
+        tuple(retargeter.joint_order)
+        != SG100_JOINT_ORDER
+    ):
+        raise RuntimeError(
+            "SG100 retargeter joint-order mismatch.\n"
+            f"Expected: {SG100_JOINT_ORDER}\n"
+            f"Actual:   {retargeter.joint_order}"
+        )
+
+
+    # ========================================================
+    # Initial semantic hand state
+    # ========================================================
+
+    neutral_hand = (
+        CanonicalHandState.neutral()
+    )
+
+    q_hand_goal = (
+        retargeter.retarget(
+            neutral_hand
+        )
+    )
+
+
+    # ========================================================
+    # Validate initial hand target
+    # ========================================================
+
+    if q_hand_goal.shape != (
+        HAND_DOF,
+    ):
+        raise RuntimeError(
+            "Unexpected SG100 retarget output shape: "
+            f"expected ({HAND_DOF},), "
+            f"got {q_hand_goal.shape}"
+        )
+
+    if not np.all(
+        np.isfinite(
+            q_hand_goal
+        )
+    ):
+        raise RuntimeError(
+            "Initial SG100 target contains "
+            "non-finite values."
+        )
+
+    if not np.allclose(
+        q_hand_goal,
+        np.zeros(
+            HAND_DOF,
+            dtype=np.float64,
+        ),
+        atol=1e-12,
+    ):
+        raise RuntimeError(
+            "Canonical neutral hand does not "
+            "retarget to SG100 q=0.\n"
+            f"q_hand_goal={q_hand_goal}"
+        )
+
+
+    # ========================================================
+    # SG100 command filter
+    # ========================================================
+
+    hand_command_filter = (
+        JointCommandFilter(
+            dof=HAND_DOF,
+            tau=args.filter_tau,
+            max_velocity=(
+                args.max_hand_velocity
+            ),
+        )
+    )
+
+    hand_command_filter.reset(
+        q_hand_goal
+    )
+
+    q_hand_cmd = (
+        q_hand_goal.copy()
+    )
+
+
+    # ========================================================
+    # Synchronize MuJoCo hand state
+    # ========================================================
+
+    data.qpos[
+        robot_layout.hand_qpos_indices
+    ] = q_hand_goal
+
+    data.ctrl[
+        robot_layout.hand_actuator_ids
+    ] = q_hand_goal
+
+    mujoco.mj_forward(
+        model,
+        data,
+    )
+
+
+    # ========================================================
+    # Hand-pipeline diagnostics
+    # ========================================================
+
+    print()
+    print(
+        "SG100 hand pipeline initialized."
+    )
+
+    print(
+        "hand DoF           :",
+        HAND_DOF,
+    )
+
+    print(
+        "initial q_goal     :",
+        np.round(
+            q_hand_goal,
+            4,
+        ),
+    )
+
+    print(
+        "filter tau         :",
+        args.filter_tau,
+        "s",
+    )
+
+    print(
+        "max hand velocity  :",
+        args.max_hand_velocity,
+        "rad/s",
+    )
+
+    # ========================================================
+    # AUBO i7 Cartesian teleoperation pipeline
+    # ========================================================
+
+    # ik_solver was created together with the startup pose above.
+
+    # ========================================================
+    # Initial AUBO i7 joint target
+    # ========================================================
+
+    q_arm_goal = (
+        startup_arm_q.copy()
+    )
+
+    # Posture anchor for the IK null-space term: the arm configuration
+    # captured at neutral calibration.  Redundancy (position-only and
+    # fallback solves) resolves toward this instead of random-walking.
+    q_arm_reference = (
+        startup_arm_q.copy()
+    )
+
+    # ========================================================
+    # AUBO i7 arm command filter
+    #
+    # q_arm_goal may still step discontinuously (solution branch
+    # switch, fallback resume).  The physics-rate low-pass + joint
+    # velocity limit converts any such step into a bounded-speed
+    # slew, mirroring the SG100 hand path below.
+    # ========================================================
+
+    arm_command_filter = (
+        JointCommandFilter(
+            dof=ARM_DOF,
+            tau=args.arm_filter_tau,
+            max_velocity=(
+                args.max_arm_velocity
+            ),
+        )
+    )
+
+    arm_command_filter.reset(
+        startup_arm_q.copy()
+    )
+
+    q_arm_cmd = (
+        q_arm_goal.copy()
+    )
+
+    # ========================================================
+    # Robot TCP pose from the current MuJoCo state
+    # ========================================================
+
+    p_tcp0 = (
+        data.xpos[tcp_body_id].copy()
+    )
+
+    R_tcp0 = (
+        data.xmat[tcp_body_id].reshape(3,3).copy()
+    )
+
+    T_tcp0 = make_transform(
+        p_tcp0,
+        R_tcp0,
+    )
+
+    # ========================================================
+    # Cross-check TCP pose against the official-URDF AUBO i7 FK
+    # ========================================================
+
+    (
+        p_tcp_fk,
+        R_tcp_fk,
+    ) = ik_solver.fk(q_arm_goal)
+
+    tcp_position_consistency_error = float(
+        np.linalg.norm(
+            p_tcp_fk - p_tcp0
+        )
+    )
+
+    tcp_rotation_consistency_error = float(
+        np.linalg.norm(
+            R_tcp_fk - R_tcp0
+        )
+    )
+
+    if (
+        tcp_position_consistency_error
+        > 1e-10
+    ):
+        raise RuntimeError(
+            "MuJoCo TCP position and IK FK "
+            "are inconsistent.\n"
+            f"Error: "
+            f"{tcp_position_consistency_error}"
+        )
+
+    if (
+        tcp_rotation_consistency_error
+        > 1e-10
+    ):
+        raise RuntimeError(
+            "MuJoCo TCP rotation and IK FK "
+            "are inconsistent.\n"
+            f"Error: "
+            f"{tcp_rotation_consistency_error}"
+        )
+
+
+    # ========================================================
+    # AVP wrist -> robot TCP mapper
+    # ========================================================
+    wrist_mapper = (
+        AVPWristRelativeMapper(
+            translation_scale=(
+                avp_to_tcp_config.translation_scale
+            ),
+            R_tcp_from_avp_local=(
+                avp_to_tcp_config
+                .avp_to_tcp_local_rotation
+            ),
+        )
+    )
+
+    # AUBO i7 Cartesian filtering belongs after wrist mapping and before IK.
+    # Its timestamp advances only when a new valid tracking frame is used.
+    tcp_target_filter = TcpTargetFilter(
+        avp_to_tcp_config.filter
+    )
+
+    # ========================================================
+    # Wrist calibration state
+    # ========================================================
+
+    wrist_calibrated = False
+
+    teleop_arming = TeleopArmingController()
+
+    T_avp_wrist_0 = None
+    T_tcp_runtime_0 = None
+    R_tcp_rotation_lock = None
+    n_forearm0_avp = None
+    forearm_axis_calibrated = False
+    q_hand0_runtime = None
+
+    # Wrist-roll mode anchors: joint-6 zero, the roll axis captured
+    # at the neutral frame, and the filtered roll state.
+    q6_roll_anchor = None
+    roll_axis_anchor = None
+    filtered_roll = 0.0
+    last_roll_time_s = None
+
+    # ========================================================
+    # IK diagnostics
+    # ========================================================
+
+    last_ik_result = None
+
+    ik_failure_count = 0
+
+    ik_fallback_count = 0
+
+    # ========================================================
+    # Arm-pipeline diagonostics
+    # ========================================================
+
+    print()
+    print(
+        "AUBO i7 arm pipeline initialized."
+    )
+
+    print(
+        "teleop ready q     :",
+        np.round(
+            q_arm_goal,
+            4,
+        ),
+    )
+
+    print(
+        "arm filter tau    :",
+        args.arm_filter_tau,
+        "s",
+    )
+
+    print(
+        "max arm velocity  :",
+        args.max_arm_velocity,
+        "rad/s",
+    )
+
+    print(
+        "initial TCP pos    :",
+        np.round(
+            p_tcp0,
+            6,
+        ),
+    )
+
+    print(
+        "translation scale  :",
+        avp_to_tcp_config.translation_scale,
+    )
+
+    print(
+        "wrist calibrated   :",
+        wrist_calibrated,
+    )
+
+    print(
+        "teleop state       :",
+        teleop_arming.state.value,
+    )
+
+    print(
+        "TCP/FK pos error   :",
+        tcp_position_consistency_error,
+    )
+
+    print(
+        "TCP/FK rot error   :",
+        tcp_rotation_consistency_error,
+    )
+
+    # ========================================================
+    # Apple Vision Pro streamer
+    # ========================================================
+
+    streamer = VisionProStreamer(
+        ip=args.ip,
+        record=True,
+        verbose=args.verbose,
+    )
+
+
+    # ========================================================
+    # Configure MuJoCo state streaming back to AVP
+    # ========================================================
+
+    streamer.configure_mujoco(
+        xml_path=str(
+            model_path
+        ),
+        model=model,
+        data=data,
+        relative_to=list(
+            args.attach
+        ),
+        grpc_port=args.port,
+        usdz_path=prebuilt_usdz_path,
+    )
+
+
+    # ========================================================
+    # Start AVP WebRTC / simulation streaming
+    # ========================================================
+
+    streamer.start_webrtc()
+
+
+    # ========================================================
+    # Runtime periods
+    # ========================================================
+
+    tracking_period = (
+        1.0
+        / args.tracking_hz
+    )
+
+    stream_period = (
+        1.0
+        / args.stream_hz
+    )
+
+
+    # ========================================================
+    # Runtime clocks
+    # ========================================================
+
+    last_wall = (
+        time.perf_counter()
+    )
+
+    physics_accumulator = 0.0
+
+    last_tracking_query = (
+        -float("inf")
+    )
+
+    last_stream = (
+        -float("inf")
+    )
+
+    last_print = (
+        -float("inf")
+    )
+
+
+    # ========================================================
+    # Tracking state
+    # ========================================================
+
+    tracking_lost_printed = False
+
+    tracking_gate = TrackingFrameGate(
+        max_frame_age_seconds=args.tracking_timeout,
+        tracking_timeout_seconds=args.tracking_timeout,
+    )
+
+
+    # ========================================================
+    # Runtime diagnostics
+    # ========================================================
+
+    tracking_frame_count = 0
+
+    valid_tracking_count = 0
+
+    rejected_tracking_count = 0
+
+    # Latest complete AVP -> TCP -> IK audit record.  It is attached to
+    # high-rate command decisions but never used as canonical action data.
+    latest_control_audit = None
+    latest_ik_accepted = False
+
+
+    # ========================================================
+    # Lightweight MuJoCo visual-state recording
+    #
+    # This performs no rendering or video encoding. Sampling is
+    # driven by data.time and finalized once when the session ends.
+    # ========================================================
+
+    state_recorder = MujocoStateRecorder(
+        model,
+        scene_path=model_path,
+        recording_dir=args.recording_dir,
+        record_fps=args.video_fps,
+        camera_name="workstation_front",
+    )
+    recording_session_dir = state_recorder.start(data)
+
+    hammer_impact_diagnostic = None
+    if args.hammer_impact_diagnostic:
+        hammer_impact_diagnostic = HammerImpactDiagnostic(
+            model,
+            recording_session_dir / "hammer_diagnostic",
+        )
+        print(
+            "hammer diagnostic :",
+            recording_session_dir / "hammer_diagnostic",
+        )
+
+    # ========================================================
+    # SG100 hand backend (H3+).  'sim' (default) keeps the software
+    # command proxy; 'real'/'mock' stream the FINAL post-filter qcmd
+    # to the hand driver and ingest measured joint feedback.
+    # ========================================================
+
+    hand_driver = None
+    hand_hardware_map = None
+    if args.hand_backend == "real":
+        from sg100_teleop.robot.sg100_sdk_driver import SG100SDKDriver
+
+        hand_hardware_map = SG100HardwareMap()
+        hand_driver = SG100SDKDriver(
+            args.hand_port,
+            baudrate=args.hand_baudrate,
+            hardware_map=hand_hardware_map,
+            sdk_dir=(
+                Path(args.hand_sdk_dir)
+                if args.hand_sdk_dir is not None
+                else None
+            ),
+        )
+    elif args.hand_backend == "mock":
+        hand_hardware_map = SG100HardwareMap()
+        hand_driver = MockSG100Driver(hand_hardware_map)
+
+    hand_feedback_poll_period = 1.0 / args.hand_feedback_poll_hz
+    last_hand_feedback_poll = -float("inf")
+
+    if hand_driver is not None:
+        hand_driver.connect()
+        hand_driver.start()
+        # Vendor-native realtime entry: MODE_NULL no-drive hold is seeded
+        # BEFORE SwitchToRealtimeMode, so entering realtime cannot move the
+        # hand and commands stay fail-closed until the teleop gate opens.
+        hand_driver.enter_realtime()
+        print(
+            "hand backend      :",
+            f"{type(hand_driver).__name__} @ "
+            f"{getattr(hand_driver, 'port', 'mock')}",
+            "(realtime, MODE_NULL hold)",
+        )
+
+    arm_hand_collector = None
+    if args.collect_arm_hand_data:
+        arm_lower_rad, arm_upper_rad = real_arm_backend.joint_limits_rad()
+        hand_joint_ids = robot_layout.joint_ids[ARM_DOF:]
+        hand_lower_rad = model.jnt_range[hand_joint_ids, 0].copy()
+        hand_upper_rad = model.jnt_range[hand_joint_ids, 1].copy()
+        hand_measured = hand_driver is not None
+        arm_hand_collector = ArmHandDataCollector(
+            recording_session_dir / "arm_hand_data",
+            # Proxy mode: the calibrated runtime qcmd does not exist
+            # yet.  Never invent a zero/home baseline; calibration
+            # establishes the real software command proxy before the
+            # first eligible action.  (Measured mode builds the replay
+            # seed from the first measured SG100 feedback instead.)
+            initial_hand_qcmd=None,
+            arm_lower_rad=arm_lower_rad,
+            arm_upper_rad=arm_upper_rad,
+            hand_lower_rad=hand_lower_rad,
+            hand_upper_rad=hand_upper_rad,
+            hand_measured_feedback=hand_measured,
+            config=CollectorConfig(
+                stale_pre_state_ns=int(args.data_stale_pre_ms * 1e6),
+                stale_post_state_ns=int(args.data_stale_post_ms * 1e6),
+            ),
+        )
+        # RECORDER_ARMED pre-roll begins before the first motion command.
+        arm_hand_collector.observe_arm_feedback(real_arm_backend.joint_state())
+        if hand_measured:
+            arm_hand_collector.observe_hand_feedback(
+                hand_driver.read_feedback()
+            )
+
+    print(
+        "recording session :",
+        recording_session_dir,
+    )
+    print(
+        "recording rate    :",
+        args.video_fps,
+        "FPS (simulation time)",
+    )
+    if arm_hand_collector is not None:
+        print(
+            "joint17 data     :",
+            recording_session_dir / "arm_hand_data",
+        )
+        print(
+            "joint17 schema   : rm65_sg100_joint17_v1 "
+            "(real feedback / actual commands, rad)",
+        )
+        print(
+            "hand baseline   :",
+            "SERIALIZED COMMAND PROXY"
+            if arm_hand_collector.hand_proxy_baseline_valid
+            else "WAITING FOR VALID FINAL TELEOP QCMD",
+        )
+
+
+    # ========================================================
+    # Startup status
+    # ========================================================
+
+    print()
+    print(
+        "Vision Pro streamer initialized."
+    )
+
+    print(
+        "tracking period    :",
+        tracking_period,
+        "s",
+    )
+
+    print(
+        "stream period      :",
+        stream_period,
+        "s",
+    )
+
+    print(
+        "physics period     :",
+        physics_dt,
+        "s",
+    )
+
+    print()
+    print(
+        "Waiting for valid right-hand tracking..."
+    )
+
+    def print_teleop_state(message: str) -> None:
+        print()
+        print(
+            "TELEOP STATE:",
+            teleop_arming.state.value,
+        )
+        print(message)
+
+    def request_neutral_calibration() -> bool:
+        requested = (
+            teleop_arming.request_neutral_calibration()
+        )
+        if requested:
+            print_teleop_state(
+                "Neutral calibration requested; waiting for "
+                "the next NEW + VALID right-hand frame."
+            )
+        else:
+            print()
+            print(
+                "Neutral calibration request ignored in state:",
+                teleop_arming.state.value,
+            )
+        return requested
+
+    def on_viewer_key(keycode: int) -> None:
+        if keycode in (ord("C"), ord("c")):
+            request_neutral_calibration()
+
+        elif keycode in (ord("A"), ord("a")) and (
+            real_arm_backend is not None
+        ):
+            # v3 §A4.2: calibration (C) and arm-enable (A) are separate
+            # actions.  Disarm order follows §A3.5: quiesce the sender
+            # first, then command the decelerated stop.
+            if real_arm_backend.enabled:
+                real_arm_backend.set_enabled(False)
+                real_arm_backend.stop_smooth()
+                print(
+                    "[REAL-ARM] DISARMED (A); "
+                    "sender disabled, slow stop commanded"
+                )
+            else:
+                real_arm_backend.set_enabled(True)
+                print(
+                    "[REAL-ARM] ARMED (A); streaming enabled"
+                )
+
+        # ========================================================
+    # Main runtime loop
+    # ========================================================
+
+    try:
+        with (
+            mujoco.viewer.launch_passive(
+                model,
+                data,
+                key_callback=on_viewer_key,
+            )
+            as viewer
+        ):
+
+            if args.show_hammer_collision_debug:
+                enable_collision_debug_visualization(model, viewer)
+
+            while viewer.is_running():
+
+                # =================================================
+                # Wall-clock timing
+                # =================================================
+
+                now = (
+                    time.perf_counter()
+                )
+
+                now_monotonic_ns = (
+                    time.monotonic_ns()
+                )
+
+                wall_dt = (
+                    now
+                    - last_wall
+                )
+
+                last_wall = now
+
+                # Avoid a huge physics catch-up after:
+                #
+                # - debugger pause
+                # - window drag
+                # - OS scheduling stall
+                #
+                # The simulation validation runner should
+                # recover gracefully instead of trying to
+                # integrate hundreds of missed physics steps.
+                wall_dt = min(
+                    wall_dt,
+                    0.05,
+                )
+
+                physics_accumulator += (
+                    wall_dt
+                )
+
+
+                # =================================================
+                # AVP tracking update
+                # =================================================
+
+                if (
+                    now
+                    - last_tracking_query
+                    >= tracking_period
+                ):
+                    last_tracking_query = (
+                        now
+                    )
+
+                    tracking_frame_count += 1
+
+                    tracking = (
+                        streamer.get_latest()
+                    )
+
+                    frame_status = tracking_gate.inspect(
+                        tracking,
+                        now_monotonic_ns,
+                    )
+
+                    hand = (
+                        get_hand_from_tracking(
+                            tracking,
+                            side="right",
+                        )
+                        if frame_status
+                        == TrackingFrameStatus.CANDIDATE
+                        else None
+                    )
+
+                    if (
+                        frame_status
+                        == TrackingFrameStatus.CANDIDATE
+                        and hand is None
+                    ):
+                        tracking_gate.reject_malformed()
+                        rejected_tracking_count += 1
+
+
+                    # ---------------------------------------------
+                    # Only process a frame when the right hand
+                    # exists.
+                    # ---------------------------------------------
+
+                    if hand is not None:
+
+                        try:
+                            # =====================================
+                            # HAND BRANCH
+                            #
+                            # AVP hand skeleton
+                            #       ↓
+                            # CanonicalHandState
+                            #       ↓
+                            # SG100 target
+                            # =====================================
+
+                            canonical = (
+                                avp_adapter.convert(
+                                    # Hand articulation is defined by the
+                                    # legacy-compatible first 25 joints.  Keep
+                                    # optional forearm[25:27] validity isolated
+                                    # so a bad cue can fall back to position-only
+                                    # without disrupting SG100 retargeting.
+                                    hand[:25]
+                                )
+                            )
+
+                            q_hand_candidate, hand_stages = (
+                                retargeter.retarget_with_stages(
+                                    canonical
+                                )
+                            )
+
+                            # Full hand command provenance (audit only):
+                            # raw retarget -> pinch-coordinated ->
+                            # power-grasp-locked final.  The remaining
+                            # two levels (post-filter, hardware-sent)
+                            # are recorded at the send site.
+                            if arm_hand_collector is not None:
+                                arm_hand_collector.record_hand_pipeline_stages(
+                                    hand_stages
+                                )
+
+                            if (
+                                args.thumb_retarget_debug
+                                and (
+                                    now
+                                    - last_thumb_debug
+                                    >= 0.2
+                                )
+                            ):
+                                last_thumb_debug = now
+
+                                raw_q = (
+                                    retargeter_no_lock
+                                    .retarget(canonical)
+                                )
+
+                                thumb_info = (
+                                    retargeter
+                                    .thumb_lock_diagnostics(
+                                        raw_q,
+                                        canonical.as_dict(),
+                                    )
+                                )
+
+                                print()
+                                print(
+                                    format_thumb_retarget_debug(
+                                        thumb_info,
+                                        canonical.as_dict(),
+                                        hand_tip_geometry_mm(
+                                            model,
+                                            data,
+                                        ),
+                                    )
+                                )
+
+
+                            # -------------------------------------
+                            # Validate SG100 candidate
+                            # -------------------------------------
+
+                            if (
+                                q_hand_candidate.shape
+                                != (HAND_DOF,)
+                            ):
+                                raise ValueError(
+                                    "Unexpected SG100 "
+                                    "candidate shape: "
+                                    f"{q_hand_candidate.shape}"
+                                )
+
+                            if not np.all(
+                                np.isfinite(
+                                    q_hand_candidate
+                                )
+                            ):
+                                raise ValueError(
+                                    "SG100 candidate contains "
+                                    "non-finite values."
+                                )
+
+
+                            # =====================================
+                            # ARM BRANCH
+                            #
+                            # The same HandData is used here.
+                            #
+                            # hand[0] is the AVP wrist SE(3).
+                            # =====================================
+
+                            T_avp_wrist = np.asarray(
+                                hand[0],
+                                dtype=np.float64,
+                            ).copy()
+
+
+                            # -------------------------------------
+                            # Validate wrist transform
+                            # -------------------------------------
+
+                            if (
+                                T_avp_wrist.shape
+                                != (4, 4)
+                            ):
+                                raise ValueError(
+                                    "AVP wrist transform must "
+                                    "have shape (4,4), got "
+                                    f"{T_avp_wrist.shape}"
+                                )
+
+                            if not np.all(
+                                np.isfinite(
+                                    T_avp_wrist
+                                )
+                            ):
+                                raise ValueError(
+                                    "AVP wrist transform "
+                                    "contains non-finite values."
+                                )
+
+                            n_forearm_avp = (
+                                extract_forearm_axis(hand)
+                                if (
+                                    args.forearm_axis_ik
+                                    or args.wrist_roll_ik
+                                )
+                                else None
+                            )
+
+
+                            frame_sequence = int(
+                                tracking.frame_sequence
+                            )
+
+                            received_monotonic_ns = int(
+                                tracking.received_monotonic_ns
+                            )
+
+                            if teleop_arming.observe_valid_frame(
+                                frame_sequence
+                            ):
+                                print_teleop_state(
+                                    "Valid right-hand tracking available. "
+                                    "Hold a neutral pose and press C to arm."
+                                )
+
+                            # A parseable NEW + VALID frame refreshes tracking
+                            # independently of whether teleop is armed.
+                            tracking_gate.accept(
+                                now_monotonic_ns
+                            )
+                            valid_tracking_count += 1
+
+                            calibration_frame = (
+                                teleop_arming.should_calibrate(
+                                    frame_sequence,
+                                    received_monotonic_ns,
+                                )
+                            )
+
+                            # =====================================
+                            # Explicit neutral calibration frame
+                            # =====================================
+
+                            if calibration_frame:
+                                # Every calibration anchors both the mapper
+                                # and filter to the current actual TCP pose.
+                                T_tcp_anchor = make_transform(
+                                    data.xpos[tcp_body_id].copy(),
+                                    data.xmat[tcp_body_id]
+                                    .reshape(3, 3)
+                                    .copy(),
+                                )
+
+                                wrist_mapper.calibrate(
+                                    T_avp_wrist,
+                                    T_tcp_anchor,
+                                )
+                                tcp_target_filter.reset(
+                                    T_tcp_anchor,
+                                    timestamp=(
+                                        received_monotonic_ns
+                                        * 1e-9
+                                    ),
+                                )
+
+                                # A valid 27-joint sample establishes the
+                                # human forearm direction at this same neutral
+                                # frame.  Invalid/legacy data clears the old
+                                # anchor and keeps this session position-only.
+                                if args.forearm_axis_ik:
+                                    forearm_axis_calibrated = (
+                                        n_forearm_avp is not None
+                                        and wrist_mapper
+                                        .calibrate_forearm_axis(
+                                            n_forearm_avp
+                                        )
+                                    )
+                                    n_forearm0_avp = (
+                                        n_forearm_avp.copy()
+                                        if forearm_axis_calibrated
+                                        else None
+                                    )
+                                else:
+                                    forearm_axis_calibrated = False
+                                    n_forearm0_avp = None
+
+                                T_avp_wrist_0 = (
+                                    T_avp_wrist.copy()
+                                )
+                                T_tcp_runtime_0 = (
+                                    T_tcp_anchor.copy()
+                                )
+                                # Orientation anchor for
+                                # --lock-tcp-rotation: the TCP rotation
+                                # at the moment the neutral anchor is
+                                # captured.
+                                R_tcp_rotation_lock = (
+                                    T_tcp_anchor[
+                                        :3,
+                                        :3,
+                                    ].copy()
+                                )
+                                # Posture anchor for the IK null-space
+                                # term, captured with the same neutral
+                                # frame.
+                                q_arm_reference = (
+                                    q_arm_goal.copy()
+                                )
+
+                                # Wrist-roll anchors: the joint-6 zero
+                                # and the roll axis.  The axis is the
+                                # forearm direction at this neutral
+                                # frame expressed in the anchor wrist
+                                # frame; without valid 27-joint
+                                # forearm data the wrist-local
+                                # fallback axis is used.
+                                if args.wrist_roll_ik:
+                                    q6_roll_anchor = float(
+                                        q_arm_reference[5]
+                                    )
+
+                                    roll_axis_anchor = None
+                                    if (
+                                        n_forearm_avp is not None
+                                    ):
+                                        axis = (
+                                            T_avp_wrist_0[:3, :3].T
+                                            @ n_forearm_avp
+                                        )
+                                        axis_norm = float(
+                                            np.linalg.norm(axis)
+                                        )
+                                        if axis_norm > 1e-12:
+                                            roll_axis_anchor = (
+                                                axis / axis_norm
+                                            )
+                                    if roll_axis_anchor is None:
+                                        roll_axis_anchor = (
+                                            WRIST_ROLL_FALLBACK_AXIS_LOCAL
+                                            .copy()
+                                        )
+
+                                    filtered_roll = 0.0
+                                    last_roll_time_s = None
+                                q_hand0_runtime = (
+                                    q_hand_candidate.copy()
+                                )
+
+                                q_hand_goal = (
+                                    q_hand0_runtime.copy()
+                                )
+                                q_hand_cmd = (
+                                    q_hand0_runtime.copy()
+                                )
+                                hand_command_filter.reset(
+                                    q_hand0_runtime
+                                )
+
+                                if (
+                                    arm_hand_collector is not None
+                                    and not arm_hand_collector.hand_measured_feedback
+                                    and not arm_hand_collector.hand_proxy_baseline_valid
+                                ):
+                                    arm_hand_collector.establish_hand_proxy_baseline(
+                                        q_hand_cmd,
+                                        timestamp_ns=time.monotonic_ns(),
+                                    )
+                                    print(
+                                        "[DATA] hand baseline: SERIALIZED "
+                                        "COMMAND PROXY"
+                                    )
+                                elif (
+                                    arm_hand_collector is not None
+                                    and arm_hand_collector.hand_measured_feedback
+                                ):
+                                    # Measured mode: the replay seed is the
+                                    # first MEASURED SG100 feedback; the
+                                    # software qcmd needs no proxy baseline.
+                                    print(
+                                        "[DATA] hand baseline: MEASURED "
+                                        "SG100 FEEDBACK (replay seed)"
+                                    )
+
+                                wrist_calibrated = True
+                                teleop_arming.complete_calibration()
+                                latest_control_audit = None
+                                latest_ik_accepted = False
+
+                                print_teleop_state(
+                                    "Neutral wrist and runtime hand anchors "
+                                    "captured from the same frame."
+                                )
+                                print(
+                                    "frame sequence       :",
+                                    frame_sequence,
+                                )
+                                print(
+                                    "AVP wrist anchor pos :",
+                                    np.round(
+                                        T_avp_wrist_0[:3, 3],
+                                        6,
+                                    ),
+                                )
+                                print(
+                                    "Robot TCP anchor pos :",
+                                    np.round(
+                                        T_tcp_runtime_0[:3, 3],
+                                        6,
+                                    ),
+                                )
+                                print(
+                                    "q_hand0_runtime      :",
+                                    np.round(
+                                        q_hand0_runtime,
+                                        4,
+                                    ),
+                                )
+
+                            # =====================================
+                            # Armed wrist + hand teleoperation
+                            # =====================================
+
+                            elif teleop_arming.active:
+                                T_tcp_raw = wrist_mapper.map(
+                                    T_avp_wrist
+                                )
+                                T_tcp_target = (
+                                    tcp_target_filter.update(
+                                        T_tcp_raw,
+                                        timestamp=(
+                                            received_monotonic_ns
+                                            * 1e-9
+                                        ),
+                                    )
+                                )
+
+                                p_target = (
+                                    T_tcp_target[
+                                        :3,
+                                        3,
+                                    ]
+                                )
+
+
+                                # ---------------------------------
+                                # Solve AUBO i7 IK using the previous
+                                # valid solution as the next seed.
+                                #
+                                # forearm-axis: 3D translation plus TCP +Z
+                                #   direction; local-Z roll is free. Missing
+                                #   forearm data falls back to position-only.
+                                # position-only: true 3D translation
+                                #   task, orientation not constrained.
+                                # lock-rotation: full 6D pose IK
+                                #   against the calibration anchor.
+                                # default: full 6D pose IK against
+                                #   the mapped wrist orientation.
+                                # ---------------------------------
+
+                                if args.wrist_roll_ik:
+                                    # Position task: best-effort DLS
+                                    # with the posture anchor.  The
+                                    # roll overwrite below cannot
+                                    # disturb the position solution
+                                    # because joint 6's position
+                                    # Jacobian column is zero.
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = ik_solver.solve(
+                                        q_seed=(
+                                            q_arm_goal
+                                        ),
+                                        target_position=(
+                                            p_target
+                                        ),
+                                        target_rotation=(
+                                            None
+                                        ),
+                                        position_only=(
+                                            True
+                                        ),
+                                        best_effort=(
+                                            True
+                                        ),
+                                        posture_reference=(
+                                            q_arm_reference
+                                        ),
+                                    )
+
+                                    # Roll channel: twist of the
+                                    # anchor-relative wrist rotation
+                                    # about the calibrated forearm
+                                    # direction, low-passed on the
+                                    # frame timestamps.
+                                    R_rel_anchor = (
+                                        T_avp_wrist_0[:3, :3].T
+                                        @ T_avp_wrist[:3, :3]
+                                    )
+                                    raw_roll = float(
+                                        np.clip(
+                                            WRIST_ROLL_SIGN
+                                            * WRIST_ROLL_SCALE
+                                            * extract_wrist_roll(
+                                                R_rel_anchor,
+                                                roll_axis_anchor,
+                                            ),
+                                            -WRIST_ROLL_MAX_RAD,
+                                            WRIST_ROLL_MAX_RAD,
+                                        )
+                                    )
+
+                                    roll_time_s = (
+                                        received_monotonic_ns * 1e-9
+                                    )
+                                    if (
+                                        last_roll_time_s is None
+                                        or roll_time_s
+                                        <= last_roll_time_s
+                                    ):
+                                        filtered_roll = raw_roll
+                                    else:
+                                        roll_dt = (
+                                            roll_time_s
+                                            - last_roll_time_s
+                                        )
+                                        roll_alpha = (
+                                            1.0
+                                            - math.exp(
+                                                -roll_dt
+                                                / WRIST_ROLL_FILTER_TAU
+                                            )
+                                        )
+                                        filtered_roll += (
+                                            roll_alpha
+                                            * (
+                                                raw_roll
+                                                - filtered_roll
+                                            )
+                                        )
+                                    last_roll_time_s = roll_time_s
+
+                                    q_arm_candidate[5] = (
+                                        np.clip(
+                                            q6_roll_anchor
+                                            + filtered_roll,
+                                            ik_solver.lower[5],
+                                            ik_solver.upper[5],
+                                        )
+                                    )
+
+                                elif args.forearm_axis_ik:
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = solve_forearm_axis_or_position(
+                                        ik_solver,
+                                        wrist_mapper,
+                                        q_arm_goal,
+                                        p_target,
+                                        n_forearm_avp,
+                                        forearm_axis_calibrated,
+                                        posture_reference=(
+                                            q_arm_reference
+                                        ),
+                                    )
+
+                                elif args.position_only_ik:
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = (
+                                        ik_solver.solve(
+                                            q_seed=(
+                                                q_arm_goal
+                                            ),
+                                            target_position=(
+                                                p_target
+                                            ),
+                                            target_rotation=(
+                                                None
+                                            ),
+                                            position_only=(
+                                                True
+                                            ),
+                                            posture_reference=(
+                                                q_arm_reference
+                                            ),
+                                        )
+                                    )
+
+                                else:
+                                    R_target = (
+                                        select_full_pose_target_rotation(
+                                            T_tcp_target,
+                                            lock_tcp_rotation=(
+                                                args.lock_tcp_rotation
+                                            ),
+                                            R_tcp_rotation_lock=(
+                                                R_tcp_rotation_lock
+                                            ),
+                                        )
+                                    )
+
+                                    (
+                                        q_arm_candidate,
+                                        ik_result,
+                                    ) = (
+                                        ik_solver.solve(
+                                            q_seed=(
+                                                q_arm_goal
+                                            ),
+                                            target_position=(
+                                                p_target
+                                            ),
+                                            target_rotation=(
+                                                R_target
+                                            ),
+                                        )
+                                    )
+
+                                last_ik_result = (
+                                    ik_result
+                                )
+
+                                latest_ik_accepted = bool(
+                                    ik_result.converged
+                                    or args.wrist_roll_ik
+                                )
+
+
+                                # ---------------------------------
+                                # Accept only a valid converged IK
+                                # solution.  Wrist-roll mode always
+                                # accepts its best-effort position
+                                # result plus the direct roll channel
+                                # (Quest-style always-track
+                                # semantics); the generic fallback
+                                # branch is intentionally bypassed
+                                # there.
+                                # ---------------------------------
+
+                                if (
+                                    ik_result.converged
+                                    or args.wrist_roll_ik
+                                ):
+
+                                    if (
+                                        q_arm_candidate.shape
+                                        != (ARM_DOF,)
+                                    ):
+                                        raise ValueError(
+                                            "Unexpected AUBO i7 IK "
+                                            "output shape: "
+                                            f"{q_arm_candidate.shape}"
+                                        )
+
+                                    if not np.all(
+                                        np.isfinite(
+                                            q_arm_candidate
+                                        )
+                                    ):
+                                        raise ValueError(
+                                            "AUBO i7 IK output "
+                                            "contains non-finite "
+                                            "values."
+                                        )
+
+                                    accept_dq = np.abs(
+                                        q_arm_candidate
+                                        - q_arm_goal
+                                    )
+
+                                    accept_dq_max = float(
+                                        np.max(
+                                            accept_dq,
+                                        )
+                                    )
+
+                                    if (
+                                        args.verbose
+                                        and accept_dq_max
+                                        > IK_ACCEPT_JUMP_LOG_RAD
+                                    ):
+                                        print(
+                                            "IK accept jump: "
+                                            f"dq_max="
+                                            f"{accept_dq_max:.3f} rad "
+                                            f"({np.degrees(accept_dq_max):.1f} deg), "
+                                            f"dq="
+                                            f"{np.round(accept_dq, 3).tolist()}, "
+                                            f"reason="
+                                            f"{ik_result.reason}, "
+                                            f"pos_err="
+                                            f"{ik_result.position_error * 1000.0:.3f} mm, "
+                                            f"rot_err="
+                                            f"{np.degrees(ik_result.rotation_error):.3f} deg"
+                                        )
+
+                                    q_arm_goal = (
+                                        q_arm_candidate
+                                        .copy()
+                                    )
+
+
+                                # ---------------------------------
+                                # IK failure:
+                                #
+                                # A plain hold would freeze the arm
+                                # while the target keeps drifting and
+                                # then snap back in a single frame
+                                # when the target re-enters the
+                                # feasible set.  Instead, fall back to
+                                # the damped position task in
+                                # best-effort mode: the arm keeps
+                                # tracking from the closest reachable
+                                # configuration, orientation waits.
+                                # The per-frame clamp bounds any
+                                # single solve to a continuous step.
+                                # ---------------------------------
+
+                                else:
+
+                                    ik_failure_count += 1
+
+                                    if args.verbose:
+                                        print(
+                                            "IK hold: "
+                                            f"pos_err="
+                                            f"{ik_result.position_error * 1000.0:.3f} mm, "
+                                            f"rot_err="
+                                            f"{np.degrees(ik_result.rotation_error):.3f} deg, "
+                                            f"sigma_min="
+                                            f"{ik_result.sigma_min:.5f}, "
+                                            f"condition="
+                                            f"{ik_result.condition_number:.2f}, "
+                                            f"reason="
+                                            f"{ik_result.reason}"
+                                        )
+
+                                    (
+                                        q_arm_fallback,
+                                        fallback_result,
+                                    ) = ik_solver.solve(
+                                        q_seed=(
+                                            q_arm_goal
+                                        ),
+                                        target_position=(
+                                            p_target
+                                        ),
+                                        target_rotation=(
+                                            None
+                                        ),
+                                        position_only=(
+                                            True
+                                        ),
+                                        best_effort=(
+                                            True
+                                        ),
+                                        posture_reference=(
+                                            q_arm_reference
+                                        ),
+                                    )
+
+                                    if (
+                                        q_arm_fallback.shape
+                                        == (ARM_DOF,)
+                                        and np.all(
+                                            np.isfinite(
+                                                q_arm_fallback
+                                            )
+                                        )
+                                    ):
+                                        q_arm_goal = np.clip(
+                                            q_arm_fallback,
+                                            q_arm_goal
+                                            - IK_FALLBACK_MAX_STEP_RAD,
+                                            q_arm_goal
+                                            + IK_FALLBACK_MAX_STEP_RAD,
+                                        )
+
+                                        ik_fallback_count += 1
+
+                                        last_ik_result = (
+                                            fallback_result
+                                        )
+
+
+                                # The hand goal comes from the same sensory
+                                # frame used by the wrist/arm branch above.
+                                q_hand_goal = (
+                                    q_hand_candidate.copy()
+                                )
+
+                                latest_control_audit = {
+                                    "raw_avp_wrist_pose": T_avp_wrist.copy(),
+                                    "mapped_relative_wrist_target": T_tcp_raw.copy(),
+                                    "filtered_tcp_target": T_tcp_target.copy(),
+                                    "ik_q_arm_goal": q_arm_goal.copy(),
+                                    "ik_primary_candidate": q_arm_candidate.copy(),
+                                    "ik_reason": ik_result.reason,
+                                    "ik_converged": bool(ik_result.converged),
+                                    "continuity_gate_status": (
+                                        "not_applied_in_current_runtime"
+                                    ),
+                                    "latest_target_q": q_arm_goal.copy(),
+                                    "tracking_status": "valid",
+                                    "safety_status": "ok",
+                                    "tracking_frame_sequence": frame_sequence,
+                                    "tracking_received_monotonic_ns": (
+                                        received_monotonic_ns
+                                    ),
+                                }
+
+
+                            # -------------------------------------
+                            # Tracking recovery notification
+                            # -------------------------------------
+
+                            if (
+                                tracking_lost_printed
+                            ):
+                                print()
+                                print(
+                                    "Right-hand tracking "
+                                    "recovered."
+                                )
+
+                                tracking_lost_printed = (
+                                    False
+                                )
+
+
+                        # =========================================
+                        # Reject malformed tracking frames
+                        # =========================================
+
+                        except (
+                            ValueError,
+                            np.linalg.LinAlgError,
+                        ) as exc:
+
+                            tracking_gate.reject_malformed()
+                            rejected_tracking_count += 1
+
+                            if args.verbose:
+                                print(
+                                    "Tracking frame "
+                                    "rejected:",
+                                    exc,
+                                )
+
+
+                # =================================================
+                # Tracking-loss behavior
+                #
+                # Tracking loss and IK failure are intentionally
+                # different concepts.
+                #
+                # Tracking loss:
+                #     no usable AVP frame
+                #
+                # IK failure:
+                #     valid AVP frame, but requested TCP target
+                #     cannot be solved reliably
+                #
+                # In both cases:
+                #     HOLD the last valid robot targets.
+                # =================================================
+
+                if (
+                    tracking_gate.tracking_timed_out(
+                        now_monotonic_ns
+                    )
+                    and not tracking_lost_printed
+                ):
+                    if teleop_arming.disarm_for_tracking_timeout():
+                        # Real arm: quiesce the sender first, then
+                        # command the decelerated stop (v3 §A3.5).
+                        if (
+                            real_arm_backend is not None
+                            and real_arm_backend.enabled
+                        ):
+                            real_arm_backend.set_enabled(False)
+                            real_arm_backend.stop_smooth()
+                            print(
+                                "[REAL-ARM] DISARMED (tracking "
+                                "timeout); slow stop commanded"
+                            )
+                        # Drop the mapper object so the old wrist anchor cannot
+                        # be used after tracking reacquisition.
+                        wrist_mapper = AVPWristRelativeMapper(
+                            translation_scale=(
+                                avp_to_tcp_config
+                                .translation_scale
+                            ),
+                            R_tcp_from_avp_local=(
+                                avp_to_tcp_config
+                                .avp_to_tcp_local_rotation
+                            ),
+                        )
+                        tcp_target_filter.clear()
+                        wrist_calibrated = False
+                        T_avp_wrist_0 = None
+                        T_tcp_runtime_0 = None
+                        R_tcp_rotation_lock = None
+                        n_forearm0_avp = None
+                        forearm_axis_calibrated = False
+                        q_hand0_runtime = None
+                        q6_roll_anchor = None
+                        roll_axis_anchor = None
+                        filtered_roll = 0.0
+                        last_roll_time_s = None
+                        latest_control_audit = None
+                        latest_ik_accepted = False
+                        print_teleop_state(
+                            "Tracking timeout invalidated the wrist anchor. "
+                            "Reacquisition requires another C confirmation."
+                        )
+
+                    print()
+                    print(
+                        "WARNING: right-hand tracking "
+                        "lost."
+                    )
+
+                    print(
+                        "Holding last AUBO i7 and "
+                        "SG100 targets."
+                    )
+
+                    tracking_lost_printed = (
+                        True
+                    )
+
+
+                # =================================================
+                # MuJoCo physics
+                #
+                # The arm target is updated by AVP/IK at the
+                # tracking rate.
+                #
+                # The SG100 goal is also updated at the tracking
+                # rate, but its command filter runs at the MuJoCo
+                # physics rate.
+                # =================================================
+
+                while (
+                    physics_accumulator
+                    >= physics_dt
+                ):
+
+                    # ---------------------------------------------
+                    # AUBO i7 command
+                    #
+                    # low-rate q_arm_goal
+                    #         ↓
+                    # JointCommandFilter @ physics rate
+                    #         ↓
+                    # high-rate q_arm_cmd
+                    #
+                    # Any upstream discontinuity (branch switch,
+                    # fallback resume) degrades into a bounded-speed
+                    # slew instead of a snap.
+                    # ---------------------------------------------
+
+                    # ---------------------------------------------
+                    # SG100 command
+                    #
+                    # low-rate q_hand_goal
+                    #         ↓
+                    # JointCommandFilter @ physics rate
+                    #         ↓
+                    # high-rate q_hand_cmd
+                    # ---------------------------------------------
+
+                    if real_arm_backend is not None:
+                        # ==========================================
+                        # Real backend path (v3 §A5.3 kinematic twin)
+                        #
+                        # - publish the 60 Hz IK goal; the backend
+                        #   limiter owns real-arm rate limiting with
+                        #   its measured sender dt (the sim
+                        #   ArmCommandFilter is bypassed to avoid
+                        #   double filtering),
+                        # - arm joints follow real feedback,
+                        # - hand joints follow the filtered retarget
+                        #   targets,
+                        # - no mj_step: the twin is kinematic, so the
+                        #   calibration anchor read from the twin
+                        #   equals actual-q + software FK (§A6.2).
+                        # ==========================================
+
+                        feedback = real_arm_backend.joint_state()
+                        if arm_hand_collector is not None:
+                            # Continuous pre-roll: feedback is observed even
+                            # before the first eligible motion command.
+                            arm_hand_collector.observe_arm_feedback(feedback)
+
+                        command_bundle_id = None
+                        decision_timestamp_ns = None
+                        if (
+                            arm_hand_collector is not None
+                            and real_arm_backend.enabled
+                            and teleop_arming.active
+                            and latest_control_audit is not None
+                        ):
+                            command_bundle_id = (
+                                arm_hand_collector.next_command_bundle_id()
+                            )
+                            decision_timestamp_ns = time.monotonic_ns()
+
+                        real_arm_backend.send_joint_target(
+                            q_arm_goal,
+                            command_bundle_id=command_bundle_id,
+                        )
+
+                        q_hand_cmd = (
+                            hand_command_filter.update(
+                                q_hand_goal,
+                                physics_dt,
+                            )
+                        )
+
+                        if hand_driver is not None:
+                            # FINAL post-filter qcmd -> SG100 driver.
+                            # Only a successful transport accept
+                            # produces an SG100CommandSent event; the
+                            # canonical hand action is exactly this
+                            # hardware-sent value.
+                            hand_driver.send_positions_rad(
+                                q_hand_cmd,
+                                command_bundle_id=command_bundle_id,
+                            )
+
+                        if (
+                            hand_driver is not None
+                            and now - last_hand_feedback_poll
+                            >= hand_feedback_poll_period
+                        ):
+                            last_hand_feedback_poll = now
+                            hand_feedback = (
+                                hand_driver.read_feedback()
+                            )
+                            if (
+                                arm_hand_collector is not None
+                                and hand_feedback is not None
+                            ):
+                                arm_hand_collector.observe_hand_feedback(
+                                    hand_feedback
+                                )
+                                data.qpos[
+                                    robot_layout.hand_qpos_indices
+                                ] = hand_feedback.q_rad
+
+                        if feedback is not None:
+                            data.qpos[
+                                robot_layout.arm_qpos_indices
+                            ] = feedback.q_rad
+
+                        if hand_driver is None:
+                            data.qpos[
+                                robot_layout.hand_qpos_indices
+                            ] = q_hand_cmd
+
+                        hand_applied_timestamp_ns = time.monotonic_ns()
+                        if command_bundle_id is not None:
+                            tracking_age_ns = (
+                                decision_timestamp_ns
+                                - int(
+                                    latest_control_audit[
+                                        "tracking_received_monotonic_ns"
+                                    ]
+                                )
+                            )
+                            arm_hand_collector.record_control_decision(
+                                command_bundle_id=command_bundle_id,
+                                decision_timestamp_ns=decision_timestamp_ns,
+                                hand_command_applied_timestamp_ns=(
+                                    hand_applied_timestamp_ns
+                                ),
+                                hand_qcmd_rad=q_hand_cmd,
+                                audit=latest_control_audit,
+                                tracking_valid=(
+                                    tracking_age_ns
+                                    <= int(args.tracking_timeout * 1e9)
+                                ),
+                                safety_ok=real_arm_backend.enabled,
+                                ik_accepted=latest_ik_accepted,
+                                stale_target=(
+                                    tracking_age_ns
+                                    > int(args.arm_target_timeout_ms * 1e6)
+                                ),
+                                hand_command_valid=bool(
+                                    np.all(np.isfinite(q_hand_cmd))
+                                ),
+                            )
+
+                        if arm_hand_collector is not None:
+                            arm_hand_collector.ingest_arm_command_events(
+                                real_arm_backend.drain_command_events()
+                            )
+                            if hand_driver is not None:
+                                arm_hand_collector.ingest_hand_command_events(
+                                    hand_driver.drain_command_events()
+                                )
+
+                        mujoco.mj_forward(
+                            model,
+                            data,
+                        )
+
+                        state_recorder.maybe_record(
+                            data
+                        )
+
+                    else:
+                        q_arm_cmd = (
+                            arm_command_filter.update(
+                                q_arm_goal,
+                                physics_dt,
+                            )
+                        )
+
+                        q_hand_cmd = (
+                            hand_command_filter.update(
+                                q_hand_goal,
+                                physics_dt,
+                            )
+                        )
+
+                        if hand_driver is not None:
+                            # H3 path: arm stays simulated while the
+                            # SG100 receives the final post-filter qcmd.
+                            hand_driver.send_positions_rad(
+                                q_hand_cmd,
+                                command_bundle_id=None,
+                            )
+                            if (
+                                now - last_hand_feedback_poll
+                                >= hand_feedback_poll_period
+                            ):
+                                last_hand_feedback_poll = now
+                                hand_feedback = (
+                                    hand_driver.read_feedback()
+                                )
+                                if (
+                                    arm_hand_collector is not None
+                                    and hand_feedback is not None
+                                ):
+                                    arm_hand_collector.observe_hand_feedback(
+                                        hand_feedback
+                                    )
+
+                        write_robot_controls(
+                            data,
+                            robot_layout,
+                            q_arm_cmd,
+                            q_hand_cmd,
+                        )
+
+
+                        # ---------------------------------------------
+                        # Advance MuJoCo by one physics timestep.
+                        # ---------------------------------------------
+
+                        mujoco.mj_step(
+                            model,
+                            data,
+                        )
+
+                        if hammer_impact_diagnostic is not None:
+                            hammer_impact_diagnostic.sample(
+                                data,
+                                q_arm_goal,
+                                target_tcp=(
+                                    tcp_target_filter.value
+                                    if tcp_target_filter.initialized
+                                    else None
+                                ),
+                                raw_target_tcp=(
+                                    latest_control_audit[
+                                        "mapped_relative_wrist_target"
+                                    ]
+                                    if latest_control_audit is not None
+                                    else None
+                                ),
+                            )
+
+                        state_recorder.maybe_record(
+                            data
+                        )
+
+                    physics_accumulator -= (
+                        physics_dt
+                    )
+
+
+                # =================================================
+                # Local MuJoCo viewer
+                #
+                # Important:
+                # viewer.sync() is outside the 500 Hz physics loop.
+                # =================================================
+
+                viewer.sync()
+
+
+                # =================================================
+                # Stream current MuJoCo state back to AVP
+                # =================================================
+
+                if (
+                    now
+                    - last_stream
+                    >= stream_period
+                ):
+                    streamer.update_sim()
+
+                    last_stream = now
+
+
+                # =================================================
+                # Low-rate diagnostics
+                # =================================================
+
+                if (
+                    args.verbose
+                    and (
+                        now
+                        - last_print
+                        >= 0.5
+                    )
+                ):
+                    print()
+
+                    print(
+                        "tracking frames :",
+                        tracking_frame_count,
+                    )
+
+                    print(
+                        "valid frames    :",
+                        valid_tracking_count,
+                    )
+
+                    print(
+                        "rejected frames :",
+                        rejected_tracking_count,
+                    )
+
+                    print(
+                        "duplicate frames:",
+                        tracking_gate.duplicate_frames,
+                    )
+
+                    print(
+                        "invalid frames  :",
+                        tracking_gate.invalid_frames,
+                    )
+
+                    print(
+                        "wrist calibrated:",
+                        wrist_calibrated,
+                    )
+
+                    print(
+                        "teleop state     :",
+                        teleop_arming.state.value,
+                    )
+
+                    print(
+                        "IK failures     :",
+                        ik_failure_count,
+                    )
+
+                    print(
+                        "IK fallbacks    :",
+                        ik_fallback_count,
+                    )
+
+                    print(
+                        "q_arm_goal      :",
+                        np.round(
+                            q_arm_goal,
+                            3,
+                        ),
+                    )
+
+                    print(
+                        "arm cmd         :",
+                        np.round(
+                            q_arm_cmd,
+                            3,
+                        ),
+                    )
+
+                    print(
+                        "arm qpos        :",
+                        np.round(
+                            data.qpos[
+                                robot_layout.arm_qpos_indices
+                            ],
+                            3,
+                        ),
+                    )
+
+                    print(
+                        "q_hand_goal     :",
+                        np.round(
+                            q_hand_goal,
+                            3,
+                        ),
+                    )
+
+                    print(
+                        "q_hand_cmd      :",
+                        np.round(
+                            q_hand_cmd,
+                            3,
+                        ),
+                    )
+
+                    if real_arm_backend is not None:
+                        stats = real_arm_backend.sender_stats
+                        if stats.get("count", 0) > 0:
+                            print(
+                                "real sender      :",
+                                f"n={int(stats['count'])} "
+                                f"mean={stats['mean_s'] * 1e3:.2f}ms "
+                                f"p95={stats['p95_s'] * 1e3:.2f}ms "
+                                f"p99={stats['p99_s'] * 1e3:.2f}ms "
+                                f"max={stats['max_s'] * 1e3:.2f}ms "
+                                f"misses={int(stats['deadline_misses'])}",
+                            )
+
+                    print(
+                        "hand qpos       :",
+                        np.round(
+                            data.qpos[
+                                robot_layout.hand_qpos_indices
+                            ],
+                            3,
+                        ),
+                    )
+
+
+                    # ---------------------------------------------
+                    # Print the latest IK health metrics only when
+                    # at least one IK solve has occurred.
+                    # ---------------------------------------------
+
+                    if (
+                        last_ik_result
+                        is not None
+                    ):
+                        print(
+                            "IK pos error    :",
+                            round(
+                                last_ik_result.position_error
+                                * 1000.0,
+                                3,
+                            ),
+                            "mm",
+                        )
+
+                        print(
+                            "IK rot error    :",
+                            round(
+                                np.degrees(
+                                    last_ik_result.rotation_error
+                                ),
+                                3,
+                            ),
+                            "deg",
+                        )
+
+                        print(
+                            "IK sigma_min    :",
+                            round(
+                                last_ik_result.sigma_min,
+                                5,
+                            ),
+                        )
+
+                        print(
+                            "IK condition    :",
+                            round(
+                                last_ik_result.condition_number,
+                                2,
+                            ),
+                        )
+
+                    last_print = now
+
+
+                # =================================================
+                # Small cooperative sleep
+                #
+                # This is not the physics clock.
+                # Physics timing is controlled by
+                # physics_accumulator above.
+                # =================================================
+
+                time.sleep(
+                    0.001
+                )
+
+
+    except KeyboardInterrupt:
+        print()
+
+    finally:
+        if hammer_impact_diagnostic is not None:
+            hammer_impact_diagnostic.close()
+        if hand_driver is not None:
+            # Final hand feedback + sent events, then stop sending.
+            try:
+                if arm_hand_collector is not None:
+                    arm_hand_collector.observe_hand_feedback(
+                        hand_driver.read_feedback()
+                    )
+                    arm_hand_collector.ingest_hand_command_events(
+                        hand_driver.drain_command_events()
+                    )
+            finally:
+                hand_driver.stop()
+                hand_driver.disconnect()
+                print("[HAND] SG100 driver disconnected")
+        if real_arm_backend is not None:
+            # v3 §A3.5 order on exit: quiesce, slow stop, disconnect.
+            try:
+                if arm_hand_collector is not None:
+                    arm_hand_collector.observe_arm_feedback(
+                        real_arm_backend.joint_state()
+                    )
+                    arm_hand_collector.ingest_arm_command_events(
+                        real_arm_backend.drain_command_events()
+                    )
+                real_arm_backend.set_enabled(False)
+                real_arm_backend.stop_smooth()
+            finally:
+                real_arm_backend.disconnect()
+                print("[REAL-ARM] backend disconnected")
+        if arm_hand_collector is not None:
+            arm_hand_recording_path = arm_hand_collector.finalize()
+            print(
+                "Arm-hand data    :",
+                arm_hand_recording_path,
+            )
+            print(
+                "causal transitions:",
+                len(arm_hand_collector.transitions),
+            )
+            print(
+                "hard rejections  :",
+                len(arm_hand_collector.rejections),
+            )
+        recording_path = state_recorder.stop()
+        print(
+            "MuJoCo recording :",
+            recording_path,
+        )
+        print(
+            "recorded frames  :",
+            state_recorder.frame_count,
+        )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "AVP -> AUBO i7 + SG100 simulation stopped."
+    )
+
+    print(
+        "tracking queries  :",
+        tracking_frame_count,
+    )
+
+    print(
+        "valid frames      :",
+        valid_tracking_count,
+    )
+
+    print(
+        "rejected frames   :",
+        rejected_tracking_count,
+    )
+
+    print(
+        "duplicate frames  :",
+        tracking_gate.duplicate_frames,
+    )
+
+    print(
+        "invalid frames    :",
+        tracking_gate.invalid_frames,
+    )
+
+    print(
+        "malformed frames  :",
+        tracking_gate.malformed_frames,
+    )
+
+    print(
+        "stale frames      :",
+        tracking_gate.stale_frames,
+    )
+
+    print(
+        "missing metadata  :",
+        tracking_gate.missing_metadata_frames,
+    )
+
+    print(
+        "IK failures       :",
+        ik_failure_count,
+    )
+
+    print(
+        "IK fallbacks      :",
+        ik_fallback_count,
+    )
+
+    print(
+        "wrist calibrated  :",
+        wrist_calibrated,
+    )
+
+    print(
+        "teleop state      :",
+        teleop_arming.state.value,
+    )
+
+    print(
+        "q_hand0_runtime   :",
+        (
+            "unset"
+            if q_hand0_runtime is None
+            else np.round(q_hand0_runtime, 4)
+        ),
+    )
+
+    print(
+        "========================================"
+    )
+
+if __name__ == "__main__":
+    main()
