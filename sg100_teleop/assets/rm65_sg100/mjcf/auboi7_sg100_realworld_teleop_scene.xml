@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<mujoco model="AUBO-i7-SG100-realworld-teleop-scene">
+  <!--
+    Robot-only AVP scene for the AUBO i7_30 with an SG100 right hand.
+
+    The AUBO chain uses the six joint origins and fixed RPY transforms from
+    the official aubo_i7_30 URDF. Every joint rotates about local +Z. This is
+    the model used by the decoupled IK in run_avp_arm_hand_sim_auboi7.py and
+    by the reference test_aubo_i7_decoupled_ik.py.
+
+    The AUBO exterior is lightweight primitive geometry: it is a
+    kinematically exact visual twin, not a CAD collision model. SG100 keeps
+    the production CAD visuals and canonical 11-joint order. The real room is
+    supplied by Vision Pro passthrough, so there are no objects or cameras.
+  -->
+
+  <compiler angle="radian"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+  <visual><global offwidth="1280" offheight="720"/></visual>
+
+  <asset>
+    <material name="aubo_link_material" rgba="0.78 0.82 0.86 1"/>
+    <material name="aubo_joint_material" rgba="0.12 0.14 0.17 1"/>
+    <material name="aubo_accent_material" rgba="1.0 0.31 0.06 1"/>
+    <material name="sg100_material" rgba="0.55 0.58 0.62 1"/>
+    <mesh name="sg100_base_visual_part1" content_type="model/stl" file="../../sg100/meshes_visual/base_link_visual_part1.STL"/>
+    <mesh name="sg100_base_visual_part2" content_type="model/stl" file="../../sg100/meshes_visual/base_link_visual_part2.STL"/>
+    <mesh name="sg100_base_visual_part3" content_type="model/stl" file="../../sg100/meshes_visual/base_link_visual_part3.STL"/>
+    <mesh name="sg100_thumb_link1" content_type="model/stl" file="../../sg100/meshes/thumb_link1.STL"/>
+    <mesh name="sg100_thumb_link2" content_type="model/stl" file="../../sg100/meshes/thumb_link2.STL"/>
+    <mesh name="sg100_thumb_link3" content_type="model/stl" file="../../sg100/meshes/thumb_link3.STL"/>
+    <mesh name="sg100_index_link1" content_type="model/stl" file="../../sg100/meshes/index_link1.STL"/>
+    <mesh name="sg100_index_link2" content_type="model/stl" file="../../sg100/meshes/index_link2.STL"/>
+    <mesh name="sg100_index_link3" content_type="model/stl" file="../../sg100/meshes/index_link3.STL"/>
+    <mesh name="sg100_middle_link1" content_type="model/stl" file="../../sg100/meshes/middle_link1.STL"/>
+    <mesh name="sg100_middle_link2" content_type="model/stl" file="../../sg100/meshes/middle_link2.STL"/>
+    <mesh name="sg100_little_link1" content_type="model/stl" file="../../sg100/meshes/little_link1.STL"/>
+    <mesh name="sg100_little_link2" content_type="model/stl" file="../../sg100/meshes/little_llink2.STL"/>
+    <mesh name="sg100_little_link3" content_type="model/stl" file="../../sg100/meshes/little_linik3.STL"/>
+  </asset>
+
+  <worldbody>
+    <light name="teleop_viewer_key" directional="true" pos="0.30 0 2.20"
+           dir="0 0 -1" ambient="0.42 0.42 0.42"
+           diffuse="0.58 0.58 0.58" specular="0.08 0.08 0.08"
+           castshadow="false"/>
+
+    <body name="base_Link">
+      <geom name="aubo_base_visual" type="cylinder" pos="0 0 0.061"
+            size="0.092 0.061" material="aubo_link_material"
+            contype="0" conaffinity="0"/>
+      <geom name="aubo_base_accent" type="cylinder" pos="0 0 0.014"
+            size="0.099 0.010" material="aubo_accent_material"
+            contype="0" conaffinity="0"/>
+
+      <!-- xyz="0 0 0.122", rpy="0 0 pi" -->
+      <body name="shoulder_Link" pos="0 0 0.122" quat="0 0 0 1" gravcomp="1">
+        <joint name="joint_1" axis="0 0 1" range="-6.283185307179586 6.283185307179586" damping="0.4" armature="0.02"/>
+        <geom name="aubo_joint_1_visual" type="sphere" size="0.076" material="aubo_joint_material" contype="0" conaffinity="0"/>
+        <geom name="aubo_link_1_visual" type="capsule" fromto="0 0 0 0 0.1215 0" size="0.057" material="aubo_link_material" contype="0" conaffinity="0"/>
+
+        <!-- xyz="0 0.1215 0", rpy="-pi/2 -pi/2 0" -->
+        <body name="upperArm_Link" pos="0 0.1215 0" quat="0.5 -0.5 -0.5 -0.5" gravcomp="1">
+          <joint name="joint_2" axis="0 0 1" range="-6.283185307179586 6.283185307179586" damping="0.4" armature="0.02"/>
+          <geom name="aubo_joint_2_visual" type="sphere" size="0.074" material="aubo_joint_material" contype="0" conaffinity="0"/>
+          <geom name="aubo_link_2_visual" type="capsule" fromto="0 0 0 0.368 0 0" size="0.052" material="aubo_link_material" contype="0" conaffinity="0"/>
+
+          <!-- xyz="0.368 0 0", rpy="-pi 0 0" -->
+          <body name="foreArm_Link" pos="0.368 0 0" quat="0 -1 0 0" gravcomp="1">
+            <joint name="joint_3" axis="0 0 1" range="-6.283185307179586 6.283185307179586" damping="0.35" armature="0.015"/>
+            <geom name="aubo_joint_3_visual" type="sphere" size="0.068" material="aubo_joint_material" contype="0" conaffinity="0"/>
+            <geom name="aubo_link_3_visual" type="capsule" fromto="0 0 0 0.316 0 0" size="0.047" material="aubo_link_material" contype="0" conaffinity="0"/>
+
+            <!-- xyz="0.316 0 0", rpy="pi 0 pi/2" -->
+            <body name="wrist1_Link" pos="0.316 0 0" quat="0 0.7071067811865476 0.7071067811865476 0" gravcomp="1">
+              <joint name="joint_4" axis="0 0 1" range="-6.283185307179586 6.283185307179586" damping="0.25" armature="0.01"/>
+              <geom name="aubo_joint_4_visual" type="sphere" size="0.058" material="aubo_joint_material" contype="0" conaffinity="0"/>
+              <geom name="aubo_link_4_visual" type="capsule" fromto="0 0 0 0 0.1025 0" size="0.039" material="aubo_link_material" contype="0" conaffinity="0"/>
+
+              <!-- xyz="0 0.1025 0", rpy="-pi/2 0 0" -->
+              <body name="wrist2_Link" pos="0 0.1025 0" quat="0.7071067811865476 -0.7071067811865476 0 0" gravcomp="1">
+                <joint name="joint_5" axis="0 0 1" range="-6.283185307179586 6.283185307179586" damping="0.2" armature="0.008"/>
+                <geom name="aubo_joint_5_visual" type="sphere" size="0.052" material="aubo_joint_material" contype="0" conaffinity="0"/>
+                <geom name="aubo_link_5_visual" type="capsule" fromto="0 0 0 0 -0.094 0" size="0.034" material="aubo_link_material" contype="0" conaffinity="0"/>
+
+                <!-- xyz="0 -0.094 0", rpy="pi/2 0 0" -->
+                <body name="wrist3_Link" pos="0 -0.094 0" quat="0.7071067811865476 0.7071067811865476 0 0" gravcomp="1">
+                  <joint name="joint_6" axis="0 0 1" range="-6.283185307179586 6.283185307179586" damping="0.15" armature="0.006"/>
+                  <geom name="aubo_joint_6_visual" type="cylinder" size="0.047 0.0365" pos="0 0 0.0365" material="aubo_joint_material" contype="0" conaffinity="0"/>
+                  <geom name="aubo_flange_accent" type="cylinder" size="0.052 0.008" pos="0 0 0.073" material="aubo_accent_material" contype="0" conaffinity="0"/>
+
+                  <!-- SG100 mounts at the URDF link-6 origin, the IK TCP. -->
+                  <body name="sg100_base_link" gravcomp="1">
+                    <inertial pos="0 0 0.055" mass="0.30"
+                              diaginertia="0.0012 0.0010 0.0008"/>
+                    <geom name="sg100_base_visual_part1" type="mesh" mesh="sg100_base_visual_part1" material="sg100_material" mass="0" contype="0" conaffinity="0"/>
+                    <geom name="sg100_base_visual_part2" type="mesh" mesh="sg100_base_visual_part2" material="sg100_material" mass="0" contype="0" conaffinity="0"/>
+                    <geom name="sg100_base_visual_part3" type="mesh" mesh="sg100_base_visual_part3" material="sg100_material" mass="0" contype="0" conaffinity="0"/>
+
+                    <body name="thumb_link1" pos="0.0315 -0.0318581 0.0384" gravcomp="1">
+                      <inertial pos="0.0120772 0.00239257 0.0136728" quat="0.896107 -0.329025 0.284087 -0.0896036" mass="0.0113388" diaginertia="1.6811e-06 1.39718e-06 7.75511e-07"/>
+                      <joint name="thumb_j1" axis="0 0 -1" range="0 2.182" damping="0.002" armature="0.001"/>
+                      <geom name="thumb_link1_visual" type="mesh" mesh="sg100_thumb_link1" material="sg100_material" contype="0" conaffinity="0"/>
+                      <body name="thumb_link2" pos="0.024 0.0155 0.0176" quat="0.707105 0.707108 0 0" gravcomp="1">
+                        <inertial pos="0.0216506 0.0124999 0.0140779" quat="0.353533 0.353574 0.612361 0.612384" mass="0.0389603" diaginertia="5.64004e-06 4.9655e-06 2.66961e-06"/>
+                        <joint name="thumb_j2" axis="0 0 1" range="-2.61 0" damping="0.002" armature="0.001"/>
+                        <geom name="thumb_link2_visual" type="mesh" mesh="sg100_thumb_link2" material="sg100_material" contype="0" conaffinity="0"/>
+                        <body name="thumb_link3" pos="0.0433013 0.025 0.001" gravcomp="1">
+                          <inertial pos="0.021338 0.0152598 0.014052" quat="0.230056 0.345925 0.588117 0.693923" mass="0.03917" diaginertia="4.86657e-06 4.6047e-06 2.51865e-06"/>
+                          <joint name="thumb_j3" axis="0 0 1" range="-1.048 1.57" damping="0.002" armature="0.001"/>
+                          <geom name="thumb_link3_visual" type="mesh" mesh="sg100_thumb_link3" material="sg100_material" contype="0" conaffinity="0"/>
+                        </body>
+                      </body>
+                    </body>
+
+                    <body name="index_link1" pos="0.0315 -0.020758 0.086" quat="0.707105 0.707108 0 0" gravcomp="1">
+                      <inertial pos="-0.00192286 0.0160766 0.0160014" quat="0.270343 0.788631 -0.399873 0.380891" mass="0.0164783" diaginertia="2.89253e-06 2.46445e-06 1.31555e-06"/>
+                      <joint name="index_j1" axis="0 0 -1" range="0 1.57" damping="0.002" armature="0.001"/>
+                      <geom name="index_link1_visual" type="mesh" mesh="sg100_index_link1" material="sg100_material" contype="0" conaffinity="0"/>
+                      <body name="index_link2" pos="-0.0155 0.024 0.0281" quat="0.707107 0 0.707107 0" gravcomp="1">
+                        <inertial pos="0 0.025 0.0140779" quat="0.707107 0.707107 0 0" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06"/>
+                        <joint name="index_j2" axis="0 0 1" range="0 2.18" damping="0.002" armature="0.001"/>
+                        <geom name="index_link2_visual" type="mesh" mesh="sg100_index_link2" material="sg100_material" contype="0" conaffinity="0"/>
+                        <body name="index_link3" pos="0 0.05 0.001" gravcomp="1">
+                          <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551103" mass="0.0391696" diaginertia="4.86645e-06 4.6046e-06 2.51862e-06"/>
+                          <joint name="index_j3" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001"/>
+                          <geom name="index_link3_visual" type="mesh" mesh="sg100_index_link3" material="sg100_material" contype="0" conaffinity="0"/>
+                        </body>
+                      </body>
+                    </body>
+
+                    <body name="middle_link1" pos="-0.018 -0.048858 0.1135" quat="0.499998 0.5 0.500002 0.5" gravcomp="1">
+                      <inertial pos="0 0.025 0.0140779" quat="0.707107 0.707107 0 0" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06"/>
+                      <joint name="middle_j1" axis="0 0 -1" range="-2.18 0" damping="0.002" armature="0.001"/>
+                      <geom name="middle_link1_visual" type="mesh" mesh="sg100_middle_link1" material="sg100_material" contype="0" conaffinity="0"/>
+                      <body name="middle_link2" pos="0 0.05 0.001" gravcomp="1">
+                        <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.00551105" mass="0.0391696" diaginertia="4.86646e-06 4.6047e-06 2.51862e-06"/>
+                        <joint name="middle_j2" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001"/>
+                        <geom name="middle_link2_visual" type="mesh" mesh="sg100_middle_link2" material="sg100_material" contype="0" conaffinity="0"/>
+                      </body>
+                    </body>
+
+                    <body name="little_link1" pos="-0.0315 -0.0207581 0.08" quat="0.707107 0.707107 0 0" gravcomp="1">
+                      <inertial pos="-0.00664761 0.0164128 0.0160729" quat="0.247593 0.789347 -0.391604 0.402834" mass="0.0161726" diaginertia="2.83334e-06 2.43857e-06 1.28303e-06"/>
+                      <joint name="little_j1" axis="0 0 -1" range="-3.14 0" damping="0.002" armature="0.001"/>
+                      <geom name="little_link1_visual" type="mesh" mesh="sg100_little_link1" material="sg100_material" contype="0" conaffinity="0"/>
+                      <body name="little_llink2" pos="-0.0205 0.024 0.0281" quat="0.707107 0 0.707107 0" gravcomp="1">
+                        <inertial pos="0 0.025 0.0140779" quat="0.707107 0.707107 0 0" mass="0.0389603" diaginertia="5.64004e-06 4.96551e-06 2.6696e-06"/>
+                        <joint name="little_j2" axis="0 0 1" range="0 2.18" damping="0.002" armature="0.001"/>
+                        <geom name="little_llink2_visual" type="mesh" mesh="sg100_little_link2" material="sg100_material" contype="0" conaffinity="0"/>
+                        <body name="little_linik3" pos="0 0.05 0.001" gravcomp="1">
+                          <inertial pos="-0.00254632 0.0261091 0.014052" quat="0.682289 0.715984 0.147712 -0.005511" mass="0.0391696" diaginertia="4.86646e-06 4.6047e-06 2.51862e-06"/>
+                          <joint name="little_j3" axis="0 0 1" range="-1.05 1.57" damping="0.002" armature="0.001"/>
+                          <geom name="little_linik3_visual" type="mesh" mesh="sg100_little_link3" material="sg100_material" contype="0" conaffinity="0"/>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="joint_1_pos" joint="joint_1" kp="200" dampratio="1" inheritrange="1" forcerange="-200 200"/>
+    <position name="joint_2_pos" joint="joint_2" kp="200" dampratio="1" inheritrange="1" forcerange="-200 200"/>
+    <position name="joint_3_pos" joint="joint_3" kp="180" dampratio="1" inheritrange="1" forcerange="-160 160"/>
+    <position name="joint_4_pos" joint="joint_4" kp="140" dampratio="1" inheritrange="1" forcerange="-100 100"/>
+    <position name="joint_5_pos" joint="joint_5" kp="120" dampratio="1" inheritrange="1" forcerange="-80 80"/>
+    <position name="joint_6_pos" joint="joint_6" kp="100" dampratio="1" inheritrange="1" forcerange="-60 60"/>
+    <position name="thumb_j1_pos" joint="thumb_j1" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="thumb_j2_pos" joint="thumb_j2" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="thumb_j3_pos" joint="thumb_j3" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="index_j1_pos" joint="index_j1" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="index_j2_pos" joint="index_j2" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="index_j3_pos" joint="index_j3" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="middle_j1_pos" joint="middle_j1" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="middle_j2_pos" joint="middle_j2" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="little_j1_pos" joint="little_j1" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="little_j2_pos" joint="little_j2" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+    <position name="little_j3_pos" joint="little_j3" kp="2" dampratio="1" inheritrange="1" forcerange="-20 20"/>
+  </actuator>
+
+  <keyframe>
+    <key name="realworld_ready" qpos="
+      0 -1.0471975511965976 -1.3089969389957472 0 -1.3089969389957472 0
+      0 0 0 0 0 0 0 0 0 0 0
+    "/>
+  </keyframe>
+</mujoco>
