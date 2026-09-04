@@ -1,6 +1,0 @@
-{
-  "status": "UNEXPECTED_EXCEPTION",
-  "exception_type": "ConnectionError",
-  "exception_reason": "sg100_connect(/dev/ttyUSB0) -> -2",
-  "NO_VISIBLE_ENTRY_MOTION": "NOT_CONFIRMED"
-}

@@ -69,6 +69,72 @@ validated F_fb 存在）。
 
 ---
 
+## 1A. AVP → SG100 canonical command data contract（2026-09-04 数据链审计）
+
+命令链只有一个 authoritative 变量，两个 backend 消费同一对象：
+
+| 项 | 值 | 代码证据（run_avp_arm_hand_sim.py） |
+|---|---|---|
+| authoritative variable | `q_hand_cmd`（canonical_hand_qcmd_rad） | — |
+| 生产者 | `retargeter.retarget_with_stages(canonical)` → `q_hand_candidate` | L2291 |
+| 60Hz goal | `q_hand_goal = q_hand_candidate.copy()`（同帧 sensory 输入） | L3011/2555 |
+| filter 位置 | **retargeting 之后**：`q_hand_cmd = hand_command_filter.update(q_hand_goal, physics_dt)`（tau=0.06s、max 4 rad/s、低通+限速，无任何 SG100 映射逻辑） | real L3238 / sim L3371 |
+| shape / dtype / unit | `(11,)` / `float64` / **rad** | JointCommandFilter |
+| joint order | `SG100_JOINT_ORDER`（thumb_j1…little_j3，== retargeter.joint_order == SDK J1..J11 恒等） | 测试 test_canonical_order_binds_mujoco_actuators_by_name |
+| limits | semantics.yaml 机械限位（retargeter 内已 clamp） | sg100_joint_semantics.yaml |
+
+**MuJoCo consumer（sim path）**：`write_robot_controls()` →
+`data.ctrl[layout.hand_actuator_ids] = q_hand_cmd`
+（combined_robot_layout.py L197）。actuator 为 position servo、gear=1、
+ctrlrange==jnt_range → **ctrl 数位 = joint rad，无额外 actuator
+transform、无第二次 sign transform**（resolve_robot_layout 逐轴校验
+`{joint}_pos` 驱动同名 joint）。**`qpos` 是仿真的响应状态，不是
+command**：`q_hand_cmd != qpos`（即使数值通常接近）。real-arm
+kinematic-twin 路径下 hand qpos 仅作可视化直写（L3296 附近，无硬件
+driver 时），同样不是命令源。
+
+**Real SG100 consumer**：`restricted_hand_backend.submit(q_hand_cmd, …)`
+（real L3256 / sim L3385）——与 MuJoCo **同一个变量**（两个路径都在
+filter 之后立即 `state_recorder.set_hand_command(q_hand_cmd)` 完成录制
+latch）；backend 内部才做 F_cmd → SDK user deg → envelope →
+Hand_Control_t。禁止第二个 retargeter，禁止在
+retargeter/AVP/runner 层加 degree 或 J7 特殊逻辑。
+
+**频率语义**：AVP tracking/retargeting ~60 Hz；physics filter ~500 Hz
+（MuJoCo timestep）；recorder 采样 30 Hz（**只是记录频率**，不是命令
+频率）；vendor scheduler ~10 ms 重发 cache。real backend 在新
+authoritative command 到来时更新 SetHandControl 即可，勿绑定 30 Hz。
+
+**Recording fields**（MujocoStateRecorder，向后兼容，仅 hand 模式）：
+
+| 字段 | 含义 |
+|---|---|
+| `hand_qcmd_canonical_rad [N,11]` | **authoritative command**（backend 前、post-filter，set_hand_command 逐帧 latch，绝不从 qpos 反推） |
+| `hand_qpos_mujoco_rad [N,11]` | MuJoCo 仿真响应（显式 slice） |
+| `hand_joint_names` / `hand_command_unit='rad'` / `hand_command_domain='canonical'` | 布局与单位自描述 |
+| metadata `hand_command_source` / `hand_qpos_source` / `hand_command_missing_frames` | provenance |
+
+历史 recording（如 98.3s/2951 帧 session）只保存 `qpos`：
+`qpos[:,6:17]` 是 **SG100 hand 仿真状态**（rad、canonical 约定一致，
+J7 为负值域），**没有保存 original retargeted hand command**——本轮
+新增字段后未来 session 才有。
+
+**C gate 与 first-command latch**：C 之前 command 可计算/显示但
+`submit` 返回 `C_ANCHOR_REQUIRED`（driver cache 也是 MODE_NULL，双层
+挡）；C 时 anchor 缓存 F_cmd 后目标 + 零增益零输出；enable 后
+velocity limiter 从 anchor 值起步 → 首个 active command ≈ 当前 safe
+target，无瞬移。
+
+**调试**：runner `--sg100-command-debug`（~5 Hz 打印 timestamp /
+canonical rad / allowlist / post-F_cmd SDK deg / reject reason /
+C-enabled 状态）。
+
+回归锁定：`tests/test_canonical_command_data_chain.py`（same canonical
+command 双投递 bit-exact、J7 映射不污染 shared command 且不泄露到
+真机、recording 字段独立性）。
+
+---
+
 ## 2. 11D canonical joint contract（从实际 config 读取）
 
 来源：`sg100_teleop/config/sg100_joint_semantics.yaml`（canonical 限位）、

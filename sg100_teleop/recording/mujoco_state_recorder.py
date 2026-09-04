@@ -14,11 +14,24 @@ from sg100_teleop.sim.camera_observations import (
     CAMERA_TO_OBSERVATION_KEY,
     validate_camera_observation_contract,
 )
+from sg100_teleop.sim.combined_robot_layout import (
+    HAND_DOF,
+    SG100_JOINT_ORDER,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CAMERA = "workstation_front"
 DEFAULT_RECORD_FPS = 30.0
+
+# Explicit provenance for the recorded hand command/state fields.  The
+# command is the AUTHORITATIVE canonical hand command consumed by the
+# backends (post-retarget, post-filter); the qpos slice is the MuJoCo
+# simulation RESPONSE — they are different quantities even when close.
+HAND_COMMAND_UNIT = "rad"
+HAND_COMMAND_DOMAIN = "canonical"
+HAND_COMMAND_SOURCE = "SG100Retargeter final backend input (post-filter)"
+HAND_QPOS_SOURCE = "MuJoCo simulation state"
 
 
 class MujocoStateRecorder:
@@ -27,6 +40,12 @@ class MujocoStateRecorder:
     Sampling is driven only by ``data.time``. Runtime recording copies qpos,
     mocap_pos, and mocap_quat into memory; it never renders or encodes video.
     The complete session is written once during :meth:`stop`.
+
+    Hand command recording (optional, enabled by ``hand_qpos_indices``):
+    ``set_hand_command`` latches the authoritative canonical 11D hand
+    command at physics rate; each sampled frame stores the latest latched
+    value alongside the MuJoCo hand qpos slice, so the command and the
+    simulated state are explicit and never inferred from each other.
     """
 
     def __init__(
@@ -38,6 +57,8 @@ class MujocoStateRecorder:
         record_fps: float = DEFAULT_RECORD_FPS,
         camera_name: str = DEFAULT_CAMERA,
         repository_root: str | Path = REPOSITORY_ROOT,
+        hand_qpos_indices: np.ndarray | None = None,
+        hand_joint_names: tuple[str, ...] = SG100_JOINT_ORDER,
     ) -> None:
         if not np.isfinite(record_fps) or record_fps <= 0.0:
             raise ValueError("record_fps must be finite and > 0")
@@ -50,6 +71,25 @@ class MujocoStateRecorder:
         self.repository_root = Path(repository_root).resolve()
         self.scene_path = Path(scene_path).resolve()
         self.scene_identity = self._scene_identity(self.scene_path)
+
+        self.hand_qpos_indices = (
+            None
+            if hand_qpos_indices is None
+            else np.asarray(hand_qpos_indices, dtype=np.int64).copy()
+        )
+        if self.hand_qpos_indices is not None:
+            if self.hand_qpos_indices.shape != (HAND_DOF,):
+                raise ValueError(
+                    "hand_qpos_indices must have shape (11,), got "
+                    f"{self.hand_qpos_indices.shape}"
+                )
+            if np.any(self.hand_qpos_indices < 0) or np.any(
+                self.hand_qpos_indices >= model.nq
+            ):
+                raise ValueError("hand_qpos_indices outside qpos range")
+        self.hand_joint_names = tuple(str(n) for n in hand_joint_names)
+        if len(self.hand_joint_names) != HAND_DOF:
+            raise ValueError("hand_joint_names must have 11 entries")
 
         root = Path(recording_dir)
         if not root.is_absolute():
@@ -66,6 +106,9 @@ class MujocoStateRecorder:
         self._qpos: list[np.ndarray] = []
         self._mocap_pos: list[np.ndarray] = []
         self._mocap_quat: list[np.ndarray] = []
+        self._hand_qcmd: list[np.ndarray] = []
+        self._hand_qpos: list[np.ndarray] = []
+        self._latest_hand_qcmd: np.ndarray | None = None
         self._started = False
         self._stopped = False
 
@@ -115,6 +158,25 @@ class MujocoStateRecorder:
         if data.mocap_quat.shape != (self.model.nmocap, 4):
             raise ValueError("mocap_quat shape does not match model.nmocap")
 
+    def set_hand_command(
+        self,
+        canonical_qcmd_rad: np.ndarray,
+    ) -> None:
+        """Latch the authoritative canonical hand command (physics rate).
+
+        The value stored here is the exact 11D vector consumed by the
+        MuJoCo backend and the SG100 real backend (post-retarget,
+        post-filter, pre-F_cmd).  It is copied immediately so later
+        in-place mutation upstream can never rewrite history.
+        """
+
+        q = np.asarray(canonical_qcmd_rad, dtype=np.float64)
+        if q.shape != (HAND_DOF,):
+            raise ValueError(
+                f"canonical hand command must have shape (11,), got {q.shape}"
+            )
+        self._latest_hand_qcmd = q.copy()
+
     def maybe_record(self, data: mujoco.MjData) -> bool:
         """Capture at most one state when simulation time reaches the deadline."""
 
@@ -133,6 +195,15 @@ class MujocoStateRecorder:
         self._qpos.append(data.qpos.copy())
         self._mocap_pos.append(data.mocap_pos.copy())
         self._mocap_quat.append(data.mocap_quat.copy())
+        if self.hand_qpos_indices is not None:
+            self._hand_qpos.append(
+                data.qpos[self.hand_qpos_indices].copy()
+            )
+            self._hand_qcmd.append(
+                self._latest_hand_qcmd.copy()
+                if self._latest_hand_qcmd is not None
+                else np.full(HAND_DOF, np.nan)
+            )
 
         # Normally the 2 ms physics step crosses at most one 30 Hz deadline.
         # Advance through every missed deadline without duplicating a state if
@@ -171,6 +242,33 @@ class MujocoStateRecorder:
             "video_duration": self.frame_count / self.record_fps,
             "state_fields": ["timestamps", "qpos", "mocap_pos", "mocap_quat"],
             "audio": False,
+            **self._hand_metadata(),
+        }
+
+    def _hand_metadata(self) -> dict[str, Any]:
+        """Hand command/state provenance (present only when enabled)."""
+
+        if self.hand_qpos_indices is None:
+            return {}
+
+        missing_command_frames = sum(
+            1
+            for sample in self._hand_qcmd
+            if not np.all(np.isfinite(sample))
+        )
+        return {
+            "hand_dof": int(HAND_DOF),
+            "hand_joint_names": list(self.hand_joint_names),
+            "hand_qpos_slice": self.hand_qpos_indices.tolist(),
+            "hand_command_unit": HAND_COMMAND_UNIT,
+            "hand_command_domain": HAND_COMMAND_DOMAIN,
+            "hand_command_source": HAND_COMMAND_SOURCE,
+            "hand_qpos_source": HAND_QPOS_SOURCE,
+            "hand_command_semantics": (
+                "command != MuJoCo qpos: qpos is the simulation response "
+                "to this command, not the command itself"
+            ),
+            "hand_command_missing_frames": missing_command_frames,
         }
 
     def stop(self) -> Path:
@@ -190,6 +288,15 @@ class MujocoStateRecorder:
         mocap_quat = np.stack(self._mocap_quat).astype(np.float64, copy=False)
         metadata = self._metadata()
 
+        hand_arrays: dict[str, np.ndarray] = {}
+        if self.hand_qpos_indices is not None:
+            hand_arrays["hand_qcmd_canonical_rad"] = (
+                np.stack(self._hand_qcmd).astype(np.float64, copy=False)
+            )
+            hand_arrays["hand_qpos_mujoco_rad"] = (
+                np.stack(self._hand_qpos).astype(np.float64, copy=False)
+            )
+
         temporary_output = self.output_path.with_name(
             f".{self.output_path.name}.tmp"
         )
@@ -200,6 +307,9 @@ class MujocoStateRecorder:
                 qpos=qpos,
                 mocap_pos=mocap_pos,
                 mocap_quat=mocap_quat,
+                hand_joint_names=np.asarray(self.hand_joint_names),
+                hand_command_unit=np.asarray(HAND_COMMAND_UNIT),
+                hand_command_domain=np.asarray(HAND_COMMAND_DOMAIN),
                 scene_path=np.asarray(self.scene_identity),
                 camera_name=np.asarray(self.camera_name),
                 camera_names=np.asarray(tuple(CAMERA_TO_OBSERVATION_KEY)),
@@ -209,6 +319,7 @@ class MujocoStateRecorder:
                 record_fps=np.asarray(self.record_fps, dtype=np.float64),
                 mujoco_timestep=np.asarray(self.model.opt.timestep, dtype=np.float64),
                 wall_start_time=np.asarray(metadata["wall_start_time"]),
+                **hand_arrays,
             )
         temporary_output.replace(self.output_path)
 

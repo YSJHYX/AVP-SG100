@@ -157,6 +157,55 @@ def _wrap_to_pi(angle: float) -> float:
     )
 
 
+def _print_sg100_command_debug(
+    q_hand_cmd: np.ndarray,
+    hand_result,
+    restricted_backend,
+    *,
+    _state: dict = {"last_ns": 0},
+) -> None:
+    """~5 Hz telemetry of the authoritative hand command (opt-in).
+
+    Prints the pre-backend canonical command, the allowlisted real
+    joints, the post-F_cmd SDK target, the rejection reason (if any),
+    and the C/enable gate state.  No hardware interaction.
+    """
+
+    enabled = getattr(_print_sg100_command_debug, "enabled", False)
+    if not enabled:
+        return
+    now_ns = time.monotonic_ns()
+    if now_ns - _state["last_ns"] < 200_000_000:
+        return
+    _state["last_ns"] = now_ns
+
+    hardware_map = restricted_backend.hardware_map
+    sdk_deg = np.degrees(
+        hardware_map.gain * np.asarray(q_hand_cmd, dtype=np.float64)
+        + hardware_map.offset_rad
+    )
+    allowed = tuple(
+        hardware_map.software_joint_order[i]
+        for i in restricted_backend.active_joint_indices
+    )
+    print()
+    print("=" * 52)
+    print("SG100 COMMAND DEBUG (canonical -> backend)")
+    print("=" * 52)
+    print(f"timestamp_ns     : {now_ns}")
+    print(f"canonical rad    : {np.round(q_hand_cmd, 4).tolist()}")
+    print(f"allowed joints   : {allowed}")
+    print(f"C anchored       : {restricted_backend.anchored}")
+    print(f"enabled          : {restricted_backend.enabled}")
+    print(f"estop latched    : {restricted_backend.estopped}")
+    print(f"post-F_cmd sdk deg: {np.round(sdk_deg, 2).tolist()}")
+    print(
+        f"command result   : accepted={hand_result.accepted} "
+        f"reason={hand_result.reason}"
+        + (" (slew-limited)" if hand_result.slew_limited else "")
+    )
+
+
 def extract_wrist_roll(
     rotation: np.ndarray,
     axis: np.ndarray,
@@ -706,6 +755,16 @@ def build_arg_parser():
     )
 
     parser.add_argument(
+        "--sg100-command-debug",
+        action="store_true",
+        help=(
+            "低频(~5Hz)打印权威 canonical hand command 的 telemetry："
+            "时间戳、11D canonical rad、allowlist、post-F_cmd SDK deg、"
+            "拒绝原因与 C/enable 状态"
+        ),
+    )
+
+    parser.add_argument(
         "--thumb-lock-hardware-cap-deg",
         type=float,
         default=None,
@@ -857,8 +916,10 @@ def main():
     # ========================================================
 
     parser = build_arg_parser()
-
     args = parser.parse_args()
+
+    # Opt-in low-rate command telemetry (see _print_sg100_command_debug).
+    _print_sg100_command_debug.enabled = bool(args.sg100_command_debug)
 
     # ========================================================
     # Argument validation
@@ -1862,6 +1923,11 @@ def main():
         recording_dir=args.recording_dir,
         record_fps=args.video_fps,
         camera_name="workstation_front",
+        # Explicit hand command/state recording: the authoritative
+        # canonical q_hand_cmd (backend input) and the MuJoCo hand qpos
+        # slice are stored as separate named fields instead of being
+        # inferred from qpos[:, 6:17].
+        hand_qpos_indices=robot_layout.hand_qpos_indices,
     )
     recording_session_dir = state_recorder.start(data)
 
@@ -3176,6 +3242,12 @@ def main():
                             )
                         )
 
+                        # Authoritative canonical hand command: latch for
+                        # the recording contract BEFORE any backend
+                        # consumes it (identical vector goes to MuJoCo
+                        # twin qpos below and/or the SG100 backend).
+                        state_recorder.set_hand_command(q_hand_cmd)
+
                         if (
                             restricted_hand_backend is not None
                             and restricted_hand_backend.enabled
@@ -3189,6 +3261,11 @@ def main():
                                     ]
                                 ),
                                 dt_s=physics_dt,
+                            )
+                            _print_sg100_command_debug(
+                                q_hand_cmd,
+                                hand_result,
+                                restricted_hand_backend,
                             )
                             if not hand_result.accepted:
                                 print(
@@ -3298,6 +3375,8 @@ def main():
                             )
                         )
 
+                        state_recorder.set_hand_command(q_hand_cmd)
+
                         if (
                             restricted_hand_backend is not None
                             and restricted_hand_backend.enabled
@@ -3311,6 +3390,11 @@ def main():
                                     ]
                                 ),
                                 dt_s=physics_dt,
+                            )
+                            _print_sg100_command_debug(
+                                q_hand_cmd,
+                                hand_result,
+                                restricted_hand_backend,
                             )
                             if not hand_result.accepted:
                                 print(

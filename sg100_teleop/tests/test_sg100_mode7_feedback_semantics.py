@@ -72,9 +72,9 @@ from sg100_teleop.tools import sg100_mode7_mapping_characterization as mapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REAL_MODE7_ARTIFACT = (
-    ROOT / "recording" / "sg100_mode7_probe_20260903_163543"
-)
+# REAL_MODE7_ARTIFACT — REMOVED 2026-09-04 with the deleted
+# test_real_mode7_baselines_report_command_and_canonical_ranges_separately
+# (recording/sg100_mode7_probe_* artifacts deleted by user decision).
 
 
 # ---------------------------------------------------------------------------
@@ -737,89 +737,9 @@ def test_angle_domain_does_not_depend_on_command_range_equality():
     assert probe.classify_joint_angle_scale_domain(unstable) == "REJECTED"
 
 
-def test_real_mode7_baselines_report_command_and_canonical_ranges_separately():
-    artifact = json.loads(
-        (REAL_MODE7_ARTIFACT / "summary.json").read_text(encoding="utf-8")
-    )
-    values = np.asarray([
-        joint["mode7_median_deg"] for joint in artifact["per_joint"]
-    ])
-    hardware_map_path = (
-        ROOT / "sg100_teleop" / "config" / "sg100_hardware_map.yaml"
-    )
-    before = hardware_map_path.read_bytes()
-    hardware_map = SG100HardwareMap()
-    canonical_ranges = probe.canonical_ranges_deg(hardware_map)
-    # Use the command ranges captured by the real run. Loading a machine's
-    # current default SDK checkout would make this historical classification
-    # drift when a different joint_angle_map.json is selected later.
-    command_ranges = [
-        tuple(joint["configured_user_range_deg"])
-        for joint in artifact["per_joint"]
-    ]
-
-    command_overall, command = probe.strict_range_compatibility(
-        values, command_ranges
-    )
-    canonical_overall, canonical = probe.strict_range_compatibility(
-        values, canonical_ranges
-    )
-    assert command_overall == "PARTIAL"
-    assert canonical_overall == "PARTIAL"
-    assert [item["compatible"] for item in command] == [
-        True, False, True, True, False, True,
-        False, True, True, False, True,
-    ]
-    assert [item["compatible"] for item in canonical] == [
-        True, False, True, True, False, True,
-        True, True, True, False, True,
-    ]
-    # J7: command mismatch is not a canonical-range or angle-domain failure.
-    assert command[6]["compatible"] is False
-    assert canonical[6] == {
-        "compatible": True,
-        "distance_outside_deg": 0.0,
-    }
-    assert canonical[1]["distance_outside_deg"] == pytest.approx(
-        18.083322525024414
-    )
-    assert canonical[4]["distance_outside_deg"] == pytest.approx(
-        0.4284714460372925
-    )
-    assert canonical[9]["distance_outside_deg"] == pytest.approx(
-        3.955403566360473
-    )
-    stable_series = [[float(value)] * 17 for value in values]
-    assert probe.classify_joint_angle_scale_domain(stable_series) == (
-        "SUPPORTED"
-    )
-    frames = [
-        (index, [MODE_JOINT_POSITION] * 11, values.tolist())
-        for index in range(17)
-    ]
-    per_joint = probe.summarize_joints(
-        [0.0] * 11,
-        frames,
-        command_ranges,
-        canonical_ranges,
-        joint_names=hardware_map.software_joint_order,
-    )
-    assert per_joint[6]["canonical_joint"] == "middle_j1"
-    assert per_joint[6]["sdk_command_range_compatible"] is False
-    assert per_joint[6]["strict_canonical_range_compatible"] is True
-    assert per_joint[6]["interpretation"] == (
-        "STRICT_CANONICAL_RANGE_COMPATIBLE_MAPPING_PENDING"
-    )
-    assert per_joint[4]["interpretation"] == (
-        "NEAR_BOUNDARY_OFFSET_CANDIDATE_MAPPING_PENDING"
-    )
-    assert per_joint[1]["interpretation"] == (
-        "ZERO_SIGN_OR_IDENTITY_MAPPING_PENDING"
-    )
-    assert per_joint[9]["interpretation"] == (
-        "ZERO_SIGN_OR_IDENTITY_MAPPING_PENDING"
-    )
-    assert hardware_map_path.read_bytes() == before
+# test_real_mode7_baselines_report_command_and_canonical_ranges_separately
+# — REMOVED 2026-09-04: 读取的 REAL_MODE7_ARTIFACT（sg100_mode7_probe_*）
+# 已按用户决定从工作区删除。删除原因 = artifact 缺失，非行为回归。
 
 
 def test_partial_ranges_leave_canonical_mapping_pending_without_domain_reject():

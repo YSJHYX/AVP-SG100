@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,13 +19,9 @@ from sg100_teleop.tools import sg100_mode7_mapping_characterization as mapping
 
 
 ROOT = Path(__file__).resolve().parents[2]
-KNOWN_STATIC_RUNS = (
-    "sg100_mode7_probe_20260903_163543",
-    "sg100_mode7_probe_20260903_170457",
-    "sg100_mode7_probe_20260903_170548",
-    "sg100_mode7_probe_20260903_170751",
-    "sg100_mode7_probe_20260903_170846",
-)
+# KNOWN_STATIC_RUNS — REMOVED 2026-09-04 with the deleted
+# test_static_snapshots_refine_j2_j5_j10_without_selecting_mapping
+# (recording/sg100_mode7_probe_* artifacts deleted by user decision).
 
 
 def _frame(sequence: int, values, *, phase: str = "test") -> mapping.MappingFrame:
@@ -46,50 +41,10 @@ def _frames(values, *, phase="test", start=1, count=8):
     ]
 
 
-def test_static_snapshots_refine_j2_j5_j10_without_selecting_mapping(tmp_path):
-    production_map = ROOT / "sg100_teleop" / "config" / "sg100_hardware_map.yaml"
-    before = production_map.read_bytes()
-    for run in KNOWN_STATIC_RUNS:
-        destination = tmp_path / run
-        destination.mkdir()
-        shutil.copyfile(
-            ROOT / "recording" / run / "summary.json",
-            destination / "summary.json",
-        )
-
-    review = mapping.review_static_probe_artifacts(tmp_path)
-    assert review["accepted_runs"] == list(KNOWN_STATIC_RUNS)
-    by_joint = {item["joint"]: item for item in review["per_joint"]}
-
-    j2 = by_joint["J2"]
-    assert j2["strict_canonical_compatible_count"] == 0
-    assert j2["across_run_min_deg"] == pytest.approx(18.00641441345215)
-    assert j2["across_run_max_deg"] == pytest.approx(19.313684463500977)
-    assert j2["classification"] == (
-        "PERSISTENT_ABOVE_CANONICAL_RANGE_STATIC_SNAPSHOTS_ONLY"
-    )
-
-    j5 = by_joint["J5"]
-    assert j5["strict_canonical_compatible_count"] == 4
-    assert j5["classification"] == (
-        "CANONICAL_BOUNDARY_CROSSING_STATIC_SNAPSHOTS_ONLY"
-    )
-
-    j10 = by_joint["J10"]
-    assert j10["strict_canonical_compatible_count"] == 2
-    assert j10["across_run_min_deg"] == pytest.approx(-3.955403566360473)
-    assert j10["across_run_max_deg"] == pytest.approx(24.027103424072266)
-    assert j10["classification"] == (
-        "CANONICAL_BOUNDARY_CROSSING_STATIC_SNAPSHOTS_ONLY"
-    )
-
-    for item in by_joint.values():
-        assert item["candidate_selected"] is False
-        assert item["identity_inference"].startswith("NOT_ALLOWED")
-        assert item["sign_inference"].startswith("NOT_ALLOWED")
-    assert review["F_fb_verdict"].startswith("PENDING")
-    assert review["canonical_valid"] is False
-    assert production_map.read_bytes() == before
+# test_static_snapshots_refine_j2_j5_j10_without_selecting_mapping
+# — REMOVED 2026-09-04: 依赖的 KNOWN_STATIC_RUNS（sg100_mode7_probe_*
+# 五个真机 run）已按用户决定从工作区删除。删除原因 = artifact 缺失，
+# 非行为回归。
 
 
 @pytest.mark.parametrize(

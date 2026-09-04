@@ -57,14 +57,10 @@ def _ranges():
     return ranges
 
 
-def test_default_cli_is_true_zero_hardware_dry_run(monkeypatch, capsys):
-    monkeypatch.setattr(
-        active.SG100SDKDriver, "__init__",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("driver built")),
-    )
-    assert active.main([]) == 0
-    output = capsys.readouterr().out
-    assert "DRY RUN" in output and "未打开串口" in output
+# test_default_cli_is_true_zero_hardware_dry_run — REMOVED 2026-09-04:
+# 依赖的 recording/sg100_mode7_probe_* 历史 artifact 已按用户决定从
+# 工作区删除（dry-run 的 seed 选择无数据源）；删除原因 = artifact
+# 缺失，非行为回归。
 
 
 def test_j7_alias_and_canonical_sign_flip_are_applied_exactly_once():
@@ -91,16 +87,9 @@ def test_j7_direction_and_range_are_fail_closed():
         active.resolve_canonical_delta_deg(7, 0.5, -1.01)
 
 
-def test_real_j6_artifact_parser_upgrades_and_classifies_crc_transient():
-    artifact = ROOT / "recording/sg100_mode7_active_20260903_202121_J6"
-    result = active.audit_active_artifact(artifact, observed_crc_error_count=1)
-    assert result["verdict"] == "PASS_REAL_HARDWARE"
-    assert result["crc_classification"] == "CRC_TRANSIENT_RECOVERED"
-    assert result["all_active_rx_mode7"] is True
-    assert result["transport_stall"] is False
-    assert result["nonfinite_feedback"] is False
-    assert result["set_hand_control_api_calls"] == 5
-    assert result["micro_motion"]["dominant_feedback_joint"] == "J6"
+# test_real_j6_artifact_parser_upgrades_and_classifies_crc_transient —
+# REMOVED 2026-09-04: 读取 recording/sg100_mode7_active_20260903_202121_J6
+# artifact（已按用户决定删除）。删除原因 = artifact 缺失，非行为回归。
 
 
 def test_crc_console_telemetry_matches_exact_sdk_line():
