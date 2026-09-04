@@ -89,6 +89,12 @@ AUBO_I7_TELEOP_READY_Q = np.radians(
     (0.0, -60.0, -75.0, 0.0, -75.0, 0.0)
 ).astype(np.float64)
 
+# No joint axis may cross below the AUBO base-frame XY plane.  The small
+# tolerance absorbs floating-point noise at an exact boundary; it is not an
+# additional permitted travel distance.
+MIN_JOINT_HEIGHT_ABOVE_BASE_M = 0.0
+JOINT_HEIGHT_NUMERIC_TOLERANCE_M = 1.0e-9
+
 _AUBO_I7_JOINT_ORIGIN_XYZ = np.asarray(
     (
         (0.0, 0.0, 0.122),
@@ -187,6 +193,24 @@ def aubo_i7_forward_kinematics(joints_rad: np.ndarray) -> np.ndarray:
 
     transform, _, _ = _aubo_i7_joint_frames(joints_rad)
     return transform
+
+
+def aubo_i7_joint_positions(joints_rad: np.ndarray) -> np.ndarray:
+    """Return the six AUBO joint-axis origins in the base frame."""
+
+    _, origins, _ = _aubo_i7_joint_frames(joints_rad)
+    return origins.copy()
+
+
+def aubo_i7_arm_joints_above_base(joints_rad: np.ndarray) -> bool:
+    """Return whether every AUBO joint axis is on/above the base plane."""
+
+    minimum_z = float(np.min(aubo_i7_joint_positions(joints_rad)[:, 2]))
+    return bool(
+        minimum_z
+        >= MIN_JOINT_HEIGHT_ABOVE_BASE_M
+        - JOINT_HEIGHT_NUMERIC_TOLERANCE_M
+    )
 
 
 def aubo_i7_position_jacobian(joints_rad: np.ndarray) -> np.ndarray:
@@ -333,6 +357,10 @@ class AuboI7IKSolver:
             raise ValueError("q_seed must be a finite 6-vector")
         if np.any(seed < self.lower) or np.any(seed > self.upper):
             raise ValueError("q_seed violates the AUBO i7 joint limits")
+        if not aubo_i7_arm_joints_above_base(seed):
+            raise ValueError(
+                "q_seed places an AUBO i7 joint below the base plane"
+            )
 
         if posture_reference is None:
             reference = seed[:5].copy()
@@ -392,6 +420,7 @@ class AuboI7IKSolver:
                 return capped
 
             accepted = False
+            height_constraint_blocked = False
             for direction in (cap_step(combined_step), cap_step(task_step)):
                 scale = 1.0
                 while scale >= self._MINIMUM_LINE_SEARCH_SCALE:
@@ -401,6 +430,10 @@ class AuboI7IKSolver:
                         lower,
                         upper,
                     )
+                    if not aubo_i7_arm_joints_above_base(trial):
+                        height_constraint_blocked = True
+                        scale *= 0.5
+                        continue
                     trial_error = target - aubo_i7_forward_kinematics(
                         trial
                     )[:3, 3]
@@ -412,7 +445,11 @@ class AuboI7IKSolver:
                 if accepted:
                     break
             if not accepted:
-                reason = "stagnated"
+                reason = (
+                    "joint_height_constraint_reached"
+                    if height_constraint_blocked
+                    else "stagnated"
+                )
                 break
 
         final_position = aubo_i7_forward_kinematics(joints)[:3, 3]
@@ -425,8 +462,12 @@ class AuboI7IKSolver:
         converged = final_error <= self._POSITION_TOLERANCE_M
         if converged:
             reason = "converged"
-        elif np.any(np.isclose(joints[:5], lower, atol=1.0e-10)) or np.any(
-            np.isclose(joints[:5], upper, atol=1.0e-10)
+        elif (
+            reason != "joint_height_constraint_reached"
+            and (
+                np.any(np.isclose(joints[:5], lower, atol=1.0e-10))
+                or np.any(np.isclose(joints[:5], upper, atol=1.0e-10))
+            )
         ):
             reason = "trust_region_or_limit_reached"
 
@@ -443,6 +484,81 @@ class AuboI7IKSolver:
             reason=reason,
         )
         return joints.copy(), result
+
+
+@dataclass(frozen=True)
+class JointHeightCheck:
+    """Result of checking all 17 joint axes against the base plane."""
+
+    safe: bool
+    minimum_clearance_m: float
+    lowest_joint_name: str
+
+
+class RobotJointHeightGuard:
+    """Evaluate prospective arm+hand commands in a scratch MuJoCo state."""
+
+    def __init__(self, model, robot_layout, *, base_body_name: str) -> None:
+        base_body_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            base_body_name,
+        )
+        if base_body_id < 0:
+            raise RuntimeError(f"Base body not found: {base_body_name}")
+
+        self._model = model
+        self._data = mujoco.MjData(model)
+        self._base_body_id = base_body_id
+        self._joint_ids = robot_layout.joint_ids.copy()
+        self._arm_qpos_indices = robot_layout.arm_qpos_indices.copy()
+        self._hand_qpos_indices = robot_layout.hand_qpos_indices.copy()
+        self._joint_names = tuple(
+            mujoco.mj_id2name(
+                model,
+                mujoco.mjtObj.mjOBJ_JOINT,
+                int(joint_id),
+            )
+            for joint_id in self._joint_ids
+        )
+
+    def check_data(self, data: mujoco.MjData) -> JointHeightCheck:
+        """Check the already-forwarded joint anchors in a MuJoCo state."""
+
+        base_z = float(data.xpos[self._base_body_id, 2])
+        clearances = (
+            data.xanchor[self._joint_ids, 2]
+            - base_z
+            - MIN_JOINT_HEIGHT_ABOVE_BASE_M
+        )
+        if not np.all(np.isfinite(clearances)):
+            raise ValueError("MuJoCo joint heights contain non-finite values")
+        lowest_index = int(np.argmin(clearances))
+        minimum = float(clearances[lowest_index])
+        return JointHeightCheck(
+            safe=bool(minimum >= -JOINT_HEIGHT_NUMERIC_TOLERANCE_M),
+            minimum_clearance_m=minimum,
+            lowest_joint_name=self._joint_names[lowest_index],
+        )
+
+    def check(
+        self,
+        q_arm: np.ndarray,
+        q_hand: np.ndarray,
+    ) -> JointHeightCheck:
+        arm = np.asarray(q_arm, dtype=np.float64)
+        hand = np.asarray(q_hand, dtype=np.float64)
+        if arm.shape != (ARM_DOF,) or not np.all(np.isfinite(arm)):
+            raise ValueError(f"q_arm must be a finite {ARM_DOF}-vector")
+        if hand.shape != (HAND_DOF,) or not np.all(np.isfinite(hand)):
+            raise ValueError(f"q_hand must be a finite {HAND_DOF}-vector")
+
+        self._data.qpos[:] = self._model.qpos0
+        self._data.qpos[self._arm_qpos_indices] = arm
+        self._data.qpos[self._hand_qpos_indices] = hand
+        self._data.qvel[:] = 0.0
+        mujoco.mj_forward(self._model, self._data)
+        return self.check_data(self._data)
 
 # ============================================================
 # Default files
@@ -463,6 +579,7 @@ DEFAULT_AVP_TO_TCP_CONFIG = (
     "avp_to_tcp_identity.yaml"
 )
 
+BASE_BODY = "base_Link"
 TCP_BODY = "sg100_base_link"
 TCP_FOREARM_AXIS_LOCAL = np.array(
     [0.0, 0.0, 1.0],
@@ -497,11 +614,12 @@ IK_FALLBACK_MAX_STEP_RAD = 0.05
 # position solution.
 # ============================================================
 
-WRIST_ROLL_MAX_RAD = np.radians(90.0)
+WRIST_ROLL_MAX_RAD = np.radians(360.0)
 
-# Roll gain and direction.  Flip the sign if joint 6 turns against
-# the operator's wrist during the one-time visual validation.
-WRIST_ROLL_SCALE = 1.0
+# Amplify the operator's wrist roll so joint 6 uses more of its available
+# range; the command remains clipped to +/-180 degrees below.  Flip the sign
+# if joint 6 turns against the operator's wrist during visual validation.
+WRIST_ROLL_SCALE = 1.5
 WRIST_ROLL_SIGN = 1.0
 
 # One-pole low-pass on the roll scalar (seconds).
@@ -1349,6 +1467,11 @@ def main():
     # complete scene contains exactly 17 qpos / DoFs. Extra passive
     # scene state (for example a bottle freejoint) is allowed.
     robot_layout = resolve_robot_layout(model)
+    joint_height_guard = RobotJointHeightGuard(
+        model,
+        robot_layout,
+        base_body_name=BASE_BODY,
+    )
 
 
     # ========================================================
@@ -1440,6 +1563,17 @@ def main():
         np.zeros(HAND_DOF, dtype=np.float64),
     )
 
+    startup_height_check = joint_height_guard.check(
+        startup_arm_q,
+        np.zeros(HAND_DOF, dtype=np.float64),
+    )
+    if not startup_height_check.safe:
+        raise RuntimeError(
+            "Startup posture places a joint below the AUBO base plane: "
+            f"{startup_height_check.lowest_joint_name} at "
+            f"{startup_height_check.minimum_clearance_m:.6f} m"
+        )
+
 
     # ========================================================
     # Model diagnostics
@@ -1483,6 +1617,12 @@ def main():
     print(
         "hand qpos         :",
         robot_layout.hand_qpos_indices.tolist(),
+    )
+
+    print(
+        "minimum joint z   :",
+        f"{startup_height_check.minimum_clearance_m:.6f} m above base",
+        f"({startup_height_check.lowest_joint_name})",
     )
         # ========================================================
     # SG100 hand retargeting pipeline
@@ -1848,6 +1988,8 @@ def main():
     ik_failure_count = 0
 
     ik_fallback_count = 0
+
+    joint_height_rejection_count = 0
 
     # ========================================================
     # Arm-pipeline diagonostics
@@ -2891,9 +3033,21 @@ def main():
                                     ik_result
                                 )
 
+                                candidate_height_check = (
+                                    joint_height_guard.check(
+                                        q_arm_candidate,
+                                        q_hand_candidate,
+                                    )
+                                )
+                                candidate_solution_acceptable = bool(
+                                    (
+                                        ik_result.converged
+                                        or args.wrist_roll_ik
+                                    )
+                                    and candidate_height_check.safe
+                                )
                                 latest_ik_accepted = bool(
-                                    ik_result.converged
-                                    or args.wrist_roll_ik
+                                    candidate_solution_acceptable
                                 )
 
 
@@ -2908,10 +3062,7 @@ def main():
                                 # there.
                                 # ---------------------------------
 
-                                if (
-                                    ik_result.converged
-                                    or args.wrist_roll_ik
-                                ):
+                                if candidate_solution_acceptable:
 
                                     if (
                                         q_arm_candidate.shape
@@ -2992,6 +3143,14 @@ def main():
                                     ik_failure_count += 1
 
                                     if args.verbose:
+                                        if not candidate_height_check.safe:
+                                            print(
+                                                "Joint-height hold: "
+                                                f"{candidate_height_check.lowest_joint_name} "
+                                                "would violate the base plane, "
+                                                "clearance="
+                                                f"{candidate_height_check.minimum_clearance_m:.6f} m"
+                                            )
                                         print(
                                             "IK hold: "
                                             f"pos_err="
@@ -3039,7 +3198,7 @@ def main():
                                             )
                                         )
                                     ):
-                                        q_arm_goal = np.clip(
+                                        q_arm_fallback_bounded = np.clip(
                                             q_arm_fallback,
                                             q_arm_goal
                                             - IK_FALLBACK_MAX_STEP_RAD,
@@ -3047,18 +3206,45 @@ def main():
                                             + IK_FALLBACK_MAX_STEP_RAD,
                                         )
 
-                                        ik_fallback_count += 1
-
-                                        last_ik_result = (
-                                            fallback_result
+                                        fallback_height_check = (
+                                            joint_height_guard.check(
+                                                q_arm_fallback_bounded,
+                                                q_hand_candidate,
+                                            )
                                         )
+                                        if fallback_height_check.safe:
+                                            q_arm_goal = (
+                                                q_arm_fallback_bounded
+                                            )
+                                            ik_fallback_count += 1
+                                            last_ik_result = (
+                                                fallback_result
+                                            )
 
 
                                 # The hand goal comes from the same sensory
                                 # frame used by the wrist/arm branch above.
-                                q_hand_goal = (
-                                    q_hand_candidate.copy()
+                                final_height_check = (
+                                    joint_height_guard.check(
+                                        q_arm_goal,
+                                        q_hand_candidate,
+                                    )
                                 )
+                                if final_height_check.safe:
+                                    q_hand_goal = (
+                                        q_hand_candidate.copy()
+                                    )
+                                else:
+                                    latest_ik_accepted = False
+                                    joint_height_rejection_count += 1
+                                    if args.verbose:
+                                        print(
+                                            "Joint-height hand hold: "
+                                            f"{final_height_check.lowest_joint_name} "
+                                            "would violate the base plane, "
+                                            "clearance="
+                                            f"{final_height_check.minimum_clearance_m:.6f} m"
+                                        )
 
                                 latest_control_audit = {
                                     "raw_avp_wrist_pose": T_avp_wrist.copy(),
@@ -3073,7 +3259,22 @@ def main():
                                     ),
                                     "latest_target_q": q_arm_goal.copy(),
                                     "tracking_status": "valid",
-                                    "safety_status": "ok",
+                                    "safety_status": (
+                                        "ok"
+                                        if final_height_check.safe
+                                        else "joint_below_base_held"
+                                    ),
+                                    "joint_height_gate_status": (
+                                        "safe"
+                                        if final_height_check.safe
+                                        else "held_below_base"
+                                    ),
+                                    "minimum_joint_height_m": (
+                                        final_height_check.minimum_clearance_m
+                                    ),
+                                    "lowest_joint_name": (
+                                        final_height_check.lowest_joint_name
+                                    ),
                                     "tracking_frame_sequence": frame_sequence,
                                     "tracking_received_monotonic_ns": (
                                         received_monotonic_ns
@@ -3383,19 +3584,54 @@ def main():
                         )
 
                     else:
-                        q_arm_cmd = (
+                        previous_arm_cmd = q_arm_cmd.copy()
+                        previous_hand_cmd = q_hand_cmd.copy()
+                        proposed_arm_cmd = (
                             arm_command_filter.update(
                                 q_arm_goal,
                                 physics_dt,
                             )
                         )
 
-                        q_hand_cmd = (
+                        proposed_hand_cmd = (
                             hand_command_filter.update(
                                 q_hand_goal,
                                 physics_dt,
                             )
                         )
+
+                        physics_height_check = (
+                            joint_height_guard.check(
+                                proposed_arm_cmd,
+                                proposed_hand_cmd,
+                            )
+                        )
+                        if physics_height_check.safe:
+                            q_arm_cmd = proposed_arm_cmd
+                            q_hand_cmd = proposed_hand_cmd
+                        else:
+                            # Even when both endpoints are safe, nonlinear
+                            # forward kinematics can make a joint-space
+                            # interpolation cross the base plane. Hold the
+                            # last command and reset both filters so no unsafe
+                            # intermediate state reaches MuJoCo or SG100.
+                            q_arm_cmd = previous_arm_cmd
+                            q_hand_cmd = previous_hand_cmd
+                            q_arm_goal = previous_arm_cmd.copy()
+                            q_hand_goal = previous_hand_cmd.copy()
+                            arm_command_filter.reset(q_arm_cmd)
+                            hand_command_filter.reset(q_hand_cmd)
+                            joint_height_rejection_count += 1
+                            if (
+                                args.verbose
+                                and joint_height_rejection_count == 1
+                            ):
+                                print(
+                                    "Joint-height physics hold: "
+                                    f"{physics_height_check.lowest_joint_name}, "
+                                    "clearance="
+                                    f"{physics_height_check.minimum_clearance_m:.6f} m"
+                                )
 
                         if hand_driver is not None:
                             # H3 path: arm stays simulated while the
@@ -3432,10 +3668,60 @@ def main():
                         # Advance MuJoCo by one physics timestep.
                         # ---------------------------------------------
 
+                        pre_step_qpos = data.qpos.copy()
+                        pre_step_time = float(data.time)
+                        pre_step_act = data.act.copy()
                         mujoco.mj_step(
                             model,
                             data,
                         )
+                        # mj_step integrates qpos after its main forward pass;
+                        # refresh world-space joint anchors before enforcing
+                        # the post-step Cartesian safety invariant.
+                        mujoco.mj_forward(model, data)
+
+                        actual_height_check = (
+                            joint_height_guard.check_data(data)
+                        )
+                        if not actual_height_check.safe:
+                            # Roll back the just-computed simulation step and
+                            # remove momentum. This keeps the rendered state
+                            # inside the same hard invariant even if dynamics
+                            # overshoot a safe commanded endpoint.
+                            data.qpos[:] = pre_step_qpos
+                            data.qvel[:] = 0.0
+                            data.time = pre_step_time
+                            if data.act.size:
+                                data.act[:] = pre_step_act
+                            data.qacc_warmstart[:] = 0.0
+                            q_arm_cmd = data.qpos[
+                                robot_layout.arm_qpos_indices
+                            ].copy()
+                            q_hand_cmd = data.qpos[
+                                robot_layout.hand_qpos_indices
+                            ].copy()
+                            q_arm_goal = q_arm_cmd.copy()
+                            q_hand_goal = q_hand_cmd.copy()
+                            arm_command_filter.reset(q_arm_cmd)
+                            hand_command_filter.reset(q_hand_cmd)
+                            write_robot_controls(
+                                data,
+                                robot_layout,
+                                q_arm_cmd,
+                                q_hand_cmd,
+                            )
+                            mujoco.mj_forward(model, data)
+                            joint_height_rejection_count += 1
+                            if (
+                                args.verbose
+                                and joint_height_rejection_count == 1
+                            ):
+                                print(
+                                    "Joint-height dynamics rollback: "
+                                    f"{actual_height_check.lowest_joint_name}, "
+                                    "clearance="
+                                    f"{actual_height_check.minimum_clearance_m:.6f} m"
+                                )
 
                         if hammer_impact_diagnostic is not None:
                             hammer_impact_diagnostic.sample(
@@ -3790,6 +4076,11 @@ def main():
     print(
         "IK fallbacks      :",
         ik_fallback_count,
+    )
+
+    print(
+        "height rejections :",
+        joint_height_rejection_count,
     )
 
     print(
