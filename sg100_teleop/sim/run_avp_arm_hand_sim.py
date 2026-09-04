@@ -649,10 +649,10 @@ def build_arg_parser():
     )
 
     # ========================================================
-    # Real SG100 hand backend (H3+).  The sim default keeps the
-    # current behaviour unchanged; the real backend sends the final
-    # post-filter qcmd over the vendor SDK UART link and ingests the
-    # measured joint feedback for the DATA CONTRACT.
+    # Restricted SG100 hand backend. The sim default stays unchanged;
+    # real accepts the same final post-filter canonical qcmd but only
+    # activates the real-hardware-validated joint allowlist. F_fb/data
+    # remain blocked independently.
     # ========================================================
 
     parser.add_argument(
@@ -661,9 +661,9 @@ def build_arg_parser():
         default="sim",
         help=(
             "Hand execution backend: 'sim' keeps the software-only "
-            "command proxy (current behaviour); 'real' sends the final "
-            "qcmd to the SG100 over UART and records measured joint "
-            "feedback; 'mock' exercises the real-hand data path "
+            "command proxy (current behaviour); 'real' sends only the "
+            "allowlisted final qcmd through the restricted SG100 envelope "
+            "and keeps F_fb/data quarantined; 'mock' exercises the data path "
             "against MockSG100Driver (no hardware)"
         ),
     )
@@ -693,6 +693,16 @@ def build_arg_parser():
         type=float,
         default=100.0,
         help="SG100 measured-feedback polling rate",
+    )
+
+    parser.add_argument(
+        "--sg100-real-joints",
+        nargs="+",
+        default=("index_j3",),
+        help=(
+            "Restricted real-hand active allowlist. 当前真实硬件只解锁 "
+            "index_j3(J6)；J7 与 full-11D 均保持阻断。"
+        ),
     )
 
     parser.add_argument(
@@ -1867,12 +1877,17 @@ def main():
         )
 
     # ========================================================
-    # SG100 hand backend (H3+).  'sim' (default) keeps the software
-    # command proxy; 'real'/'mock' stream the FINAL post-filter qcmd
-    # to the hand driver and ingest measured joint feedback.
+    # SG100 hand backend. 'real' is wrapped by the restricted command
+    # envelope; 'mock' retains the software data-path regression.
     # ========================================================
 
+    if args.collect_arm_hand_data and args.hand_backend == "real":
+        raise RuntimeError(
+            "SG100 F_fb 尚未验证：real-hand dataset 必须保持 QUARANTINED"
+        )
+
     hand_driver = None
+    restricted_hand_backend = None
     hand_hardware_map = None
     if args.hand_backend == "real":
         from sg100_teleop.robot.sg100_sdk_driver import SG100SDKDriver
@@ -1887,6 +1902,13 @@ def main():
                 if args.hand_sdk_dir is not None
                 else None
             ),
+        )
+        from sg100_teleop.robot.sg100_restricted_avp_backend import (
+            SG100RestrictedAVPBackend,
+        )
+        restricted_hand_backend = SG100RestrictedAVPBackend(
+            hand_driver,
+            joint_allowlist=args.sg100_real_joints,
         )
     elif args.hand_backend == "mock":
         hand_hardware_map = SG100HardwareMap()
@@ -1908,6 +1930,12 @@ def main():
             f"{getattr(hand_driver, 'port', 'mock')}",
             "(realtime, MODE_NULL hold)",
         )
+        if restricted_hand_backend is not None:
+            print(
+                "hand allowlist    :",
+                tuple(args.sg100_real_joints),
+                "(C anchor + A enable required)",
+            )
 
     arm_hand_collector = None
     if args.collect_arm_hand_data:
@@ -2029,23 +2057,41 @@ def main():
             request_neutral_calibration()
 
         elif keycode in (ord("A"), ord("a")) and (
-            real_arm_backend is not None
+            real_arm_backend is not None or restricted_hand_backend is not None
         ):
             # v3 §A4.2: calibration (C) and arm-enable (A) are separate
             # actions.  Disarm order follows §A3.5: quiesce the sender
             # first, then command the decelerated stop.
-            if real_arm_backend.enabled:
-                real_arm_backend.set_enabled(False)
-                real_arm_backend.stop_smooth()
+            currently_enabled = bool(
+                (real_arm_backend is not None and real_arm_backend.enabled)
+                or (
+                    restricted_hand_backend is not None
+                    and restricted_hand_backend.enabled
+                )
+            )
+            if currently_enabled:
+                if restricted_hand_backend is not None:
+                    restricted_hand_backend.set_enabled(False)
+                if real_arm_backend is not None:
+                    real_arm_backend.set_enabled(False)
+                    real_arm_backend.stop_smooth()
                 print(
-                    "[REAL-ARM] DISARMED (A); "
-                    "sender disabled, slow stop commanded"
+                    "[REAL] DISARMED (A); active senders disabled"
                 )
             else:
-                real_arm_backend.set_enabled(True)
+                if restricted_hand_backend is not None:
+                    restricted_hand_backend.set_enabled(True)
+                if real_arm_backend is not None:
+                    real_arm_backend.set_enabled(True)
                 print(
-                    "[REAL-ARM] ARMED (A); streaming enabled"
+                    "[REAL] ARMED (A); restricted streaming enabled"
                 )
+
+        elif keycode in (ord("E"), ord("e")) and (
+            restricted_hand_backend is not None
+        ):
+            result = restricted_hand_backend.emergency_stop()
+            print("[REAL-HAND]", result.reason, "MODE_NULL requested")
 
         # ========================================================
     # Main runtime loop
@@ -2449,6 +2495,20 @@ def main():
                                 hand_command_filter.reset(
                                     q_hand0_runtime
                                 )
+
+                                if restricted_hand_backend is not None:
+                                    anchor_result = restricted_hand_backend.anchor(
+                                        q_hand0_runtime
+                                    )
+                                    if not anchor_result.accepted:
+                                        raise RuntimeError(
+                                            "SG100 restricted C anchor failed: "
+                                            f"{anchor_result.reason}"
+                                        )
+                                    print(
+                                        "[REAL-HAND] C anchor cached with "
+                                        "MODE7 zero output; A still required"
+                                    )
 
                                 if (
                                     arm_hand_collector is not None
@@ -3116,12 +3176,26 @@ def main():
                             )
                         )
 
-                        if hand_driver is not None:
-                            # FINAL post-filter qcmd -> SG100 driver.
-                            # Only a successful transport accept
-                            # produces an SG100CommandSent event; the
-                            # canonical hand action is exactly this
-                            # hardware-sent value.
+                        if (
+                            restricted_hand_backend is not None
+                            and restricted_hand_backend.enabled
+                            and latest_control_audit is not None
+                        ):
+                            hand_result = restricted_hand_backend.submit(
+                                q_hand_cmd,
+                                tracking_received_ns=int(
+                                    latest_control_audit[
+                                        "tracking_received_monotonic_ns"
+                                    ]
+                                ),
+                                dt_s=physics_dt,
+                            )
+                            if not hand_result.accepted:
+                                print(
+                                    "[REAL-HAND] safe stop:",
+                                    hand_result.reason,
+                                )
+                        elif args.hand_backend == "mock" and hand_driver is not None:
                             hand_driver.send_positions_rad(
                                 q_hand_cmd,
                                 command_bundle_id=command_bundle_id,
@@ -3143,9 +3217,10 @@ def main():
                                 arm_hand_collector.observe_hand_feedback(
                                     hand_feedback
                                 )
-                                data.qpos[
-                                    robot_layout.hand_qpos_indices
-                                ] = hand_feedback.q_rad
+                                if hand_feedback.canonical_valid:
+                                    data.qpos[
+                                        robot_layout.hand_qpos_indices
+                                    ] = hand_feedback.q_rad
 
                         if feedback is not None:
                             data.qpos[
@@ -3223,13 +3298,31 @@ def main():
                             )
                         )
 
-                        if hand_driver is not None:
-                            # H3 path: arm stays simulated while the
-                            # SG100 receives the final post-filter qcmd.
+                        if (
+                            restricted_hand_backend is not None
+                            and restricted_hand_backend.enabled
+                            and latest_control_audit is not None
+                        ):
+                            hand_result = restricted_hand_backend.submit(
+                                q_hand_cmd,
+                                tracking_received_ns=int(
+                                    latest_control_audit[
+                                        "tracking_received_monotonic_ns"
+                                    ]
+                                ),
+                                dt_s=physics_dt,
+                            )
+                            if not hand_result.accepted:
+                                print(
+                                    "[REAL-HAND] safe stop:",
+                                    hand_result.reason,
+                                )
+                        elif args.hand_backend == "mock" and hand_driver is not None:
                             hand_driver.send_positions_rad(
                                 q_hand_cmd,
                                 command_bundle_id=None,
                             )
+                        if hand_driver is not None:
                             if (
                                 now - last_hand_feedback_poll
                                 >= hand_feedback_poll_period
@@ -3510,6 +3603,8 @@ def main():
         if hand_driver is not None:
             # Final hand feedback + sent events, then stop sending.
             try:
+                if restricted_hand_backend is not None:
+                    restricted_hand_backend.set_enabled(False)
                 if arm_hand_collector is not None:
                     arm_hand_collector.observe_hand_feedback(
                         hand_driver.read_feedback()

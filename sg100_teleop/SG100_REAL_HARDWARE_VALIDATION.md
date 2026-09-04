@@ -1,6 +1,7 @@
 # SG100 Real Hardware Validation Guide
 
-> **CURRENT (2026-09-03): N3 TOOL PREP ONLY; THIS AGENT RAN NO HARDWARE.** Real N1
+> **CURRENT (2026-09-03): J6 N3a PASS; J7 N3b SOFTWARE READY / HARDWARE
+> PENDING; THIS AGENT RAN NO HARDWARE.** Real N1
 > tested only thumb_j1 with all joints commanded MODE_NULL and exposed that mode's
 > raw/accumulated scale mismatch (~15–30° physical motion -> +1854 callback
 > units). Vendor guidance says mode-7 feedback should instead be joint angle;
@@ -9,8 +10,10 @@
 > entry/all-11 status/no-motion entry and supports a bounded joint-angle-scale
 > feedback domain. The old AMBIGUOUS verdict incorrectly compared feedback to
 > SDK command ranges. Exact feedback-to-canonical identity/sign/zero/range
-> mapping is still pending. The next user-operated hardware stage is now the
-> guarded N3 ACTIVE HOLD + one micro delta test; AVP/full-hand/data remain blocked. See
+> mapping is still pending. The user has since completed the guarded J6 active
+> hold and +0.5° micro test; its preserved artifact passed read-only review.
+> The next user-operated stage is exactly one J7 sign-flip test. Restricted
+> J6-only AVP is software-prepared; full-hand/data remain blocked. See
 > [SG100_LATEST_SDK_INTEGRATION.md](SG100_LATEST_SDK_INTEGRATION.md).
 
 > **HISTORICAL (2026-09-02, OLD SDK architecture).**  The H0–H5 flow and
@@ -45,27 +48,27 @@ READ-ONLY 或 DRY-RUN，真实运动必须显式 `--execute`。
 | N0 | MODE_NULL realtime | PASS — REAL HARDWARE |
 | N1 | full-hand MODE7 safe entry | PASS — REAL HARDWARE |
 | N2 | MODE7 joint-angle-scale feedback | SUPPORTED — REAL HARDWARE |
-| N3 | single-joint active hold + micro-motion | TOOL PREP / HARDWARE PENDING |
-| N4 | F_cmd/F_fb per-joint mapping | PENDING |
-| N5 | full-hand active integration | BLOCKED |
-| N6 | AVP integration | BLOCKED |
+| N3a | J6 identity active command | PASS — REAL HARDWARE |
+| N3b | J7 sign-flip active command | SOFTWARE READY / HARDWARE PENDING |
+| N4 | restricted AVP SG100 command | SOFTWARE PREP (J6 allowlist) |
+| N5 | full 11D AVP | BLOCKED |
+| F_fb | canonical measured state | PENDING |
 | N7 | dataset enable | BLOCKED / QUARANTINED |
 
-## 当前下一阶段（工具已准备，真机待用户执行）
+## 当前下一阶段（J6 已完成；只准备 J7）
 
 不再要求人工掰动关节。`tools/sg100_mode7_mapping_characterization.py` 保留历史
 代码和证据，但退出主验证路径。新工具
-`tools/sg100_mode7_active_micro_motion.py` 分两阶段：Stage A 以 fresh MODE7
-feedback 给所选轴播种当前目标并观察至少 400 ms；数值无跳变且用户回答无可见
-运动后，Stage B 再输入 `MOVE`，只发送一次默认 0.5° micro delta。结束直接
+`tools/sg100_mode7_active_micro_motion.py` 分两阶段。J6 使用的 fresh MODE7
+feedback seed 已有真机证据；J7 明确禁止这样做。J7 Stage A 使用先前下发的
+MODE7 zero-output SDK target 0°，并要求用户确认 middle_j1 位于 canonical
+mechanical zero；canonical −0.5° 经 `gain=-1` 一次变为 SDK +0.5°。数值无
+跳变且用户回答无可见运动后，Stage B 再输入 `MOVE`，只发送一次 micro delta。结束直接
 MODE_NULL，不发送反向回位、不 homing、不 set-zero、不改 production map。
 
-首轴不是硬编码。工具只从 J3/J6/J8/J11 中筛选当前 `F_cmd` identity、canonical/
-SDK 数值范围同向、历史反馈稳定且 live headroom 足够者；按最新成功 artifact
-`sg100_mode7_probe_20260903_193914` 的历史姿态，dry-run 选择 J6/index_j3：
-feedback `-0.725093°`，range `[-60,90]°`，负/正 headroom
-`59.274907°/90.725093°`，故选择 `+0.5°`，目标 `-0.225093°`。真机运行时会用
-fresh baseline 重新选择和计算，余量不足即 ABORT，绝不 clamp。
+J6 artifact `sg100_mode7_active_20260903_202121_J6`：active hold J6
+settled/peak 0°；+0.5° 后 settled +0.252690°、peak 0.367403°，其余十轴
+micro excursion 0°，J6 dominant，fault 0，cleanup accepted。故 J6 不再重复。
 
 安全参数来自当前 SDK example 和 vendor production log：`p=0.1, i=0, d=0,
 output_limit=0.5`。delta 硬上限 1.0°；目标轴 excursion guard 1.5°，其他轴
@@ -122,7 +125,7 @@ python -m sg100_teleop.tools.sg100_hardware_probe \
 python -m sg100_teleop.tools.sg100_hardware_probe --mock
 ```
 
-## N3 — MODE7 active hold + single micro delta（N0/N1/N2 已 PASS 后）
+## N3 — J6 已 PASS；J7 sign-flip 待用户执行
 
 DRY RUN（默认，不连接串口）：
 
@@ -130,15 +133,16 @@ DRY RUN（默认，不连接串口）：
 .venv/bin/python -m sg100_teleop.tools.sg100_mode7_active_micro_motion
 ```
 
-未来唯一获准的首次真机命令（必须由用户操作，本轮未执行）：
+未来唯一获准的下一条真机命令（必须由用户操作，本轮 Agent 未执行）：
 
 ```bash
 .venv/bin/python -m sg100_teleop.tools.sg100_mode7_active_micro_motion \
-    --port /dev/ttyUSB0 --delta-deg 0.5 --execute
+    --port /dev/ttyUSB0 --joint middle_j1 \
+    --canonical-delta-deg -0.5 --execute
 ```
 
-运行中必须依次输入 `HOLD`、确认无可见 hold jump，再输入 `MOVE`。默认回答均
-ABORT。只有 N3 人工复核 PASS 后才能准备 N4 逐关节映射，不能直接进入 AVP。
+运行中必须依次输入 `ZERO`、`HOLD`、确认无可见 hold jump，再输入 `MOVE`。
+默认回答均 ABORT。J7 PASS 前不得加入真实 allowlist。
 
 ## 旧 H2 smoke 方案（已废止）
 
@@ -146,7 +150,17 @@ ABORT。只有 N3 人工复核 PASS 后才能准备 N4 逐关节映射，不能�
 自动筛选、第一次只发一个 delta”的门禁，禁止执行。N3 首次真机证据经人工
 复核后，再另行审核 N4 的逐关节验证顺序；任何单次结果都不得自动写入 map。
 
-## H3 — AVP + C anchor + whole-hand teleop（RM65 保持关闭）
+## N4 — restricted AVP（软件准备；本轮禁止执行）
+
+现有 `SG100Retargeter` 同时向 MuJoCo 与真实后端提供同一 canonical qcmd；
+`SG100RestrictedAVPBackend` 在后端内执行 canonical range、一次 F_cmd、SDK
+range、allowlist、delta/spike/slew、stale/nonfinite、C/A gate、mode/fault/
+CRC/stall 与 E-stop。当前 real allowlist 只接受 `index_j3`（J6）；J7 仍会被
+构造期拒绝，full 11D 不可用。C 只缓存零输出 target，A 前无 active command。
+
+以下旧 whole-hand H3 内容仅作历史说明，当前禁止执行。
+
+## H3 — AVP + C anchor + whole-hand teleop（历史/已阻断）
 
 > **前置：H1/H2 全 PASS。** C anchor（按 C 时记录 human/robot anchor、
 > 无 teleop jump、C 后 relative teleop）与 startup measured pose 渲染

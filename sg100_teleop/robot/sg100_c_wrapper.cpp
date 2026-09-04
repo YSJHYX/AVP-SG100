@@ -40,8 +40,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <mutex>
+#include <streambuf>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -65,11 +68,103 @@ std::atomic<uint64_t> g_hand_status_callbacks{0};
 std::atomic<uint64_t> g_hand_control_calls{0};
 std::atomic<uint64_t> g_switch_to_realtime_calls{0};
 std::atomic<uint64_t> g_zero_status_queries{0};
+std::atomic<uint64_t> g_crc_error_count{0};
+std::mutex g_crc_timestamp_mutex;
+std::vector<uint64_t> g_crc_error_timestamps;
 
 uint64_t monotonic_ns_now() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// The vendor RS485 adapter validates receive CRC internally and only exposes
+// a diagnostic line on std::cout.  Observe that existing output without
+// touching framing, retry, or the adapter callback path.  A bounded timestamp
+// ring is sufficient for active-motion telemetry and cannot grow forever.
+void observe_sdk_console_line(const std::string& line) {
+    if (line.find("[RS485Adapter] CRC error: recv=0x") == std::string::npos) {
+        return;
+    }
+    const uint64_t now_ns = monotonic_ns_now();
+    ++g_crc_error_count;
+    std::lock_guard<std::mutex> lock(g_crc_timestamp_mutex);
+    if (g_crc_error_timestamps.size() == 64) {
+        g_crc_error_timestamps.erase(g_crc_error_timestamps.begin());
+    }
+    g_crc_error_timestamps.push_back(now_ns);
+}
+
+class CRCObservingStreamBuf final : public std::streambuf {
+public:
+    explicit CRCObservingStreamBuf(std::streambuf* destination)
+        : destination_(destination) {}
+
+protected:
+    int_type overflow(int_type ch) override {
+        if (traits_type::eq_int_type(ch, traits_type::eof())) {
+            return traits_type::not_eof(ch);
+        }
+        const char value = traits_type::to_char_type(ch);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (destination_->sputc(value) == traits_type::eof()) {
+            return traits_type::eof();
+        }
+        consume(value);
+        return ch;
+    }
+
+    std::streamsize xsputn(const char* data, std::streamsize count) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const std::streamsize written = destination_->sputn(data, count);
+        for (std::streamsize i = 0; i < written; ++i) {
+            consume(data[i]);
+        }
+        return written;
+    }
+
+    int sync() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return destination_->pubsync();
+    }
+
+private:
+    void consume(char value) {
+        if (value == '\n') {
+            observe_sdk_console_line(line_);
+            line_.clear();
+        } else if (line_.size() < 4096) {
+            line_.push_back(value);
+        } else {
+            line_.clear();
+        }
+    }
+
+    std::streambuf* destination_;
+    std::mutex mutex_;
+    std::string line_;
+};
+
+std::streambuf* g_original_cout_buffer = nullptr;
+CRCObservingStreamBuf* g_crc_observing_buffer = nullptr;
+
+void install_crc_telemetry() {
+    if (g_crc_observing_buffer != nullptr) {
+        return;
+    }
+    g_original_cout_buffer = std::cout.rdbuf();
+    g_crc_observing_buffer = new CRCObservingStreamBuf(g_original_cout_buffer);
+    std::cout.rdbuf(g_crc_observing_buffer);
+}
+
+void uninstall_crc_telemetry() {
+    if (g_crc_observing_buffer == nullptr) {
+        return;
+    }
+    std::cout.rdbuf(g_original_cout_buffer);
+    delete g_crc_observing_buffer;
+    g_crc_observing_buffer = nullptr;
+    g_original_cout_buffer = nullptr;
 }
 
 // Invoked on the SDK communication thread.  Copy the snapshot and return.
@@ -141,6 +236,12 @@ int sg100_connect(const char* port, int baudrate, const char* config_dir) {
     g_hand_status_callbacks.store(0);
     g_hand_control_calls.store(0);
     g_switch_to_realtime_calls.store(0);
+    g_crc_error_count.store(0);
+    {
+        std::lock_guard<std::mutex> crc_lock(g_crc_timestamp_mutex);
+        g_crc_error_timestamps.clear();
+    }
+    install_crc_telemetry();
 
     g_device = new SG100Device("VPT_SG100");
     if (config_dir && config_dir[0] != '\0') {
@@ -157,6 +258,7 @@ int sg100_connect(const char* port, int baudrate, const char* config_dir) {
     if (!g_device->SetConfig(config) || !g_device->Init()) {
         delete g_device;
         g_device = nullptr;
+        uninstall_crc_telemetry();
         return -2;
     }
     // A static C++ function is copied into the SDK's std::function; it has
@@ -166,6 +268,7 @@ int sg100_connect(const char* port, int baudrate, const char* config_dir) {
     if (!g_device->Start()) {
         delete g_device;
         g_device = nullptr;
+        uninstall_crc_telemetry();
         return -3;
     }
     g_started = true;
@@ -181,6 +284,7 @@ int sg100_disconnect(void) {
     delete g_device;
     g_device = nullptr;
     g_started = false;
+    uninstall_crc_telemetry();
     return 0;
 }
 
@@ -296,6 +400,29 @@ uint64_t sg100_hand_control_calls(void) {
 }
 uint64_t sg100_switch_to_realtime_calls(void) {
     return g_switch_to_realtime_calls.load();
+}
+uint64_t sg100_crc_error_count(void) {
+    return g_crc_error_count.load();
+}
+int sg100_copy_crc_error_timestamps(uint64_t* out, int capacity) {
+    if (!out || capacity <= 0) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_crc_timestamp_mutex);
+    const int count = std::min(
+        capacity, static_cast<int>(g_crc_error_timestamps.size()));
+    const size_t start = g_crc_error_timestamps.size() - count;
+    for (int i = 0; i < count; ++i) {
+        out[i] = g_crc_error_timestamps[start + static_cast<size_t>(i)];
+    }
+    return count;
+}
+
+// Offline hook for regression tests of the exact SDK diagnostic matcher.
+void sg100_test_observe_console_line(const char* line) {
+    if (line) {
+        observe_sdk_console_line(std::string(line));
+    }
 }
 
 // -- read-only joint zero / calibration status -------------------------------

@@ -1,25 +1,51 @@
 # SG100 Mode-7 Feedback Semantics Audit
 
-**Date:** 2026-09-03 (rev 6: active micro-motion tool prepared)
+**Date:** 2026-09-03 (rev 7: J6 active PASS; J7 software ready)
 **Method:** static SDK/protocol/binary audit plus read-only review of the
 preserved real artifact `recording/sg100_mode7_probe_20260903_163543`.  
-**Hardware execution this review:** none. No homing, zeroing, active position
-command, or H2 work was performed.  
-**Decision:** MODE7 entry/control **PASS — REAL HARDWARE**; MODE7 bounded
-joint-angle-scale feedback **SUPPORTED — REAL HARDWARE**; exact MODE7
+**Hardware execution by this Agent:** none. The user-produced J6 active
+artifact was reviewed read-only; no homing/zeroing or new hardware command was
+performed.
+**Decision:** J6 active hold and +0.5° identity command **PASS — REAL
+HARDWARE**; J7 sign flip **SOFTWARE READY / HARDWARE PENDING**; exact MODE7
 feedback-to-canonical map `F_fb` **PENDING**.
 
 本轮方向已改变：人工掰动的
 `sg100_mode7_mapping_characterization.py` 只保留为历史工具，不再是下一条
-正式硬件路径，也不得由 Agent 执行。新的 N3 是
-`sg100_mode7_active_micro_motion.py`：先以 fresh MODE7 feedback 为目标做单轴
-ACTIVE HOLD，再经第二次 `MOVE` 确认只发送一条不超过 1° 的 micro delta。
-软件准备和离线测试完成，**本轮没有执行硬件**。
+正式硬件路径，也不得由 Agent 执行。J6 的
+`sg100_mode7_active_micro_motion.py` 真机流程已由用户完成并通过复核，不得重复。
+J7 复用同一工具，但 active seed 是已知 MODE7 zero-output SDK command target
+0°，而不是 raw feedback；canonical −0.5° 经一次 F_cmd 变为 SDK +0.5°。
 
 `F_cmd` 与 `F_fb` 仍完全分离：N3 只为 identity-command candidate 和 MODE7
 delta channel/sign 产生待复核证据，绝不从 `F_cmd` 逆推 `F_fb`，也不自动更新
 production map。`feedback_map_valid=False`、`canonical_valid=False`、dataset
 `QUARANTINED` 保持不变。
+
+## J6 ACTIVE EVIDENCE（REAL HARDWARE）
+
+- active hold command `85346273598375 ns`；J6 baseline/hold feedback
+  `-0.659181535°`，settled/peak excursion 0°。
+- micro command `85362800446342 ns`；首个 fresh RX 在 4.255 ms 后，J6
+  settled delta `+0.252689660°`、peak `0.367402673°`。
+- dominant J6；second J10=0°（其余十轴同为 0°）；dominance ratio 因第二
+  通道为零而为工具 epsilon 下的 `2.5269e8`，即有效无限大。
+- active hold/micro 全 11 RX mode 持续为 7；phase 内 sequence 连续，无
+  nonfinite、stall、excessive excursion、fault。
+- 五次 SetHandControl 顺序与工具 contract 完全一致，cleanup MODE_NULL
+  submission accepted。用户确认 hold 无可见运动，micro 仅 J6 朝掌心轻微屈曲。
+
+因此 J6 identity F_cmd channel、physical direction 和 MODE7 feedback response
+均为 SUPPORTED/PASS — REAL HARDWARE；此结论不外推到其余十轴或 F_fb。
+
+## CRC TRANSIENT
+
+`[RS485Adapter] CRC error` 来自主机 RX parser。CRC 不等时控制流不会调用
+上层 callback，而是移除坏 header 后继续找下一帧；没有 TX 失败，也没有显式
+retry。J6 关键采样窗口全连续且 fault/mode/position 正常，分类为
+`CRC_TRANSIENT_RECOVERED`。旧 artifact 未记录控制台时间戳，因此不能声称与
+某一 CSV 行精确对齐；新 wrapper 仅监听 SDK 自有输出并记录 count/timestamps，
+没有自定义 RS485 实现。
 
 The vendor guidance for this audit is **CONFIRMED** (user-vendor
 communication, 2026-09-03):
@@ -439,7 +465,7 @@ mismatch into a pass.
 | J3 | thumb_j3 | +7.22935 | [-60,90] | YES | [-60,90] | YES | 0 | strict range-compatible; mapping pending |
 | J4 | index_j1 | +0.13200 | [0,90] | YES | [0,90] | YES | 0 | strict range-compatible; mapping pending |
 | J5 | index_j2 | -0.42847 | [0,125] | NO | [0,125] | NO | 0.42847 | near-boundary zero/calibration candidate |
-| J6 | index_j3 | -9.28344 | [-60,90] | YES | [-60,90] | YES | 0 | strict range-compatible; mapping pending |
+| J6 | index_j3 | -9.28344 | [-60,90] | YES | [-60,90] | YES | 0 | identity command channel/direction supported by later active test; F_fb pending |
 | J7 | middle_j1 | -6.93240 | [0,125] | NO | [-125,0] | YES | 0 | previous command-range rejection corrected |
 | J8 | middle_j2 | -0.03279 | [-60,90] | YES | [-60,90] | YES | 0 | strict range-compatible; mapping pending |
 | J9 | little_j1 | -0.31862 | [-180,0] | YES | [-180,0] | YES | 0 | strict range-compatible; mapping pending |
@@ -454,9 +480,9 @@ joint; this is a stability criterion, not a range tolerance. SDK command ranges
 are diagnostic only. Canonical range checks are separate and strict: no
 tolerance converts an out-of-range baseline into a pass.
 
-The next hardware stage is the **two-stage active micro-motion** tool
-`tools/sg100_mode7_active_micro_motion.py`, prepared but not executed. The
-old manual characterization tool remains preserved but is retired as the
+The next hardware stage is the same two-stage tool restricted to **J7 only**;
+J6 has completed. J7 is software-prepared but has not been executed. The old
+manual characterization tool remains preserved but is retired as the
 primary next step. N3 selects only an identity-range candidate from J3/J6/J8/
 J11, re-evaluates live headroom, enables one position-producing joint, and
 keeps the other ten in MODE7 with zero PID/output. It never homes, zeros,

@@ -67,6 +67,56 @@ def test_default_cli_is_true_zero_hardware_dry_run(monkeypatch, capsys):
     assert "DRY RUN" in output and "未打开串口" in output
 
 
+def test_j7_alias_and_canonical_sign_flip_are_applied_exactly_once():
+    assert active.parse_joint_selector("middle_j1") == 7
+    assert active.parse_joint_selector("J7") == 7
+    hardware_map = SG100HardwareMap()
+    assert hardware_map.gain[6] == -1.0
+    canonical = np.zeros(HAND_DOF)
+    canonical[6] = -20.0
+    sdk = active.apply_f_cmd_once_deg(hardware_map, canonical)
+    assert sdk[6] == pytest.approx(20.0)
+    plan = active.plan_j7_sign_flip(hardware_map, _ranges(), -0.5)
+    assert plan["canonical_requested_delta_deg"] == -0.5
+    assert plan["sdk_delta_deg"] == 0.5
+    assert plan["F_cmd_application_count"] == 1
+    assert plan["raw_feedback_used_as_command_seed"] is False
+    assert plan["seed_source"] == "MODE7_ZERO_OUTPUT_CACHED_COMMAND_TARGET"
+
+
+def test_j7_direction_and_range_are_fail_closed():
+    with pytest.raises(ValueError):
+        active.resolve_canonical_delta_deg(7, 0.5, +0.5)
+    with pytest.raises(ValueError):
+        active.resolve_canonical_delta_deg(7, 0.5, -1.01)
+
+
+def test_real_j6_artifact_parser_upgrades_and_classifies_crc_transient():
+    artifact = ROOT / "recording/sg100_mode7_active_20260903_202121_J6"
+    result = active.audit_active_artifact(artifact, observed_crc_error_count=1)
+    assert result["verdict"] == "PASS_REAL_HARDWARE"
+    assert result["crc_classification"] == "CRC_TRANSIENT_RECOVERED"
+    assert result["all_active_rx_mode7"] is True
+    assert result["transport_stall"] is False
+    assert result["nonfinite_feedback"] is False
+    assert result["set_hand_control_api_calls"] == 5
+    assert result["micro_motion"]["dominant_feedback_joint"] == "J6"
+
+
+def test_crc_console_telemetry_matches_exact_sdk_line():
+    wrapper = _load_wrapper_library(sdk_dir=DEFAULT_SDK_DIR)
+    before = int(wrapper.sg100_crc_error_count())
+    wrapper.sg100_test_observe_console_line(b"unrelated CRC words")
+    assert int(wrapper.sg100_crc_error_count()) == before
+    wrapper.sg100_test_observe_console_line(
+        b"[RS485Adapter] CRC error: recv=0x3cd2 calc=0x73eec6d"
+    )
+    assert int(wrapper.sg100_crc_error_count()) == before + 1
+    timestamps = np.zeros(64, dtype=np.uint64)
+    count = wrapper.sg100_copy_crc_error_timestamps(timestamps, 64)
+    assert count >= 1 and int(timestamps[count - 1]) > 0
+
+
 def test_first_joint_filter_rejects_unresolved_and_nonidentity():
     hardware_map = SG100HardwareMap()
     eligible = active.eligible_first_joint_indices(hardware_map, _ranges(), _history())
@@ -352,6 +402,7 @@ class _SessionDriver:
         self.vendor_user_ranges = _ranges()
         self.calls = 0
         self.active_calls = 0
+        self.active_targets = []
         self.cleanup_calls = 0
         self.disconnected = False
         self.fault_active = False
@@ -373,6 +424,7 @@ class _SessionDriver:
     def send_mode7_active_single_joint(self, index, positions):
         self.calls += 1
         self.active_calls += 1
+        self.active_targets.append(np.asarray(positions, dtype=float).copy())
         return SimpleNamespace(
             sent_monotonic_ns=2_000 if self.active_calls == 1 else 3_000,
             requested_positions_deg=tuple(float(v) for v in positions),
@@ -441,6 +493,44 @@ def test_mocked_full_session_counts_commands_and_never_returns(tmp_path, monkeyp
     assert summary["set_hand_control_api_calls"] == 5
     assert summary["exactly_one_micro_delta_command"] is True
     assert summary["automatic_return_motion"] is False
+
+
+def test_mocked_j7_session_uses_command_zero_seed_not_raw_feedback(
+    tmp_path, monkeypatch
+):
+    args = _session_setup(tmp_path, monkeypatch)
+    args.joint = 7
+    args.canonical_delta_deg = -0.5
+
+    raw = np.zeros(HAND_DOF)
+    raw[6] = 37.0  # 故意与 command-domain seed=0 明显不同。
+
+    def capture(driver, duration, phase, sink, *, command_index,
+                target_deg, min_frames=1, **kwargs):
+        values = raw.copy()
+        if phase == "micro_motion":
+            # F_fb sign 未知，反向 callback delta 也不能否决物理方向目视证据。
+            values[6] -= 0.3
+        modes = [0] * HAND_DOF if phase == "cleanup" else [7] * HAND_DOF
+        timestamp = {"mode7_passive": 1_100, "active_hold": 2_100,
+                     "micro_motion": 3_100, "cleanup": 4_100}[phase]
+        result = [
+            _frame(100 * command_index + i, values, phase=phase, modes=modes,
+                   command_index=command_index, timestamp=timestamp + i)
+            for i in range(max(min_frames, 10))
+        ]
+        sink.extend(result)
+        return result
+
+    monkeypatch.setattr(active, "_capture", capture)
+    answers = iter(["ZERO", "HOLD", "n", "MOVE", "y"])
+    assert active.run_hardware(args, confirm_fn=lambda prompt: next(answers)) == 0
+    driver = _SessionDriver.instances[-1]
+    assert driver.active_targets[0][6] == pytest.approx(0.0)
+    assert driver.active_targets[1][6] == pytest.approx(0.5)
+    assert driver.active_targets[0][6] != raw[6]
+    artifact = next(args.recording_root.glob("sg100_mode7_active_*"))
+    summary = json.loads((artifact / "summary.json").read_text())
     assert [item["kind"] for item in summary["command_log"]] == [
         "realtime_mode_null_seed", "mode7_passive", "active_hold",
         "micro_motion", "cleanup_mode_null",

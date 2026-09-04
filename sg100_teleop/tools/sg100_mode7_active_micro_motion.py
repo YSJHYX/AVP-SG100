@@ -4,8 +4,9 @@
 默认是纯离线 DRY RUN，绝不构造 driver 或打开串口。只有 ``--execute``
 才进入真机路径；真机路径仍需要 HOLD 和 MOVE 两次逐阶段显式确认。
 
-本工具只在 SDK callback degree 域中建立主动测试证据。F_cmd 与 F_fb
-继续独立，canonical_valid 始终为 False，也不会改写任何 production map。
+J6 路径保留已验证的 SDK feedback seed；J7 路径从 canonical delta 出发，
+经 F_cmd 恰好一次，并只使用已知的零输出 command target 作为 hold seed。
+F_cmd 与 F_fb 继续独立，canonical_valid 始终为 False。
 """
 
 from __future__ import annotations
@@ -71,12 +72,13 @@ POLL_PERIOD_S = 0.002
 
 # 经任务安全审计的第一轴物理候选：范围约 [-60, 90]、运动简单可见。
 PREFERRED_FIRST_JOINT_IDS = (3, 6, 8, 11)
-UNRESOLVED_FIRST_JOINT_IDS = (2, 7)
+UNRESOLVED_FIRST_JOINT_IDS = (2,)
 PHYSICAL_DIRECTIONS = {
     3: {"+": "thumb distal flexion toward palm", "-": "thumb distal extension outward"},
     6: {"+": "index distal flexion toward palm", "-": "index distal extension toward dorsal side"},
     8: {"+": "middle distal flexion toward palm", "-": "middle distal extension toward dorsal side"},
     11: {"+": "little distal flexion toward palm", "-": "little distal extension toward dorsal side"},
+    7: {"+": "middle flexion toward palm", "-": "middle extension outward"},
 }
 
 
@@ -146,6 +148,110 @@ def validate_delta(delta_deg: float) -> float:
             f"delta-deg={value} 超过硬上限 {HARD_MAX_DELTA_DEG} deg"
         )
     return value
+
+
+def parse_joint_selector(value: str | int) -> int:
+    """接受 J7 / middle_j1 / 7，同时保留旧的整数 CLI。"""
+
+    text = str(value).strip().lower()
+    aliases = {"middle_j1": 7}
+    if text in aliases:
+        return aliases[text]
+    if text.startswith("j"):
+        text = text[1:]
+    try:
+        joint_id = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"未知关节选择: {value}") from exc
+    if not 1 <= joint_id <= HAND_DOF:
+        raise argparse.ArgumentTypeError("关节必须为 J1..J11")
+    return joint_id
+
+
+def resolve_canonical_delta_deg(
+    joint_id: int, legacy_delta_deg: float,
+    canonical_delta_deg: float | None,
+) -> float:
+    """返回带符号 canonical delta；J7 只接受朝掌心的负向微动。"""
+
+    if canonical_delta_deg is None:
+        return -validate_delta(legacy_delta_deg) if joint_id == 7 else validate_delta(
+            legacy_delta_deg
+        )
+    value = float(canonical_delta_deg)
+    if not np.isfinite(value) or value == 0.0:
+        raise ValueError("canonical-delta-deg 必须是有限非零值")
+    validate_delta(abs(value))
+    if joint_id == 7 and value >= 0.0:
+        raise ValueError("J7 首次 sign-flip 测试只允许 canonical 负向 flexion")
+    if joint_id != 7 and value <= 0.0:
+        raise ValueError("identity 轴首次测试只允许 canonical 正向 delta")
+    return value
+
+
+def apply_f_cmd_once_deg(
+    hardware_map: SG100HardwareMap, canonical_deg: Iterable[float]
+) -> np.ndarray:
+    """无 clamp 地应用一次 canonical -> SDK F_cmd，供审计与回归。"""
+
+    canonical = np.asarray(tuple(canonical_deg), dtype=np.float64)
+    if canonical.shape != (HAND_DOF,) or not np.all(np.isfinite(canonical)):
+        raise ValueError("canonical_deg must be finite 11D")
+    lower = np.rad2deg(hardware_map.lower_rad)
+    upper = np.rad2deg(hardware_map.upper_rad)
+    if np.any(canonical < lower) or np.any(canonical > upper):
+        raise ValueError("canonical command outside range; no clamp")
+    return hardware_map.gain * canonical + np.rad2deg(hardware_map.offset_rad)
+
+
+def plan_j7_sign_flip(
+    hardware_map: SG100HardwareMap,
+    vendor_ranges: list[tuple[float, float]],
+    canonical_delta_deg: float,
+) -> dict:
+    """从已知 canonical=0 / SDK=0 command seed 规划 J7，一次 F_cmd。"""
+
+    index = hardware_map.software_index_of["middle_j1"]
+    if hardware_map.hardware_joint_ids[index] != 7:
+        raise ActiveMicroMotionAbort("middle_j1 hardware channel 不是 J7")
+    delta = resolve_canonical_delta_deg(7, abs(canonical_delta_deg), canonical_delta_deg)
+    gain = float(hardware_map.gain[index])
+    offset_deg = float(np.rad2deg(hardware_map.offset_rad[index]))
+    if gain != -1.0 or offset_deg != 0.0:
+        raise ActiveMicroMotionAbort("J7 F_cmd 必须为 gain=-1, offset=0")
+    canonical_current = 0.0
+    canonical_final = canonical_current + delta
+    canonical_low = float(np.rad2deg(hardware_map.lower_rad[index]))
+    canonical_high = float(np.rad2deg(hardware_map.upper_rad[index]))
+    if not canonical_low <= canonical_final <= canonical_high:
+        raise ActiveMicroMotionAbort("J7 canonical target 越界；拒绝且不 clamp")
+    # F_cmd exactly once.  不调用会 silent clip 的 canonical_to_actual。
+    seed_vector = np.zeros(HAND_DOF)
+    final_vector = np.zeros(HAND_DOF)
+    final_vector[index] = canonical_final
+    sdk_current = float(apply_f_cmd_once_deg(hardware_map, seed_vector)[index])
+    sdk_final = float(apply_f_cmd_once_deg(hardware_map, final_vector)[index])
+    sdk_delta = sdk_final - sdk_current
+    sdk_low, sdk_high = map(float, vendor_ranges[index])
+    if not sdk_low <= sdk_current <= sdk_high or not sdk_low <= sdk_final <= sdk_high:
+        raise ActiveMicroMotionAbort("J7 SDK target 越界；拒绝且不 clamp")
+    return {
+        "canonical_joint": "middle_j1",
+        "canonical_current_deg": canonical_current,
+        "canonical_requested_delta_deg": delta,
+        "canonical_final_target_deg": canonical_final,
+        "F_cmd_gain": gain,
+        "F_cmd_offset_deg": offset_deg,
+        "F_cmd_application_count": 1,
+        "sdk_channel": "J7",
+        "sdk_current_target_deg": sdk_current,
+        "sdk_delta_deg": sdk_delta,
+        "sdk_final_target_deg": sdk_final,
+        "sdk_range_deg": [sdk_low, sdk_high],
+        "seed_source": "MODE7_ZERO_OUTPUT_CACHED_COMMAND_TARGET",
+        "raw_feedback_used_as_command_seed": False,
+        "expected_physical_motion": "middle flexion toward palm",
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -281,6 +387,27 @@ def select_first_test_joint(
     return max(choices, key=lambda item: (item.minimum_headroom_deg, -item.joint_id))
 
 
+def select_j7_command_seed(
+    hardware_map: SG100HardwareMap,
+    vendor_ranges: list[tuple[float, float]],
+    *, history_artifact: str,
+) -> FirstJointChoice:
+    """J7 seed 是已知零输出 command target=0，不读取 raw F_fb。"""
+
+    index = hardware_map.software_index_of["middle_j1"]
+    low, high = map(float, vendor_ranges[index])
+    seed = 0.0
+    if not low <= seed <= high:
+        raise ActiveMicroMotionAbort("J7 已知 command seed=0 不在 SDK range")
+    return FirstJointChoice(
+        joint_index=index, joint_id=7, canonical_name="middle_j1",
+        current_deg=seed, lower_deg=low, upper_deg=high,
+        negative_headroom_deg=seed - low, positive_headroom_deg=high - seed,
+        minimum_headroom_deg=min(seed - low, high - seed),
+        history_artifact=history_artifact,
+    )
+
+
 def plan_micro_target(choice: FirstJointChoice, delta_deg: float) -> dict:
     magnitude = validate_delta(delta_deg)
     direction = +1.0 if (
@@ -341,6 +468,7 @@ def analyze_motion(
     command_ns: int,
     expected_joint_index: int,
     commanded_delta_deg: float,
+    require_feedback_direction: bool = True,
 ) -> dict:
     post = _fresh_post(post_frames, command_ns)
     if not baseline_frames or not post:
@@ -390,7 +518,7 @@ def analyze_motion(
         verdict, reason = "FAIL", "AMBIGUOUS_DOMINANCE"
     elif observed_sign == 0:
         verdict, reason = "PENDING", "MOVEMENT_BELOW_DETECTION_THRESHOLD"
-    elif observed_sign != expected_sign:
+    elif require_feedback_direction and observed_sign != expected_sign:
         verdict, reason = "FAIL", "WRONG_FEEDBACK_DIRECTION"
     return {
         "verdict": verdict,
@@ -415,6 +543,7 @@ def analyze_motion(
         "first_fresh_rx_ns": post[0].received_monotonic_ns,
         "first_movement_detection_ns": detection,
         "fresh_post_command_samples": len(post),
+        "feedback_direction_required": bool(require_feedback_direction),
     }
 
 
@@ -546,6 +675,95 @@ def _write_artifacts(path: Path, metadata: dict, frames: list[ActiveFrame],
     )
 
 
+def audit_active_artifact(path: Path, *, observed_crc_error_count: int = 0) -> dict:
+    """只读复核 active artifact；phase 间人工等待不当作 transport gap。"""
+
+    path = Path(path)
+    metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+    summary = json.loads((path / "summary.json").read_text(encoding="utf-8"))
+    with (path / "samples.csv").open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    if not rows:
+        raise ActiveMicroMotionAbort("artifact samples.csv 为空")
+    joint_id = int(str(metadata["selected_joint"]).removeprefix("J"))
+    phases: dict[str, list[dict]] = {}
+    for row in rows:
+        phases.setdefault(row["phase"], []).append(row)
+    health = {}
+    all_nonfinite = False
+    for phase, phase_rows in phases.items():
+        seq = [int(row["sequence"]) for row in phase_rows]
+        timestamps = [int(row["timestamp_ns"]) for row in phase_rows]
+        gaps = [b - a for a, b in zip(seq, seq[1:]) if b - a != 1]
+        time_gaps_ns = [b - a for a, b in zip(timestamps, timestamps[1:])]
+        positions = np.asarray([
+            [float(row[f"J{i}_feedback_deg"]) for i in range(1, 12)]
+            for row in phase_rows
+        ])
+        all_nonfinite = all_nonfinite or not bool(np.all(np.isfinite(positions)))
+        health[phase] = {
+            "samples": len(phase_rows),
+            "sequence_gaps": gaps,
+            "max_timestamp_gap_ms": (
+                max(time_gaps_ns, default=0) / 1e6
+            ),
+        }
+    active_rows = phases.get("active_hold", []) + phases.get("micro_motion", [])
+    all_active_mode7 = bool(active_rows) and all(
+        all(int(row[f"J{i}_mode"]) == MODE_JOINT_POSITION for i in range(1, 12))
+        for row in active_rows
+    )
+    no_window_gap = all(
+        not item["sequence_gaps"] and item["max_timestamp_gap_ms"] < TRANSPORT_STALL_S * 1000
+        for item in health.values()
+    )
+    command_kinds = [item.get("kind") for item in summary.get("command_log", [])]
+    required_commands = [
+        "realtime_mode_null_seed", "mode7_passive", "active_hold",
+        "micro_motion", "cleanup_mode_null",
+    ]
+    evidence_pass = all((
+        summary.get("active_hold_verdict") == "PASS",
+        summary.get("micro_motion_verdict") == "PASS",
+        summary.get("operator_hold_visible_motion") is False,
+        summary.get("operator_visual_confirmation") is True,
+        summary.get("fault") == 0,
+        summary.get("cleanup_status") == "PASS",
+        summary.get("exactly_one_micro_delta_command") is True,
+        summary.get("set_hand_control_api_calls") == 5,
+        command_kinds == required_commands,
+        all_active_mode7,
+        not all_nonfinite,
+        no_window_gap,
+        summary.get("dominant_feedback_joint") == f"J{joint_id}",
+    ))
+    crc_count = int(observed_crc_error_count)
+    crc_verdict = (
+        "CRC_TRANSIENT_RECOVERED"
+        if crc_count > 0 and evidence_pass and no_window_gap
+        else "NO_CRC_REPORTED" if crc_count == 0
+        else "CRC_REVIEW_REQUIRED"
+    )
+    return {
+        "verdict": "PASS_REAL_HARDWARE" if evidence_pass else "FAIL_EVIDENCE_AUDIT",
+        "joint": f"J{joint_id}",
+        "active_hold": summary.get("active_hold"),
+        "micro_motion": summary.get("micro_motion"),
+        "fault": summary.get("fault"),
+        "cleanup_status": summary.get("cleanup_status"),
+        "command_kinds": command_kinds,
+        "set_hand_control_api_calls": summary.get("set_hand_control_api_calls"),
+        "all_active_rx_mode7": all_active_mode7,
+        "nonfinite_feedback": all_nonfinite,
+        "transport_stall": not no_window_gap,
+        "phase_health": health,
+        "crc_error_count": crc_count,
+        "crc_classification": crc_verdict,
+        "canonical_valid": False,
+        "dataset": "QUARANTINED",
+    }
+
+
 def _metadata(choice: FirstJointChoice, delta_deg: float, sdk_dir: Path) -> dict:
     map_path = ROOT / "sg100_teleop/config/sg100_hardware_map.yaml"
     semantics_path = ROOT / "sg100_teleop/config/sg100_joint_semantics.yaml"
@@ -564,7 +782,11 @@ def _metadata(choice: FirstJointChoice, delta_deg: float, sdk_dir: Path) -> dict
         "selection_feedback_deg": choice.current_deg,
         "negative_headroom_deg": choice.negative_headroom_deg,
         "positive_headroom_deg": choice.positive_headroom_deg,
-        "F_cmd_candidate": "IDENTITY_CANDIDATE_NOT_PRODUCTION_VALIDATED",
+        "F_cmd_candidate": (
+            "J7_SIGN_FLIP_SOFTWARE_READY_HARDWARE_PENDING"
+            if choice.joint_id == 7
+            else "IDENTITY_CANDIDATE_NOT_PRODUCTION_VALIDATED"
+        ),
         "F_fb_status": "DELTA_MAPPING_PENDING",
         "feedback_map_valid": False,
         "canonical_valid": False,
@@ -594,17 +816,35 @@ def _dry_run(args) -> int:
     current = np.zeros(HAND_DOF)
     for item in history["per_joint"]:
         current[int(item["joint"][1:]) - 1] = float(item["mode7_median_deg"])
-    choice = select_first_test_joint(
-        hardware_map, ranges, history, current,
-        requested_joint_id=args.joint,
-        history_artifact=str(artifact.parent),
-    )
-    plan = plan_micro_target(choice, args.delta_deg)
+    if args.joint == 7:
+        choice = select_j7_command_seed(
+            hardware_map, ranges, history_artifact=str(artifact.parent)
+        )
+        canonical_delta = resolve_canonical_delta_deg(
+            7, args.delta_deg, args.canonical_delta_deg
+        )
+        plan = plan_j7_sign_flip(hardware_map, ranges, canonical_delta)
+    else:
+        choice = select_first_test_joint(
+            hardware_map, ranges, history, current,
+            requested_joint_id=args.joint,
+            history_artifact=str(artifact.parent),
+        )
+        canonical_delta = resolve_canonical_delta_deg(
+            choice.joint_id, args.delta_deg, args.canonical_delta_deg
+        )
+        if canonical_delta <= 0.0:
+            raise ActiveMicroMotionAbort("identity 轴 dry-run 只接受 canonical 正向 delta")
+        plan = plan_micro_target(choice, canonical_delta)
     control = build_single_driven_control(choice.joint_index, current)
     print("DRY RUN — 未构造真机 driver、未打开串口，hardware execution: NO")
     print(f"FIRST_TEST_JOINT: J{choice.joint_id} / {choice.canonical_name}")
     print(f"选择证据: {choice.history_artifact}")
-    print(f"历史 MODE7 feedback: {choice.current_deg:.6f} deg")
+    if choice.joint_id == 7:
+        print("J7 raw MODE7 feedback: 仅观测，不作为 command seed")
+        print("SDK command seed: 0.000000 deg (zero-output cached target)")
+    else:
+        print(f"历史 MODE7 feedback: {choice.current_deg:.6f} deg")
     print(f"command range: [{choice.lower_deg:.1f}, {choice.upper_deg:.1f}] deg")
     for key, value in plan.items():
         print(f"{key}: {value}")
@@ -620,7 +860,12 @@ def _dry_run(args) -> int:
 def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
     """真机流程；仅供用户未来显式执行，Agent 本轮不得调用。"""
 
-    delta = validate_delta(args.delta_deg)
+    requested_joint = args.joint
+    nominal_joint = 7 if requested_joint == 7 else (requested_joint or 6)
+    canonical_delta = resolve_canonical_delta_deg(
+        nominal_joint, args.delta_deg, getattr(args, "canonical_delta_deg", None)
+    )
+    delta = abs(canonical_delta)
     hardware_map = SG100HardwareMap()
     history_path, history = latest_successful_mode7_artifact(args.recording_root)
     driver = SG100SDKDriver(
@@ -644,10 +889,16 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
         historical_positions[int(item["joint"][1:]) - 1] = float(
             item["mode7_median_deg"]
         )
-    preliminary_choice = select_first_test_joint(
-        hardware_map, ranges, history, historical_positions,
-        requested_joint_id=args.joint,
-        history_artifact=str(history_path.parent),
+    preliminary_choice = (
+        select_j7_command_seed(
+            hardware_map, ranges, history_artifact=str(history_path.parent)
+        )
+        if requested_joint == 7
+        else select_first_test_joint(
+            hardware_map, ranges, history, historical_positions,
+            requested_joint_id=requested_joint,
+            history_artifact=str(history_path.parent),
+        )
     )
     stamp = time.strftime("%Y%m%d_%H%M%S")
     artifact_path: Path | None = Path(args.recording_root) / (
@@ -658,10 +909,12 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
     sequence_gate = ActiveSequenceGate()
     metadata: dict = _metadata(preliminary_choice, delta, Path(args.sdk_dir))
     initial_calls = 0
+    initial_crc_errors = 0
     try:
         driver.connect()
         connected = True
         initial_calls = driver.diagnostics["hand_control_calls"]
+        initial_crc_errors = int(driver.diagnostics.get("crc_error_count", 0))
         driver.start()
         driver.enter_realtime()
         command_log.append({
@@ -696,26 +949,52 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
         current = np.median(
             np.asarray([frame.positions_deg for frame in passive_frames[-BASELINE_FRAMES:]]), axis=0
         )
-        choice = select_first_test_joint(
-            hardware_map, ranges, history, current,
-            requested_joint_id=args.joint,
-            history_artifact=str(history_path.parent),
-        )
-        plan = plan_micro_target(choice, delta)
+        if requested_joint == 7:
+            choice = select_j7_command_seed(
+                hardware_map, ranges, history_artifact=str(history_path.parent)
+            )
+            plan = plan_j7_sign_flip(hardware_map, ranges, canonical_delta)
+        else:
+            choice = select_first_test_joint(
+                hardware_map, ranges, history, current,
+                requested_joint_id=requested_joint,
+                history_artifact=str(history_path.parent),
+            )
+            if canonical_delta <= 0.0:
+                raise ActiveMicroMotionAbort("identity 轴只接受 canonical 正向 delta")
+            plan = plan_micro_target(choice, canonical_delta)
         metadata = _metadata(choice, delta, Path(args.sdk_dir))
+        metadata.update({
+            "canonical_requested_delta_deg": canonical_delta,
+            "command_plan": plan,
+            "crc_telemetry_available": True,
+        })
         artifact_path = Path(args.recording_root) / (
             f"sg100_mode7_active_{stamp}_J{choice.joint_id}"
         )
         print(json.dumps(dataclasses.asdict(choice), indent=2, ensure_ascii=False))
         print(json.dumps(plan, indent=2, ensure_ascii=False))
         print("position-producing joints: 1; MODE7 zero-output joints: 10")
-        if confirm_fn("Type HOLD to enable current-position active hold: ").strip() != "HOLD":
+        if choice.joint_id == 7 and confirm_fn(
+            "确认 middle_j1 位于 canonical mechanical zero；Type ZERO: "
+        ).strip() != "ZERO":
+            summary["status"] = "OPERATOR_ABORT_J7_ZERO_ANCHOR"
+            return 3
+        hold_prompt = (
+            "Type HOLD to enable known zero-target active hold: "
+            if choice.joint_id == 7
+            else "Type HOLD to enable current-position active hold: "
+        )
+        if confirm_fn(hold_prompt).strip() != "HOLD":
             summary["status"] = "OPERATOR_ABORT_BEFORE_ACTIVE_HOLD"
             return 3
 
         seed = np.zeros(HAND_DOF, dtype=np.float64)
         # 只有目标轴 position 字段有语义；其余十轴虽为 MODE7，但零输出。
-        seed[choice.joint_index] = choice.current_deg
+        seed[choice.joint_index] = (
+            plan["sdk_current_target_deg"] if choice.joint_id == 7
+            else choice.current_deg
+        )
         build_single_driven_control(choice.joint_index, seed)
         hold = driver.send_mode7_active_single_joint(choice.joint_index, seed)
         if hold is None:
@@ -729,7 +1008,7 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
         })
         hold_frames = _capture(
             driver, HOLD_OBSERVATION_S, "active_hold", frames, command_index=2,
-            target_deg=choice.current_deg, min_frames=20,
+            target_deg=float(seed[choice.joint_index]), min_frames=20,
             require_all_mode7=True,
             guard_baseline_deg=current,
             guard_joint_index=choice.joint_index,
@@ -764,7 +1043,10 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
             return 3
 
         target = seed.copy()
-        target[choice.joint_index] = plan["final_target_deg"]
+        target[choice.joint_index] = (
+            plan["sdk_final_target_deg"] if choice.joint_id == 7
+            else plan["final_target_deg"]
+        )
         # 明确拒绝越界；此路径没有 clip/clamp/saturate。
         if not ranges[choice.joint_index][0] <= target[choice.joint_index] <= ranges[choice.joint_index][1]:
             raise ActiveMicroMotionAbort("micro target outside range")
@@ -782,7 +1064,7 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
         })
         motion_frames = _capture(
             driver, MICRO_OBSERVATION_S, "micro_motion", frames, command_index=3,
-            target_deg=plan["final_target_deg"], min_frames=30,
+            target_deg=float(target[choice.joint_index]), min_frames=30,
             require_all_mode7=True,
             guard_baseline_deg=np.median(
                 np.asarray([frame.positions_deg for frame in hold_frames[-BASELINE_FRAMES:]]),
@@ -795,14 +1077,24 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
             hold_frames[-BASELINE_FRAMES:], motion_frames,
             command_ns=motion.sent_monotonic_ns,
             expected_joint_index=choice.joint_index,
-            commanded_delta_deg=plan["signed_delta_deg"],
+            commanded_delta_deg=(
+                plan["sdk_delta_deg"] if choice.joint_id == 7
+                else plan["signed_delta_deg"]
+            ),
+            # J7 F_fb sign is intentionally unvalidated.  Physical direction
+            # is accepted only by the operator visual gate below.
+            require_feedback_direction=choice.joint_id != 7,
         )
         summary["micro_motion"] = motion_result
         summary["micro_motion_verdict"] = motion_result["verdict"]
         summary.update({
             "commanded_joint": f"J{choice.joint_id}",
-            "command_target_deg": plan["final_target_deg"],
-            "delta_deg": plan["signed_delta_deg"],
+            "command_target_deg": float(target[choice.joint_index]),
+            "delta_deg": (
+                plan["sdk_delta_deg"] if choice.joint_id == 7
+                else plan["signed_delta_deg"]
+            ),
+            "canonical_delta_deg": canonical_delta,
             "dominant_feedback_joint": motion_result["dominant_feedback_joint"],
             "observed_delta_deg": motion_result["observed_target_delta_deg"],
             "direction": {
@@ -878,9 +1170,26 @@ def run_hardware(args, confirm_fn: Callable[[str], str] = input) -> int:
         final_counter_delta = 0
         if connected:
             try:
+                diagnostics = driver.diagnostics
                 summary["fault"] = int(bool(driver.fault_active))
                 final_counter_delta = (
-                    driver.diagnostics["hand_control_calls"] - initial_calls
+                    int(diagnostics["hand_control_calls"]) - initial_calls
+                )
+                summary["crc_error_count"] = max(
+                    0, int(diagnostics.get("crc_error_count", 0))
+                    - initial_crc_errors
+                )
+                summary["crc_error_timestamps_ns"] = list(
+                    diagnostics.get("crc_error_timestamps_ns", [])
+                )
+                summary["crc_classification"] = (
+                    "CRC_TRANSIENT_RECOVERED"
+                    if summary["crc_error_count"] > 0
+                    and summary.get("fault") == 0
+                    and summary.get("micro_motion_verdict") == "PASS"
+                    else "NO_CRC_REPORTED"
+                    if summary["crc_error_count"] == 0
+                    else "CRC_REVIEW_REQUIRED"
                 )
             except Exception:
                 final_counter_delta = len(command_log)
@@ -909,9 +1218,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyUSB0")
     parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
-    parser.add_argument("--joint", type=int, choices=range(1, 12), default=None,
-                        help="可选受限 override；默认按实时 headroom 自动选择")
+    parser.add_argument("--joint", type=parse_joint_selector, default=None,
+                        help="J1..J11；J7 也可写 middle_j1")
     parser.add_argument("--delta-deg", type=float, default=DEFAULT_DELTA_DEG)
+    parser.add_argument(
+        "--canonical-delta-deg", type=float, default=None,
+        help="带符号 canonical delta；J7 首次测试应为 -0.5",
+    )
+    parser.add_argument(
+        "--audit-artifact", type=Path, default=None,
+        help="只读审计既有 active artifact，不构造 driver",
+    )
+    parser.add_argument(
+        "--observed-crc-error-count", type=int, default=0,
+        help="兼容旧 artifact：录入终端观察到的 CRC 行数量",
+    )
     parser.add_argument("--sdk-dir", type=Path, default=DEFAULT_SDK_DIR)
     parser.add_argument("--recording-root", type=Path, default=RECORDING_ROOT)
     parser.add_argument("--execute", action="store_true")
@@ -921,7 +1242,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        validate_delta(args.delta_deg)
+        if args.audit_artifact is not None:
+            print(json.dumps(
+                audit_active_artifact(
+                    args.audit_artifact,
+                    observed_crc_error_count=args.observed_crc_error_count,
+                ),
+                indent=2, ensure_ascii=False,
+            ))
+            return 0
+        resolve_canonical_delta_deg(
+            args.joint or 6, args.delta_deg, args.canonical_delta_deg
+        )
         if not args.execute:
             return _dry_run(args)
         return run_hardware(args)

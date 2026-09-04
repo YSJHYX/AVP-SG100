@@ -1,7 +1,7 @@
 # SG100 Latest SDK Integration (V1.5_NO_TACTILE)
 
-Status: **MODE7 ENTRY PASS / ANGLE-SCALE DOMAIN SUPPORTED ON REAL HARDWARE;
-ACTIVE MICRO-MOTION TOOL PREPARED / HARDWARE PENDING.**
+Status: **MODE7 ENTRY PASS / ANGLE-SCALE DOMAIN SUPPORTED / J6 ACTIVE
+COMMAND PASS ON REAL HARDWARE; J7 SOFTWARE READY / HARDWARE PENDING.**
 N0 established the link and feedback cadence.  Real N1 artifact
 `sg100_n1_sign_20260903_135111` tested only thumb_j1 while all joints were
 commanded MODE_NULL and exposed that mode's uncharacterized
@@ -11,9 +11,10 @@ contract (ids 1..11 + mode 7 on every joint), so the zero-gain full-hand
 mode7 FEEDBACK probe has since passed on real hardware with all 11 RX modes=7,
 fault 0 and no visible entry motion. It supports a finite, stable,
 non-multiturn joint-angle-scale domain, but exact `F_fb` remains pending and
-the driver/collector still enforce `canonical_valid=False`. The next stage is
-the prepared two-stage single-joint ACTIVE HOLD + one micro delta harness; it
-has not been executed. See
+the driver/collector still enforce `canonical_valid=False`. The user has run
+the two-stage J6 harness; read-only artifact audit promotes J6 active hold,
++0.5° micro, identity command channel/direction and MODE7 response to PASS /
+SUPPORTED — REAL HARDWARE. The next stage is J7 only. See
 [SG100_MODE7_FEEDBACK_SEMANTICS_AUDIT.md](SG100_MODE7_FEEDBACK_SEMANTICS_AUDIT.md).
 
 ## SDK version
@@ -60,7 +61,8 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
 - Out-of-range guard: the driver loads `joint_angle_map.json` user ranges
   and REJECTS targets outside them instead of letting the vendor clamp
   silently — the recorded action always equals the encoded action.
-- N3 does not use the general 11-axis command helper. Its narrow diagnostic
+- N3/J7 and restricted AVP do not use the unrestricted 11-axis helper. Their
+  narrow command APIs
   API builds one `Hand_Control_t` with per-joint fields and calls the same
   `sg100_set_hand_control -> SG100Device::SetHandControl` path exactly once per
   stage. Only the selected joint has `p=0.1, i=0, d=0,
@@ -101,6 +103,38 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
   `canonical_valid` before treating it as physical state (the measured
   collector rejects non-canonical samples with
   `HAND_FEEDBACK_NON_CANONICAL_MODE`).
+
+## J6 active artifact / CRC audit
+
+`recording/sg100_mode7_active_20260903_202121_J6` contains five application
+calls: MODE_NULL seed, MODE7 zero-output, J6 active hold, one +0.5° micro
+target, MODE_NULL cleanup. Hold J6 peak/settled excursion is 0°; micro settled
+delta is +0.252690° and peak 0.367403°, J6 is dominant, every other micro
+channel is 0°, all active RX modes are 7, fault is 0, and no phase-local
+sequence/timestamp stall or nonfinite value exists. Cleanup submission was
+accepted; the short post-submit sample did not independently capture mode-0
+echo. Together with the operator visual confirmation this is PASS — REAL
+HARDWARE for J6.
+
+The terminal CRC line is emitted in `RS485Adapter::DrainRxBuf` on an RX
+mismatch. Binary control flow proves the corrupt frame never reaches `rx_cb_`;
+the adapter removes the bad header and resumes scanning, with no explicit
+retry. The old artifact cannot timestamp that console line, but its continuous
+fresh windows, mode/fault integrity, normal SetHandControl path, and expected
+motion support `CRC_TRANSIENT_RECOVERED`, not an active-motion failure. The C
+wrapper now observes the SDK's existing console line and exports count plus
+monotonic timestamps without implementing protocol code.
+
+## Restricted AVP command path
+
+`run_avp_arm_hand_sim.py` retains one `SG100Retargeter` output for both sim and
+real paths. Real SG100 execution is wrapped by `SG100RestrictedAVPBackend`:
+C caches an F_cmd-mapped MODE7 target with zero output; A is required before
+active output; only real-hardware-validated `index_j3` is currently accepted.
+The envelope rejects nonfinite/canonical-range/SDK-range/gross-delta/spike/
+stale/mode/fault/transport errors, rate-limits velocity, treats CRC storms as
+a safe-stop, and exposes E-stop. Unvalidated F_fb is never written into the
+MuJoCo canonical hand and real-hand data collection is blocked/quarantined.
 
 ## Joint order
 
@@ -199,16 +233,13 @@ coordinates rather than validated canonical physical radians.
    The N0 probe proved the runtime file is the on-disk 11-entry map
    (md5 8a0c1de4a7d60a47a016dd453fb49ee3) via strace openat tracing; the
    branch-HEAD variant is not what runs.
-   The prepared next tool is
-   `tools/sg100_mode7_active_micro_motion.py`: full-hand zero-output MODE7,
-   then active hold at fresh MODE7 current position, then one independently
-   confirmed micro delta. It has not been executed. The manual-move tool is
-   preserved but retired as the primary path.
-2. Vendor send clamp semantics hardware-unverified for position targets
-   (no position command has ever been sent through the new backend).
-3. Active MODE_JOINT_POSITION target behavior and gain suitability remain
-   hardware-unverified. This does not undo the passive MODE7 entry/angle-scale
-   milestone.
+   J6 execution is complete. For J7 the same tool uses canonical zero and the
+   already cached zero-output SDK target, never raw F_fb; canonical −0.5° maps
+   exactly once through gain −1 to SDK +0.5°. The manual-move tool remains
+   retired.
+2. J7 sign-flip physical direction and active-hold behavior remain hardware
+   pending. J6 is no longer pending.
+3. Full 11D active command and exact inbound F_fb remain blocked.
 
 ## Current N-stage gates
 
@@ -217,10 +248,11 @@ coordinates rather than validated canonical physical radians.
 | N0 MODE_NULL realtime | PASS — REAL HARDWARE |
 | N1 full-hand MODE7 safe entry | PASS — REAL HARDWARE |
 | N2 MODE7 joint-angle-scale feedback | SUPPORTED — REAL HARDWARE |
-| N3 single-joint active hold + micro-motion | TOOL PREP / HARDWARE PENDING |
-| N4 per-joint F_cmd/F_fb mapping | PENDING |
-| N5 full-hand active command integration | BLOCKED |
-| N6 AVP integration | BLOCKED |
+| N3a J6 identity active command | PASS — REAL HARDWARE |
+| N3b J7 sign-flip active command | SOFTWARE READY / HARDWARE PENDING |
+| N4 restricted AVP SG100 command | SOFTWARE PREP (J6 allowlist) |
+| N5 full 11D AVP | BLOCKED |
+| F_fb canonical measured state | PENDING |
 | N7 dataset enable | BLOCKED / QUARANTINED |
 
 ## N1 — canonical <-> SDK user-angle mapping (2026-09-03 audit)
@@ -260,15 +292,10 @@ strace-proven runtime json.
   N0 observed MODE_NULL callback zero at the mechanical zero pose (±0.055°),
   which cannot establish mode-7 physical zero alignment. No startup-derived
   offsets are permitted.
-- Direction candidates (+1 on ten joints, -1 on middle_j1) came only from
-  range morphology.  They are offline hypotheses, not gains and not
-  hardware confirmation.  Numeric range similarity cannot establish scale.
-- The candidate is **NOT applied** to `sg100_hardware_map.yaml` (still
-  identity): a wrong sign would command a joint the OPPOSITE direction
-  inside its range, which no range guard can catch.  Until the passive
-  sign characterization confirms it, middle_j1 outbound targets remain
-  range-REJECTED by the driver (fail-closed).  No axis is presently proven
-  safe for position control from these candidates.
+- J6 identity command sign is now real-hardware supported by its active
+  artifact. J7 command-domain gain −1 is applied in `F_cmd` because canonical
+  `[-125,0]°` maps to SDK `[0,125]°`; its physical direction remains hardware
+  pending and it is excluded from the restricted real allowlist until PASS.
 
 ### Teaching mode (MODE_NULL) audit — manual sign characterization
 

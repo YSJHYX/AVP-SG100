@@ -26,13 +26,11 @@
 #                         reads ~0 deg (±0.055°) on every SDK joint
 #   gain = +1 (10 joints) morphology: canonical mechanical ranges equal
 #                         the runtime SDK user ranges numerically
-#   gain(middle_j1)       range shape MIRRORS (canonical [-2.18,0] rad vs
-#                         SDK J7 user [0,125] deg) -> candidate -1, NOT
-#                         APPLIED: a wrong sign commands the joint the
-#                         opposite way inside range, so it waits for the
-#                         passive teaching-mode sign characterization.
-#                         Until then middle_j1 outbound targets are
-#                         range-rejected by the driver (fail-closed).
+#   gain(middle_j1)       command-domain transform = -1, applied exactly once:
+#                         canonical [-125,0] deg -> SDK J7 [0,125] deg.
+#                         This makes the J7 sign-flip harness software-ready;
+#                         physical direction remains HARDWARE PENDING and
+#                         does not validate the independent inbound F_fb.
 #
 # Canonical-domain mechanical limits come from sg100_joint_semantics.yaml
 # and are enforced on every outbound command in SG100HardwareMap.
@@ -51,5 +49,5 @@ software_joint_order:
 
 hardware_joint_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
-gain:        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+gain:        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0]
 offset_rad:  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

@@ -66,10 +66,13 @@ class MockSG100Driver(SG100Driver):
         self.feedback_period_s = float(feedback_period_s)
         self.query_driven = bool(query_driven)
 
-        self._q_actual = (
+        initial_canonical = (
             np.zeros(HAND_DOF)
             if initial_q_rad is None
             else np.asarray(initial_q_rad, dtype=np.float64).copy()
+        )
+        self._q_actual = self.hardware_map.canonical_to_actual(
+            initial_canonical
         )
         self._q_target_actual = self._q_actual.copy()
         self._connected = False

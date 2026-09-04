@@ -175,6 +175,20 @@ class SG100Mode7ActiveSubmission:
     d: tuple[int, ...]
     output_limit: tuple[int, ...]
 
+
+@dataclass(frozen=True)
+class SG100Mode7AllowlistSubmission:
+    """Restricted AVP MODE7 update; only allowlisted joints produce output."""
+
+    sent_monotonic_ns: int
+    active_joint_indices: tuple[int, ...]
+    requested_positions_deg: tuple[float, ...]
+    requested_modes: tuple[int, ...]
+    p: tuple[int, ...]
+    i: tuple[int, ...]
+    d: tuple[int, ...]
+    output_limit: tuple[int, ...]
+
 # Whole-hand control gains, matching teaching_mode_example.cpp.
 DEFAULT_KP = 0.5
 DEFAULT_KI = 0.0
@@ -323,10 +337,21 @@ def _load_wrapper_library(
         "sg100_hand_control_calls",
         "sg100_switch_to_realtime_calls",
         "sg100_zero_status_queries",
+        "sg100_crc_error_count",
     ):
         func = getattr(lib, name)
         func.argtypes = []
         func.restype = ctypes.c_uint64
+
+    crc_timestamp_array = np.ctypeslib.ndpointer(
+        dtype=np.uint64, flags="C_CONTIGUOUS"
+    )
+    lib.sg100_copy_crc_error_timestamps.argtypes = [
+        crc_timestamp_array, ctypes.c_int,
+    ]
+    lib.sg100_copy_crc_error_timestamps.restype = ctypes.c_int
+    lib.sg100_test_observe_console_line.argtypes = [ctypes.c_char_p]
+    lib.sg100_test_observe_console_line.restype = None
 
     # Read-only joint zero/calibration status (see driver methods; the
     # packed frame layouts mirror sg100_types.h under #pragma pack(1)).
@@ -393,6 +418,8 @@ _WRAPPER_EXPORTS = (
     "sg100_hand_status_callbacks",
     "sg100_hand_control_calls",
     "sg100_switch_to_realtime_calls",
+    "sg100_crc_error_count",
+    "sg100_copy_crc_error_timestamps",
     "sg100_read_runtime_status",
     "sg100_get_cached_runtime_status",
     "sg100_read_param_calib",
@@ -402,6 +429,7 @@ _WRAPPER_EXPORTS = (
     "sg100_test_struct_sizes",
     "sg100_test_serialize_hand_control",
     "sg100_test_serialize_hand_control_per_joint",
+    "sg100_test_observe_console_line",
 )
 
 
@@ -883,6 +911,87 @@ class SG100SDKDriver(SG100Driver):
             requested_modes=(MODE_JOINT_POSITION,) * HAND_DOF,
         )
 
+    def send_mode7_zero_output_sdk_targets(
+        self, positions_deg: np.ndarray,
+    ) -> SG100Mode7ProbeSubmission | None:
+        """缓存已验证 SDK-domain targets，但所有关节仍保持零输出。"""
+
+        if not self._connected or not self._realtime:
+            return None
+        positions = np.asarray(positions_deg, dtype=np.float64)
+        if positions.shape != (HAND_DOF,) or not np.all(np.isfinite(positions)):
+            raise ValueError("positions_deg must contain 11 finite values")
+        if not self._user_deg_within_vendor_range(positions):
+            self._rejected_commands += 1
+            return None
+        payload = np.ascontiguousarray(positions, dtype=np.float32)
+        modes = np.full(HAND_DOF, MODE_JOINT_POSITION, dtype=np.uint8)
+        zeros = np.zeros(HAND_DOF, dtype=np.uint16)
+        accepted = int(self._wrapper().sg100_set_hand_control(
+            payload, modes, zeros, zeros, zeros, zeros, HAND_DOF,
+        ))
+        if accepted != 1:
+            return None
+        return SG100Mode7ProbeSubmission(
+            sent_monotonic_ns=time.monotonic_ns(),
+            requested_positions_deg=tuple(float(v) for v in positions),
+            requested_modes=tuple(int(v) for v in modes),
+        )
+
+    def send_mode7_active_allowlist(
+        self, active_joint_indices: tuple[int, ...] | list[int],
+        positions_deg: np.ndarray, *, kp: float = 0.1,
+        ki: float = 0.0, kd: float = 0.0, output_limit: float = 0.5,
+    ) -> SG100Mode7AllowlistSubmission | None:
+        """发送 whole-hand MODE7 frame，仅 allowlist 关节产生输出。"""
+
+        if not self._connected or not self._realtime:
+            return None
+        joints = tuple(sorted({int(value) for value in active_joint_indices}))
+        if not joints or any(value < 0 or value >= HAND_DOF for value in joints):
+            raise ValueError("active_joint_indices must be a non-empty 0..10 set")
+        positions = np.asarray(positions_deg, dtype=np.float64)
+        if positions.shape != (HAND_DOF,) or not np.all(np.isfinite(positions)):
+            raise ValueError("positions_deg must contain 11 finite values")
+        if not self._user_deg_within_vendor_range(positions):
+            self._rejected_commands += 1
+            return None
+        gains = (float(kp), float(ki), float(kd), float(output_limit))
+        if not all(np.isfinite(value) for value in gains):
+            raise ValueError("PID/output_limit values must be finite")
+        if gains != (0.1, 0.0, 0.0, 0.5):
+            raise ValueError("restricted MODE7 permits only p/i/d/limit=0.1/0/0/0.5")
+        payload = np.ascontiguousarray(positions, dtype=np.float32)
+        modes = np.full(HAND_DOF, MODE_JOINT_POSITION, dtype=np.uint8)
+        ps = np.zeros(HAND_DOF, dtype=np.uint16)
+        is_ = np.zeros(HAND_DOF, dtype=np.uint16)
+        ds = np.zeros(HAND_DOF, dtype=np.uint16)
+        limits = np.zeros(HAND_DOF, dtype=np.uint16)
+        for joint in joints:
+            ps[joint] = quantize_gain(kp)
+            is_[joint] = quantize_gain(ki)
+            ds[joint] = quantize_gain(kd)
+            limits[joint] = quantize_gain(output_limit)
+        producing = tuple(int(v) for v in np.flatnonzero(
+            (ps != 0) | (is_ != 0) | (ds != 0) | (limits != 0)
+        ))
+        if producing != joints:
+            raise ValueError("output-producing joints disagree with allowlist")
+        accepted = int(self._wrapper().sg100_set_hand_control(
+            payload, modes, ps, is_, ds, limits, HAND_DOF,
+        ))
+        if accepted != 1:
+            return None
+        return SG100Mode7AllowlistSubmission(
+            sent_monotonic_ns=time.monotonic_ns(),
+            active_joint_indices=joints,
+            requested_positions_deg=tuple(float(v) for v in positions),
+            requested_modes=tuple(int(v) for v in modes),
+            p=tuple(int(v) for v in ps), i=tuple(int(v) for v in is_),
+            d=tuple(int(v) for v in ds),
+            output_limit=tuple(int(v) for v in limits),
+        )
+
     def send_mode7_active_single_joint(
         self,
         active_joint_index: int,
@@ -896,10 +1005,10 @@ class SG100SDKDriver(SG100Driver):
         """Submit one SDK-domain MODE7 frame with exactly one driven joint.
 
         This narrow test-only path never calls ``SG100HardwareMap`` and never
-        clamps.  The caller must seed ``positions_deg`` from fresh all-MODE7
-        feedback.  Every value is range-checked against the runtime vendor
-        map, and the call is rejected if the active fields do not describe
-        exactly one positive-output position loop.
+        clamps. The caller must supply an independently proven command-domain
+        seed; J7 must never use raw feedback as that seed. Every value is
+        range-checked against the runtime vendor map, and the call is rejected
+        unless exactly one position loop produces output.
         """
 
         if not self._connected or not self._realtime:
@@ -990,8 +1099,14 @@ class SG100SDKDriver(SG100Driver):
     # -- diagnostics ----------------------------------------------------------
 
     @property
-    def diagnostics(self) -> dict[str, int]:
+    def diagnostics(self) -> dict[str, object]:
         lib = self._wrapper()
+        crc_timestamps = np.zeros(64, dtype=np.uint64)
+        crc_timestamp_count = int(
+            lib.sg100_copy_crc_error_timestamps(
+                crc_timestamps, crc_timestamps.size
+            )
+        )
         return {
             "hand_status_callbacks": int(
                 lib.sg100_hand_status_callbacks()
@@ -1001,6 +1116,10 @@ class SG100SDKDriver(SG100Driver):
                 lib.sg100_switch_to_realtime_calls()
             ),
             "error_frames": int(lib.sg100_error_frames()),
+            "crc_error_count": int(lib.sg100_crc_error_count()),
+            "crc_error_timestamps_ns": [
+                int(value) for value in crc_timestamps[:crc_timestamp_count]
+            ],
             "status_recv_count": int(lib.sg100_status_recv_count()),
             "vendor_work_mode": int(lib.sg100_get_work_mode()),
             "rejected_commands": int(self._rejected_commands),

@@ -244,7 +244,11 @@ def test_g_mock_feedback_to_canonical_roundtrip() -> None:
     mock.inject_actual_position(actual)
     feedback = mock.read_feedback()
     assert feedback is not None and feedback.valid
-    np.testing.assert_allclose(feedback.q_rad, actual, atol=1e-9)
+    np.testing.assert_allclose(
+        feedback.q_rad,
+        mock.hardware_map.actual_to_canonical(actual),
+        atol=1e-9,
+    )
     assert feedback.q_rad.shape == (HAND_DOF,)
 
 
@@ -262,16 +266,22 @@ def test_h_startup_state_machine_fail_closed_before_realtime() -> None:
 
 
 def test_h_enter_realtime_does_not_move_the_hand() -> None:
+    hardware_map = SG100HardwareMap()
+    initial = np.clip(
+        np.full(HAND_DOF, 0.3),
+        hardware_map.lower_rad,
+        hardware_map.upper_rad,
+    )
     mock = MockSG100Driver(
-        SG100HardwareMap(),
-        initial_q_rad=np.full(HAND_DOF, 0.3),
+        hardware_map,
+        initial_q_rad=initial,
     )
     mock.connect()
     mock.start()
     mock.enter_realtime()
     feedback = mock.read_feedback()
     assert feedback is not None
-    np.testing.assert_allclose(feedback.q_rad, np.full(HAND_DOF, 0.3), atol=1e-9)
+    np.testing.assert_allclose(feedback.q_rad, initial, atol=1e-9)
 
 
 def test_n_stop_keeps_passive_hold_and_disconnect_closes() -> None:
