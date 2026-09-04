@@ -46,6 +46,22 @@
            diffuse="0.58 0.58 0.58" specular="0.08 0.08 0.08"
            castshadow="false"/>
 
+    <!--
+      VLA observation cameras required by the MujocoStateRecorder /
+      camera_observations contract (same names and observation keys as
+      rm65_sg100_avp_grasp_scene.xml).  Purely virtual: no collision,
+      mass, or visual effect on the AVP passthrough scene.  Pose copied
+      from the grasp workstation; here it observes the robot's front
+      working volume above the (passthrough) mounting surface.
+    -->
+    <camera
+      name="workstation_front"
+      mode="fixed"
+      pos="-0.050000000 -0.073461236 0.900000000"
+      xyaxes="0.000000000 -1.000000000 0.000000000 0.808212783 0.000000000 0.588890565"
+      fovy="50"
+    />
+
     <body name="base_Link">
       <geom name="aubo_base_visual" type="cylinder" pos="0 0 0.061"
             size="0.092 0.061" material="aubo_link_material"
@@ -94,6 +110,18 @@
                   <body name="sg100_base_link" gravcomp="1">
                     <inertial pos="0 0 0.055" mass="0.30"
                               diaginertia="0.0012 0.0010 0.0008"/>
+                    <!--
+                      Wrist observation camera (camera_observations
+                      contract, name/pose identical to the frozen v7
+                      optical centre in rm65_sg100_avp_grasp_robot.xml;
+                      fixed sg100_base_link child, no physical body).
+                    -->
+                    <camera
+                      name="wrist_camera"
+                      pos="0.016859 -0.160165 0.000"
+                      xyaxes="0.999993640 -0.003566422 0.000000000 -0.002427369 -0.680613254 0.732638865"
+                      fovy="75"
+                    />
                     <geom name="sg100_base_visual_part1" type="mesh" mesh="sg100_base_visual_part1" material="sg100_material" mass="0" contype="0" conaffinity="0"/>
                     <geom name="sg100_base_visual_part2" type="mesh" mesh="sg100_base_visual_part2" material="sg100_material" mass="0" contype="0" conaffinity="0"/>
                     <geom name="sg100_base_visual_part3" type="mesh" mesh="sg100_base_visual_part3" material="sg100_material" mass="0" contype="0" conaffinity="0"/>
