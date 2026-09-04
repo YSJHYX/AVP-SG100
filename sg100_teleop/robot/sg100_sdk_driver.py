@@ -1075,6 +1075,11 @@ class SG100SDKDriver(SG100Driver):
             self._events.clear()
         return events
 
+    @property
+    def latest_feedback(self) -> SG100HandFeedback | None:
+        """最近一次 callback 的只读缓存；不会触发 UART/SDK 调用。"""
+        return self._last_feedback
+
     # -- internals ------------------------------------------------------------
 
     def _send_null_control(self) -> bool:

@@ -92,6 +92,7 @@ class ArmCommandSent:
     source_timestamp_ns: int
     target_sequence: int
     command_bundle_id: int | None
+    command_sequence: int = -1
 
     def validate(self) -> None:
         for name, value in (

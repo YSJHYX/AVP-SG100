@@ -1,0 +1,244 @@
+"""单一 30 Hz master timeline 上的 causal latest-before-tick sampler。"""
+
+from __future__ import annotations
+
+import threading
+import time
+from typing import Any
+
+import numpy as np
+
+from sg100_teleop.data_collection.vla_raw_buffer import VlaRawBuffer
+from sg100_teleop.data_collection.vla_raw_schema import (
+    FixedRateTimeline,
+    FreshnessThresholds,
+    vector,
+)
+from sg100_teleop.data_collection.vla_raw_writer import BoundedMediaWriter
+
+
+def _age_and_valid(
+    tick_ns: int, source_ns: int, threshold_ns: int, declared_valid: bool
+) -> tuple[int, bool]:
+    source = int(source_ns)
+    if source <= 0 or source > int(tick_ns):
+        return -1, False
+    age = int(tick_ns) - source
+    return age, bool(declared_valid and age <= int(threshold_ns))
+
+
+class SynchronizedSampler:
+    """30 Hz 仅属于 learning/data plane，不改变任何 robot control Hz。"""
+
+    def __init__(
+        self,
+        *,
+        hz: float,
+        start_monotonic_ns: int,
+        telemetry,
+        head_camera,
+        wrist_camera,
+        buffer: VlaRawBuffer,
+        media_writer: BoundedMediaWriter,
+        thresholds: FreshnessThresholds,
+    ) -> None:
+        self.timeline = FixedRateTimeline(hz, start_monotonic_ns)
+        self.telemetry = telemetry
+        self.head_camera = head_camera
+        self.wrist_camera = wrist_camera
+        self.buffer = buffer
+        self.media_writer = media_writer
+        self.thresholds = thresholds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start_index = 0
+
+    def start(self, *, start_index: int = 0) -> None:
+        if self._thread is not None:
+            raise RuntimeError("sampler 已启动")
+        self._stop.clear()
+        self._start_index = int(start_index)
+        self._thread = threading.Thread(
+            target=self._run, name="vla-30hz-master-sampler", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        index = self._start_index
+        while not self._stop.is_set():
+            tick_ns = self.timeline.tick_ns(index)
+            delay_s = (tick_ns - time.monotonic_ns()) * 1e-9
+            if delay_s > 0 and self._stop.wait(delay_s):
+                break
+            if self._stop.is_set():
+                break
+            self.sample_tick(index, tick_ns, time.monotonic_ns())
+            index += 1
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                raise RuntimeError("30 Hz sampler 无法结束")
+        self._thread = None
+
+    @staticmethod
+    def _packet_value(packet: dict[str, Any] | None, name: str, size: int):
+        return vector(None if packet is None else packet.get(name), size)
+
+    def sample_tick(self, index: int, tick_ns: int, wakeup_ns: int) -> None:
+        packet = self.telemetry.latest_before(tick_ns)
+        packet_ts = 0 if packet is None else int(packet["publish_monotonic_ns"])
+        telemetry_age, telemetry_valid = _age_and_valid(
+            tick_ns,
+            packet_ts,
+            self.thresholds.max_telemetry_age_ns,
+            packet is not None,
+        )
+
+        arm_cmd_ts = 0 if packet is None else int(packet.get("arm_qcmd_sent_timestamp_ns", 0))
+        arm_cmd_age, arm_cmd_valid = _age_and_valid(
+            tick_ns, arm_cmd_ts, self.thresholds.max_arm_command_age_ns,
+            bool(packet and packet.get("arm_command_valid", False)),
+        )
+        arm_fb_ts = 0 if packet is None else int(packet.get("arm_qpos_timestamp_ns", 0))
+        arm_fb_age, arm_fb_valid = _age_and_valid(
+            tick_ns, arm_fb_ts, self.thresholds.max_arm_feedback_age_ns,
+            bool(packet and packet.get("arm_feedback_valid", False)),
+        )
+        hand_cmd_ts = 0 if packet is None else int(packet.get("hand_qcmd_timestamp_ns", 0))
+        hand_cmd_age, hand_cmd_valid = _age_and_valid(
+            tick_ns, hand_cmd_ts, self.thresholds.max_hand_command_age_ns,
+            bool(packet and packet.get("hand_command_valid", False)),
+        )
+        hand_fb_ts = 0 if packet is None else int(packet.get("hand_feedback_timestamp_ns", 0))
+        hand_fb_age, hand_fb_valid = _age_and_valid(
+            tick_ns, hand_fb_ts, self.thresholds.max_hand_feedback_age_ns,
+            bool(packet and packet.get("hand_feedback_valid", False)),
+        )
+
+        arm_qcmd = self._packet_value(packet, "arm_qcmd_sent_rad", 6)
+        arm_qpos = self._packet_value(packet, "arm_qpos_rad", 6)
+        hand_desired = self._packet_value(packet, "hand_qcmd_retargeted_rad", 11)
+        hand_effective = self._packet_value(
+            packet, "hand_qcmd_effective_canonical_rad", 11
+        )
+        hand_sdk = self._packet_value(packet, "hand_qcmd_sdk_deg", 11)
+        hand_feedback_sdk = self._packet_value(packet, "hand_feedback_sdk_rad", 11)
+        raw_modes = None if packet is None else packet.get("hand_feedback_modes")
+        mode_array = np.asarray(raw_modes) if raw_modes is not None else np.empty(0)
+        hand_modes = (
+            mode_array.astype(np.int16, copy=True)
+            if mode_array.shape == (11,) and np.all(np.isfinite(mode_array))
+            else np.full(11, -1, dtype=np.int16)
+        )
+        hand_canonical_declared = bool(
+            packet and packet.get("hand_feedback_canonical_valid", False)
+        )
+        hand_canonical_valid = bool(hand_fb_valid and hand_canonical_declared)
+        hand_qpos = (
+            self._packet_value(packet, "hand_qpos_canonical_rad", 11)
+            if hand_canonical_valid
+            else np.full(11, np.nan)
+        )
+        robot_qcmd_valid = bool(
+            arm_cmd_valid and hand_cmd_valid
+            and np.all(np.isfinite(arm_qcmd))
+            and np.all(np.isfinite(hand_effective))
+        )
+        robot_qpos_valid = bool(
+            arm_fb_valid and hand_canonical_valid
+            and np.all(np.isfinite(arm_qpos))
+            and np.all(np.isfinite(hand_qpos))
+        )
+        robot_qcmd = np.concatenate((arm_qcmd, hand_effective))
+        robot_qpos = np.concatenate((arm_qpos, hand_qpos))
+        if not robot_qcmd_valid:
+            robot_qcmd = np.where(np.isfinite(robot_qcmd), robot_qcmd, np.nan)
+        if not robot_qpos_valid:
+            robot_qpos[6:] = np.nan
+
+        head = self.head_camera.latest_before(tick_ns)
+        wrist = self.wrist_camera.latest_before(tick_ns)
+        head_ts = 0 if head is None else int(head.host_receive_monotonic_ns)
+        wrist_ts = 0 if wrist is None else int(wrist.host_receive_monotonic_ns)
+        head_age, head_valid = _age_and_valid(
+            tick_ns, head_ts, self.thresholds.max_camera_age_ns, head is not None
+        )
+        wrist_age, wrist_valid = _age_and_valid(
+            tick_ns, wrist_ts, self.thresholds.max_camera_age_ns, wrist is not None
+        )
+        backlog_before = self.media_writer.backlog
+        media_enqueued = bool(
+            head is not None and wrist is not None
+            and self.media_writer.enqueue(index, head, wrist)
+        )
+        if not media_enqueued:
+            head_valid = False
+            wrist_valid = False
+
+        row = {
+            "timestamp_ns": int(tick_ns),
+            "timestamp_relative_ns": int(tick_ns - self.timeline.start_monotonic_ns),
+            "sampler_wakeup_timestamp_ns": int(wakeup_ns),
+            "sampler_jitter_ns": int(wakeup_ns - tick_ns),
+            "arm_q_goal_rad": self._packet_value(packet, "arm_q_goal_rad", 6),
+            "arm_qcmd_sent_rad": arm_qcmd,
+            "arm_qcmd_source_timestamp_ns": arm_cmd_ts,
+            "arm_qcmd_age_ns": arm_cmd_age,
+            "arm_qcmd_sequence": -1 if packet is None else int(packet.get("arm_qcmd_sequence", -1)),
+            "arm_command_valid": arm_cmd_valid,
+            "arm_qpos_rad": arm_qpos,
+            "arm_qpos_source_timestamp_ns": arm_fb_ts,
+            "arm_qpos_age_ns": arm_fb_age,
+            "arm_feedback_sequence": -1 if packet is None else int(packet.get("arm_feedback_sequence", -1)),
+            "arm_feedback_valid": arm_fb_valid,
+            "arm_controller_error": -1 if packet is None or packet.get("controller_error") is None else int(packet["controller_error"]),
+            "arm_status": -1 if packet is None or packet.get("arm_status") is None else int(packet["arm_status"]),
+            "arm_feedback_channel": "UNAVAILABLE" if packet is None else str(packet.get("feedback_channel", "UNAVAILABLE")),
+            "arm_sender_hz": 0.0 if packet is None else float(packet.get("sender_hz", 0.0)),
+            "hand_qcmd_retargeted_canonical_rad": hand_desired,
+            "hand_qcmd_effective_canonical_rad": hand_effective,
+            "hand_qcmd_sdk_deg": hand_sdk,
+            "hand_qcmd_source_timestamp_ns": hand_cmd_ts,
+            "hand_qcmd_age_ns": hand_cmd_age,
+            "hand_command_sequence": -1 if packet is None else int(packet.get("hand_command_sequence", -1)),
+            "hand_command_valid": hand_cmd_valid,
+            "hand_feedback_sdk_rad": hand_feedback_sdk,
+            "hand_feedback_modes": hand_modes,
+            "hand_feedback_source_timestamp_ns": hand_fb_ts,
+            "hand_feedback_age_ns": hand_fb_age,
+            "hand_feedback_sequence": -1 if packet is None else int(packet.get("hand_feedback_sequence", -1)),
+            "hand_feedback_valid": hand_fb_valid,
+            "hand_qpos_canonical_rad": hand_qpos,
+            "hand_feedback_canonical_valid": hand_canonical_valid,
+            "robot_qcmd_17d_rad": robot_qcmd,
+            "robot_qcmd_17d_valid": robot_qcmd_valid,
+            "robot_qpos_17d_rad": robot_qpos,
+            "robot_qpos_17d_valid": robot_qpos_valid,
+            "tracking_valid": bool(packet and packet.get("tracking_valid", False) and telemetry_valid),
+            "avp_anchored": bool(packet and packet.get("avp_anchored", False)),
+            "motion_enabled": bool(packet and packet.get("motion_enabled", False)),
+            "estop_latched": bool(packet and packet.get("estop_latched", False)),
+            "telemetry_valid": telemetry_valid,
+            "telemetry_age_ns": telemetry_age,
+            "telemetry_publish_sequence": -1 if packet is None else int(packet.get("publish_sequence", -1)),
+            "head_camera_host_timestamp_ns": head_ts,
+            "head_camera_device_timestamp_ms": np.nan if head is None else float(head.device_timestamp_ms),
+            "head_camera_frame_number": -1 if head is None else int(head.frame_number),
+            "head_camera_age_ns": head_age,
+            "head_camera_valid": head_valid,
+            "wrist_camera_host_timestamp_ns": wrist_ts,
+            "wrist_camera_device_timestamp_ms": np.nan if wrist is None else float(wrist.device_timestamp_ms),
+            "wrist_camera_frame_number": -1 if wrist is None else int(wrist.frame_number),
+            "wrist_camera_age_ns": wrist_age,
+            "wrist_camera_valid": wrist_valid,
+            "head_rgb_frame_index": int(index),
+            "head_depth_frame_index": int(index),
+            "wrist_rgb_frame_index": int(index),
+            "wrist_depth_frame_index": int(index),
+            "writer_backlog": int(backlog_before),
+            "writer_drop_count": int(self.media_writer.drop_count),
+        }
+        self.buffer.append(row)

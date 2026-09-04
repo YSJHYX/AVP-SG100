@@ -81,10 +81,11 @@ from sg100_teleop.tracking.avp_wrist_mapper import AVPWristRelativeMapper, make_
 
 DEFAULT_MODEL = (
     "sg100_teleop/assets/rm65_sg100/"
-    # "mjcf/rm65_sg100_avp_grasp_scene.xml"
+    "mjcf/rm65_sg100_avp_grasp_scene.xml"
     # "mjcf/rm65_sg100_demo_hammer_peg_assembly_scene.xml"
-    "mjcf/rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
+    # "mjcf/rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
     # "mjcf/rm65_sg100_demo_maintenance_kit_packing_scene.xml"
+    # 'mjcf/rm65_sg100_realworld_teleop_scene.xml'
 )
 
 DEFAULT_CALIBRATION = (
@@ -612,6 +613,23 @@ def build_arg_parser():
     )
 
     parser.add_argument(
+        "--telemetry-publish",
+        default="",
+        metavar="HOST:PORT",
+        help=(
+            "Non-blocking read-only robot telemetry UDP destination. "
+            "Empty by default, so the existing teleop path is unchanged."
+        ),
+    )
+
+    parser.add_argument(
+        "--telemetry-publish-hz",
+        type=float,
+        default=100.0,
+        help="External telemetry snapshot rate (default: 100 Hz)",
+    )
+
+    parser.add_argument(
         "--data-stale-pre-ms",
         type=float,
         default=100.0,
@@ -979,6 +997,9 @@ def main():
 
     if args.data_stale_pre_ms <= 0.0 or args.data_stale_post_ms <= 0.0:
         raise ValueError("data stale-state thresholds must be > 0")
+
+    if args.telemetry_publish_hz <= 0.0:
+        raise ValueError("--telemetry-publish-hz must be > 0")
 
     if args.arm_send_hz <= 0.0:
         raise ValueError(
@@ -1909,6 +1930,31 @@ def main():
     latest_control_audit = None
     latest_ik_accepted = False
 
+    telemetry_period_ns = int(1e9 / args.telemetry_publish_hz)
+    last_telemetry_publish_ns = 0
+
+    def publish_external_telemetry(publish_due_ns: int) -> None:
+        """Publish cached backend truth only; perform no SDK or robot I/O."""
+        if telemetry_publisher is None:
+            return
+        snapshot = build_teleop_snapshot(
+            now_ns=publish_due_ns,
+            tracking_received_ns=(
+                tracking_gate.last_valid_tracking_monotonic_ns
+            ),
+            tracking_timeout_ns=int(args.tracking_timeout * 1e9),
+            avp_anchored=wrist_calibrated,
+            arm_backend=real_arm_backend,
+            arm_q_goal_rad=q_arm_goal,
+            arm_sender_hz=args.arm_send_hz,
+            hand_driver=hand_driver,
+            fallback_hand_feedback=hand_feedback,
+            restricted_hand_backend=restricted_hand_backend,
+            hand_qcmd_retargeted_rad=q_hand_cmd,
+            latest_hand_command=latest_hand_telemetry,
+        )
+        telemetry_publisher.publish(snapshot)
+
 
     # ========================================================
     # Lightweight MuJoCo visual-state recording
@@ -1982,6 +2028,9 @@ def main():
 
     hand_feedback_poll_period = 1.0 / args.hand_feedback_poll_hz
     last_hand_feedback_poll = -float("inf")
+    hand_feedback = None
+    latest_hand_telemetry = None
+    hand_telemetry_sequence = 0
 
     if hand_driver is not None:
         hand_driver.connect()
@@ -2058,6 +2107,22 @@ def main():
             "SERIALIZED COMMAND PROXY"
             if arm_hand_collector.hand_proxy_baseline_valid
             else "WAITING FOR VALID FINAL TELEOP QCMD",
+        )
+
+    telemetry_publisher = None
+    if args.telemetry_publish:
+        from sg100_teleop.telemetry.teleop_telemetry import (
+            TeleopTelemetryPublisher,
+            build_teleop_snapshot,
+        )
+
+        telemetry_publisher = TeleopTelemetryPublisher(
+            args.telemetry_publish
+        )
+        print(
+            "external telemetry:",
+            f"UDP {args.telemetry_publish} @ "
+            f"{args.telemetry_publish_hz:g} Hz (non-blocking, read-only)",
         )
 
 
@@ -3262,6 +3327,17 @@ def main():
                                 ),
                                 dt_s=physics_dt,
                             )
+                            if hand_result.accepted:
+                                hand_telemetry_sequence += 1
+                                latest_hand_telemetry = {
+                                    "desired": q_hand_cmd.copy(),
+                                    "effective": (
+                                        hand_result.effective_canonical_qcmd_rad.copy()
+                                    ),
+                                    "sdk_deg": hand_result.sdk_target_deg.copy(),
+                                    "timestamp_ns": hand_result.sent_monotonic_ns,
+                                    "sequence": hand_telemetry_sequence,
+                                }
                             _print_sg100_command_debug(
                                 q_hand_cmd,
                                 hand_result,
@@ -3391,6 +3467,17 @@ def main():
                                 ),
                                 dt_s=physics_dt,
                             )
+                            if hand_result.accepted:
+                                hand_telemetry_sequence += 1
+                                latest_hand_telemetry = {
+                                    "desired": q_hand_cmd.copy(),
+                                    "effective": (
+                                        hand_result.effective_canonical_qcmd_rad.copy()
+                                    ),
+                                    "sdk_deg": hand_result.sdk_target_deg.copy(),
+                                    "timestamp_ns": hand_result.sent_monotonic_ns,
+                                    "sequence": hand_telemetry_sequence,
+                                }
                             _print_sg100_command_debug(
                                 q_hand_cmd,
                                 hand_result,
@@ -3461,6 +3548,18 @@ def main():
                         state_recorder.maybe_record(
                             data
                         )
+
+                    # External telemetry is a best-effort data-plane tap.
+                    # Its configured data-plane rate does not change AVP, RM65,
+                    # SG100, physics, or feedback control rates above.
+                    telemetry_now_ns = time.monotonic_ns()
+                    if (
+                        telemetry_publisher is not None
+                        and telemetry_now_ns - last_telemetry_publish_ns
+                        >= telemetry_period_ns
+                    ):
+                        publish_external_telemetry(telemetry_now_ns)
+                        last_telemetry_publish_ns = telemetry_now_ns
 
                     physics_accumulator -= (
                         physics_dt
@@ -3682,6 +3781,8 @@ def main():
         print()
 
     finally:
+        if telemetry_publisher is not None:
+            telemetry_publisher.close()
         if hammer_impact_diagnostic is not None:
             hammer_impact_diagnostic.close()
         if hand_driver is not None:

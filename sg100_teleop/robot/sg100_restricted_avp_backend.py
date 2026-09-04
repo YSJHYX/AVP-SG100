@@ -29,6 +29,8 @@ class RestrictedCommandResult:
     sdk_target_deg: np.ndarray | None = None
     active_joint_indices: tuple[int, ...] = ()
     slew_limited: bool = False
+    effective_canonical_qcmd_rad: np.ndarray | None = None
+    sent_monotonic_ns: int = 0
 
 
 class SG100RestrictedAVPBackend:
@@ -121,6 +123,8 @@ class SG100RestrictedAVPBackend:
         return RestrictedCommandResult(
             True, "ANCHORED_ZERO_OUTPUT", self._last_canonical.copy(),
             sdk_target.copy(), self.active_joint_indices,
+            effective_canonical_qcmd_rad=self._last_canonical.copy(),
+            sent_monotonic_ns=int(submission.sent_monotonic_ns),
         )
 
     def set_enabled(self, enabled: bool) -> None:
@@ -214,4 +218,6 @@ class SG100RestrictedAVPBackend:
         return RestrictedCommandResult(
             True, "ACCEPTED", candidate.copy(), transmitted.copy(),
             self.active_joint_indices, slew_limited,
+            effective_canonical_qcmd_rad=limited.copy(),
+            sent_monotonic_ns=int(submission.sent_monotonic_ns),
         )

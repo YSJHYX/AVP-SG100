@@ -131,6 +131,9 @@ class RM65RealBackend(ArmBackend):
         self._feedback: ArmState | None = None
         self._command_event_lock = threading.Lock()
         self._command_events: deque[ArmCommandSent] = deque()
+        # Non-consuming read-only view for the external telemetry publisher.
+        # This is deliberately separate from the collector's drain queue.
+        self._latest_command_sent: ArmCommandSent | None = None
         self._feedback_sequence = 0
         # Previous sample for finite-difference feedback velocity
         # (TCP polling has no qd; the UDP push path will fill it
@@ -288,6 +291,15 @@ class RM65RealBackend(ArmBackend):
             events = tuple(self._command_events)
             self._command_events.clear()
         return events
+
+    def latest_command_sent(self) -> ArmCommandSent | None:
+        """Return the latest successful post-limiter CANFD command.
+
+        Reading this accessor never drains command events and never performs
+        an SDK call, so telemetry cannot perturb the control plane.
+        """
+        with self._command_event_lock:
+            return self._latest_command_sent
 
     def joint_state(self) -> ArmState | None:
         with self._feedback_lock:
@@ -486,9 +498,11 @@ class RM65RealBackend(ArmBackend):
                                 source_timestamp_ns=target.source_timestamp_ns,
                                 target_sequence=target.sequence,
                                 command_bundle_id=target.command_bundle_id,
+                                command_sequence=self._send_count,
                             )
                             with self._command_event_lock:
                                 self._command_events.append(event)
+                                self._latest_command_sent = event
                         else:
                             self._send_failures += 1
                             self._on_event("send_failure", f"rm_movej_canfd -> {tag}")
