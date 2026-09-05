@@ -483,6 +483,22 @@ def compute_startup_arm_q(model, data, ik_solver):
 
     return best[0] if best is not None else None
 
+def disarm_real_command_authority(
+    real_arm_backend=None,
+    restricted_hand_backend=None,
+) -> bool:
+    """显式撤销 real command authority；disabled backend 不产生额外动作。"""
+    changed = False
+    if restricted_hand_backend is not None and restricted_hand_backend.enabled:
+        restricted_hand_backend.set_enabled(False)
+        changed = True
+    if real_arm_backend is not None and real_arm_backend.enabled:
+        real_arm_backend.set_enabled(False)
+        real_arm_backend.stop_smooth()
+        changed = True
+    return changed
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -626,7 +642,10 @@ def build_arg_parser():
         "--telemetry-publish-hz",
         type=float,
         default=100.0,
-        help="External telemetry snapshot rate (default: 100 Hz)",
+        help=(
+            "Requested maximum external telemetry snapshot rate / throttle "
+            "target (default: 100 Hz; actual rate is caller-loop limited)"
+        ),
     )
 
     parser.add_argument(
@@ -1311,7 +1330,8 @@ def main():
         )
         print(
             "[REAL-ARM] keys: C = calibrate anchor | "
-            "A = ARM / DISARM streaming | Ctrl-C = stop+disconnect"
+            "A = ARM / DISARM streaming | D = DISARM only | "
+            "Ctrl-C = stop+disconnect"
         )
         print(
             "[REAL-ARM] streaming is DISABLED until you press A"
@@ -1952,6 +1972,7 @@ def main():
             restricted_hand_backend=restricted_hand_backend,
             hand_qcmd_retargeted_rad=q_hand_cmd,
             latest_hand_command=latest_hand_telemetry,
+            telemetry_publish_hz_requested=args.telemetry_publish_hz,
         )
         telemetry_publisher.publish(snapshot)
 
@@ -2122,7 +2143,8 @@ def main():
         print(
             "external telemetry:",
             f"UDP {args.telemetry_publish} @ "
-            f"{args.telemetry_publish_hz:g} Hz (non-blocking, read-only)",
+            f"requested max {args.telemetry_publish_hz:g} Hz "
+            "(caller-loop limited, non-blocking, read-only)",
         )
 
 
@@ -2201,11 +2223,10 @@ def main():
                 )
             )
             if currently_enabled:
-                if restricted_hand_backend is not None:
-                    restricted_hand_backend.set_enabled(False)
-                if real_arm_backend is not None:
-                    real_arm_backend.set_enabled(False)
-                    real_arm_backend.stop_smooth()
+                disarm_real_command_authority(
+                    real_arm_backend,
+                    restricted_hand_backend,
+                )
                 print(
                     "[REAL] DISARMED (A); active senders disabled"
                 )
@@ -2217,6 +2238,18 @@ def main():
                 print(
                     "[REAL] ARMED (A); restricted streaming enabled"
                 )
+
+        elif keycode in (ord("D"), ord("d")) and (
+            real_arm_backend is not None or restricted_hand_backend is not None
+        ):
+            changed = disarm_real_command_authority(
+                real_arm_backend,
+                restricted_hand_backend,
+            )
+            print(
+                "[REAL] DISARMED (D); active senders disabled"
+                if changed else "[REAL] already DISARMED (D)"
+            )
 
         elif keycode in (ord("E"), ord("e")) and (
             restricted_hand_backend is not None

@@ -11,7 +11,7 @@ import numpy as np
 
 
 SCHEMA_NAME = "rm65_sg100_dual_realsense_vla_raw"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 DATASET_STATUS = "RAW_CAPTURE_QUARANTINED"
 TRAINING_READY = False
 ARM_JOINT_NAMES = tuple(f"rm65_joint{i}" for i in range(1, 7))
@@ -22,6 +22,10 @@ HAND_JOINT_NAMES = (
     "little_j1", "little_j2", "little_j3",
 )
 ROBOT_JOINT_NAMES = ARM_JOINT_NAMES + HAND_JOINT_NAMES
+SUPPORTED_CAMERA_ROLES = ("head", "right_wrist")
+DEFAULT_REQUIRED_CAMERAS = SUPPORTED_CAMERA_ROLES
+SUPPORTED_CAMERA_MODALITIES = ("rgb", "depth")
+DEFAULT_CAMERA_MODALITIES = SUPPORTED_CAMERA_MODALITIES
 EPISODE_PATTERN = re.compile(r"^episode_(\d{6})\.npz$")
 
 
@@ -75,6 +79,44 @@ def scan_next_episode_index(output_dir: str | Path) -> int:
             if match:
                 indices.append(int(match.group(1)))
     return max(indices) + 1 if indices else 0
+
+
+def parse_required_cameras(value: str | tuple[str, ...]) -> tuple[str, ...]:
+    """解析正式支持的 recorder camera role 组合。"""
+    if isinstance(value, str):
+        roles = tuple(
+            item.strip() for item in value.split(",") if item.strip()
+        )
+    else:
+        roles = tuple(str(item).strip() for item in value if str(item).strip())
+    roles = tuple(dict.fromkeys(roles))
+    if roles not in (("head",), DEFAULT_REQUIRED_CAMERAS):
+        raise ValueError(
+            "--required-cameras 仅支持 head 或 head,right_wrist"
+        )
+    return roles
+
+
+def parse_camera_modalities(value: str | tuple[str, ...]) -> tuple[str, ...]:
+    """解析 recorder modality；RGB 是 VLA recorder 的强制基础模态。"""
+    if isinstance(value, str):
+        requested = tuple(
+            item.strip().lower() for item in value.split(",") if item.strip()
+        )
+    else:
+        requested = tuple(
+            str(item).strip().lower() for item in value if str(item).strip()
+        )
+    requested = tuple(dict.fromkeys(requested))
+    unknown = set(requested) - set(SUPPORTED_CAMERA_MODALITIES)
+    if unknown:
+        raise ValueError(f"未知 camera modality: {sorted(unknown)}")
+    if "rgb" not in requested:
+        raise ValueError("RGB is required for VLA recorder.")
+    return tuple(
+        modality for modality in SUPPORTED_CAMERA_MODALITIES
+        if modality in requested
+    )
 
 
 def vector(value, size: int, *, fill: float = np.nan) -> np.ndarray:

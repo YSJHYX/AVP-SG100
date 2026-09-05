@@ -13,15 +13,20 @@ from sg100_teleop.data_collection.synchronized_sampler import SynchronizedSample
 from sg100_teleop.data_collection.vla_raw_buffer import VlaRawBuffer
 from sg100_teleop.data_collection.vla_raw_schema import (
     DATASET_STATUS,
+    DEFAULT_CAMERA_MODALITIES,
+    DEFAULT_REQUIRED_CAMERAS,
     ROBOT_JOINT_NAMES,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     TRAINING_READY,
     FreshnessThresholds,
     scan_next_episode_index,
+    parse_camera_modalities,
+    parse_required_cameras,
 )
 from sg100_teleop.data_collection.vla_raw_validator import (
     ValidationReport,
+    telemetry_rate_diagnostics,
     validate_episode,
 )
 from sg100_teleop.data_collection.vla_raw_writer import (
@@ -47,6 +52,9 @@ class EpisodeController:
         telemetry,
         head_camera,
         wrist_camera,
+        required_cameras: tuple[str, ...] = DEFAULT_REQUIRED_CAMERAS,
+        camera_modalities: tuple[str, ...] = DEFAULT_CAMERA_MODALITIES,
+        telemetry_required: bool = True,
         thresholds: FreshnessThresholds | None = None,
         writer_queue_size: int = 180,
     ) -> None:
@@ -62,6 +70,9 @@ class EpisodeController:
         self.telemetry = telemetry
         self.head_camera = head_camera
         self.wrist_camera = wrist_camera
+        self.required_cameras = parse_required_cameras(required_cameras)
+        self.camera_modalities = parse_camera_modalities(camera_modalities)
+        self.telemetry_required = bool(telemetry_required)
         self.thresholds = thresholds or FreshnessThresholds()
         self.writer_queue_size = int(writer_queue_size)
         self.state = EpisodeState.READY
@@ -77,15 +88,20 @@ class EpisodeController:
         self.candidate_arrays: dict[str, np.ndarray] | None = None
         self.validation_report: ValidationReport | None = None
         self._telemetry_stats_start: dict[str, int] = {}
+        self._robot_telemetry_present = False
 
     def turn_on(self) -> int:
         if self.state is not EpisodeState.READY:
             raise RuntimeError(f"On 仅在 READY 可用，当前 {self.state.value}")
         if not self.head_camera.ready:
             raise RuntimeError("HEAD D455 stream 未 READY")
-        if not self.wrist_camera.ready:
+        if (
+            "right_wrist" in self.required_cameras
+            and (self.wrist_camera is None or not self.wrist_camera.ready)
+        ):
             raise RuntimeError("WRIST D405 stream 未 READY")
-        if not self.telemetry.is_alive():
+        self._robot_telemetry_present = bool(self.telemetry.is_alive())
+        if self.telemetry_required and not self._robot_telemetry_present:
             raise RuntimeError("Robot telemetry publisher 未 READY或已 stale")
         self.frozen_instruction = str(self.language_instruction)
         self.buffer = VlaRawBuffer()
@@ -98,7 +114,10 @@ class EpisodeController:
         self._telemetry_stats_start = dict(self.telemetry.stats)
         try:
             self.media_writer = BoundedMediaWriter(
-                self.pending_dir, queue_size=self.writer_queue_size
+                self.pending_dir,
+                camera_roles=self.required_cameras,
+                camera_modalities=self.camera_modalities,
+                queue_size=self.writer_queue_size,
             )
             self.sampler = SynchronizedSampler(
                 hz=self.hz,
@@ -106,6 +125,8 @@ class EpisodeController:
                 telemetry=self.telemetry,
                 head_camera=self.head_camera,
                 wrist_camera=self.wrist_camera,
+                camera_roles=self.required_cameras,
+                camera_modalities=self.camera_modalities,
                 buffer=self.buffer,
                 media_writer=self.media_writer,
                 thresholds=self.thresholds,
@@ -129,22 +150,63 @@ class EpisodeController:
         return self.next_episode_index
 
     @staticmethod
-    def _camera_metadata(prefix: str, camera) -> dict[str, np.ndarray]:
+    def _camera_metadata(
+        prefix: str, camera, *, present: bool, depth_present: bool
+    ) -> dict[str, np.ndarray]:
+        if not present:
+            return {
+                f"{prefix}_camera_present": np.asarray(False, dtype=bool),
+                f"{prefix}_depth_present": np.asarray(False, dtype=bool),
+                f"{prefix}_camera_model": np.asarray(""),
+                f"{prefix}_camera_serial": np.asarray(""),
+                f"{prefix}_camera_width": np.asarray(0, dtype=np.int32),
+                f"{prefix}_camera_height": np.asarray(0, dtype=np.int32),
+                f"{prefix}_camera_fps": np.asarray(0, dtype=np.int32),
+                f"{prefix}_depth_scale": np.asarray(np.nan, dtype=np.float64),
+                f"{prefix}_color_intrinsics": np.full((3, 3), np.nan),
+                f"{prefix}_depth_intrinsics": np.full((3, 3), np.nan),
+                f"{prefix}_color_format": np.asarray(""),
+                f"{prefix}_depth_format": np.asarray(""),
+                f"{prefix}_color_stream_profile": np.asarray(""),
+                f"{prefix}_depth_stream_profile": np.asarray(""),
+                f"{prefix}_depth_aligned_to": np.asarray(""),
+                f"{prefix}_extrinsics_to_robot": np.asarray(
+                    "UNAVAILABLE / NOT_CALIBRATED"
+                ),
+            }
         metadata = camera.metadata()
         return {
+            f"{prefix}_camera_present": np.asarray(True, dtype=bool),
+            f"{prefix}_depth_present": np.asarray(depth_present, dtype=bool),
             f"{prefix}_camera_model": np.asarray(str(metadata["model"])),
             f"{prefix}_camera_serial": np.asarray(str(metadata["serial"])),
             f"{prefix}_camera_width": np.asarray(int(metadata["width"]), dtype=np.int32),
             f"{prefix}_camera_height": np.asarray(int(metadata["height"]), dtype=np.int32),
             f"{prefix}_camera_fps": np.asarray(int(metadata["fps"]), dtype=np.int32),
-            f"{prefix}_depth_scale": np.asarray(float(metadata["depth_scale"]), dtype=np.float64),
+            f"{prefix}_depth_scale": np.asarray(
+                float(metadata.get("depth_scale", np.nan))
+                if depth_present else np.nan,
+                dtype=np.float64,
+            ),
             f"{prefix}_color_intrinsics": np.asarray(metadata["color_intrinsics"], dtype=np.float64),
-            f"{prefix}_depth_intrinsics": np.asarray(metadata["depth_intrinsics"], dtype=np.float64),
+            f"{prefix}_depth_intrinsics": (
+                np.asarray(metadata.get("depth_intrinsics"), dtype=np.float64)
+                if depth_present else np.full((3, 3), np.nan)
+            ),
             f"{prefix}_color_format": np.asarray(str(metadata.get("color_format", "RGB8"))),
-            f"{prefix}_depth_format": np.asarray(str(metadata.get("depth_format", "Z16_UINT16"))),
+            f"{prefix}_depth_format": np.asarray(
+                str(metadata.get("depth_format", "Z16_UINT16"))
+                if depth_present else ""
+            ),
             f"{prefix}_color_stream_profile": np.asarray(str(metadata.get("color_stream_profile", ""))),
-            f"{prefix}_depth_stream_profile": np.asarray(str(metadata.get("depth_stream_profile", ""))),
-            f"{prefix}_depth_aligned_to": np.asarray(str(metadata.get("depth_aligned_to", "color"))),
+            f"{prefix}_depth_stream_profile": np.asarray(
+                str(metadata.get("depth_stream_profile", ""))
+                if depth_present else ""
+            ),
+            f"{prefix}_depth_aligned_to": np.asarray(
+                str(metadata.get("depth_aligned_to", "color"))
+                if depth_present else "DISABLED"
+            ),
             f"{prefix}_extrinsics_to_robot": np.asarray(str(metadata.get(
                 "extrinsics_to_robot", "UNAVAILABLE / NOT_CALIBRATED"
             ))),
@@ -173,10 +235,38 @@ class EpisodeController:
                 self.episode_stop_request_monotonic_ns, dtype=np.int64
             ),
             "robot_joint_names": np.asarray(ROBOT_JOINT_NAMES),
+            "robot_desired_qcmd_semantics": np.asarray(
+                "AVP/policy desired absolute joint position command before "
+                "backend safety limiting"
+            ),
+            "robot_effective_qcmd_semantics": np.asarray(
+                "final effective backend command after "
+                "safety/limiting/allowlist"
+            ),
+            "robot_qpos_semantics": np.asarray(
+                "measured robot joint state feedback; never inferred from "
+                "desired command"
+            ),
             "dataset_status": np.asarray(DATASET_STATUS),
             "training_ready": np.asarray(TRAINING_READY, dtype=bool),
+            "hardware_execution": np.asarray(False, dtype=bool),
+            "robot_telemetry_present": np.asarray(
+                self._robot_telemetry_present, dtype=bool
+            ),
+            "required_cameras": np.asarray(self.required_cameras),
+            "camera_modalities": np.asarray(",".join(self.camera_modalities)),
+            "record_depth": np.asarray(
+                "depth" in self.camera_modalities, dtype=bool
+            ),
+            "camera_configuration_mode": np.asarray(
+                "DUAL_PRODUCTION"
+                if "right_wrist" in self.required_cameras
+                else "HEAD_ONLY_BRINGUP"
+            ),
             "dual_camera_synchronization": np.asarray(
                 "HOST MONOTONIC SOFTWARE ALIGNMENT"
+                if "right_wrist" in self.required_cameras
+                else "NOT_APPLICABLE_HEAD_ONLY"
             ),
             "camera_device_clock_domains_shared": np.asarray(False, dtype=bool),
             "sg100_feedback_map_status": np.asarray("F_FB_PENDING"),
@@ -191,8 +281,19 @@ class EpisodeController:
             ),
         })
         arrays.update(self.thresholds.as_metadata())
-        arrays.update(self._camera_metadata("head", self.head_camera))
-        arrays.update(self._camera_metadata("wrist", self.wrist_camera))
+        arrays.update(self._camera_metadata(
+            "head", self.head_camera, present=True,
+            depth_present="depth" in self.camera_modalities,
+        ))
+        arrays.update(self._camera_metadata(
+            "wrist",
+            self.wrist_camera,
+            present="right_wrist" in self.required_cameras,
+            depth_present=(
+                "right_wrist" in self.required_cameras
+                and "depth" in self.camera_modalities
+            ),
+        ))
         stats = self.telemetry.stats
         episode_received = max(
             0,
@@ -210,12 +311,21 @@ class EpisodeController:
         arrays["telemetry_sequence_gap_count"] = np.asarray(
             episode_gaps, dtype=np.int64
         )
+        arrays["telemetry_publish_hz_requested"] = np.asarray(
+            self.sampler.telemetry_publish_hz_requested, dtype=np.float64
+        )
+        rate_diagnostics = telemetry_rate_diagnostics(arrays)
+        arrays["telemetry_publish_hz_effective"] = np.asarray(
+            rate_diagnostics["telemetry_effective_hz"], dtype=np.float64
+        )
         report = validate_episode(
             arrays,
             media_root=self.pending_dir,
             writer_drop_count=self.media_writer.drop_count,
             writer_error_count=self.media_writer.error_count,
             telemetry_sequence_gap_count=episode_gaps,
+            enabled_camera_roles=self.required_cameras,
+            enabled_camera_modalities=self.camera_modalities,
         )
         arrays["validation_quality"] = np.asarray(report.quality)
         self.candidate_arrays = arrays
@@ -245,7 +355,8 @@ class EpisodeController:
             if choice == "reset":
                 self.telemetry.clear()
                 self.head_camera.clear()
-                self.wrist_camera.clear()
+                if self.wrist_camera is not None:
+                    self.wrist_camera.clear()
             self._clear_candidate_state()
             self.state = EpisodeState.READY
             return None
@@ -287,3 +398,4 @@ class EpisodeController:
         self.candidate_arrays = None
         self.validation_report = None
         self._telemetry_stats_start = {}
+        self._robot_telemetry_present = False

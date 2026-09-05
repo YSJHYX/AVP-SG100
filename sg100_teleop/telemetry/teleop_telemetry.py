@@ -64,6 +64,7 @@ def build_teleop_snapshot(
     restricted_hand_backend,
     hand_qcmd_retargeted_rad,
     latest_hand_command: Mapping[str, Any] | None,
+    telemetry_publish_hz_requested: float | None = None,
 ) -> dict[str, Any]:
     """只读取 backend cache，组装一个完整 telemetry schema snapshot。"""
     arm_command = (
@@ -159,6 +160,10 @@ def build_teleop_snapshot(
         "hand_feedback_mapping_status": (
             hand_feedback.feedback_mapping_status
             if hand_feedback is not None else "F_FB_NOT_PROVIDED"
+        ),
+        "telemetry_publish_hz_requested": (
+            float(telemetry_publish_hz_requested)
+            if telemetry_publish_hz_requested is not None else None
         ),
     }
 
@@ -348,3 +353,47 @@ class TeleopTelemetrySubscriber:
 
     def __exit__(self, *_args: object) -> None:
         self.stop()
+
+
+class NullTelemetrySubscriber:
+    """Camera-only bring-up 使用的显式空 telemetry source。
+
+    它不创建 socket，也不生成任何 robot sample；sampler 因而自然写入 NaN
+    和 valid=False，而不是伪造 state/action。
+    """
+
+    endpoint = "optional"
+    received_packets = 0
+    invalid_packets = 0
+    sequence_gap_count = 0
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    close = stop
+
+    def latest_before(self, timestamp_ns: int) -> None:
+        del timestamp_ns
+        return None
+
+    def latest(self) -> None:
+        return None
+
+    def is_alive(self, now_ns: int | None = None) -> bool:
+        del now_ns
+        return False
+
+    def clear(self) -> None:
+        pass
+
+    @property
+    def stats(self) -> dict[str, int]:
+        return {
+            "received_packets": 0,
+            "invalid_packets": 0,
+            "sequence_gap_count": 0,
+            "buffered_packets": 0,
+        }

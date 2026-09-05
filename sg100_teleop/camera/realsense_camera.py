@@ -18,7 +18,10 @@ class RealSenseFrame:
     device_timestamp_ms: float
     frame_number: int
     color_rgb: np.ndarray
-    depth_uint16: np.ndarray
+    depth_uint16: np.ndarray | None
+    depth_host_receive_monotonic_ns: int = -1
+    depth_device_timestamp_ms: float = float("nan")
+    depth_frame_number: int = -1
 
 
 class RealSenseCamera:
@@ -50,6 +53,7 @@ class RealSenseCamera:
         self.enable_depth = bool(enable_depth)
         self._rs = rs_module
         self._pipeline = None
+        self._align = None
         self._ring: deque[RealSenseFrame] = deque(maxlen=int(ring_size))
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
@@ -130,22 +134,30 @@ class RealSenseCamera:
                 f"{listing}"
             ) from exc
         try:
-            color_profile = active.get_stream(rs.stream.color).as_video_stream_profile()
-            depth_profile = active.get_stream(rs.stream.depth).as_video_stream_profile()
+            color_profile = active.get_stream(
+                rs.stream.color
+            ).as_video_stream_profile()
             actual = (
                 color_profile.width(), color_profile.height(), color_profile.fps(),
-                depth_profile.width(), depth_profile.height(), depth_profile.fps(),
             )
-            expected = (
-                self.width, self.height, self.fps,
-                self.width, self.height, self.fps,
-            )
+            expected = (self.width, self.height, self.fps)
+            depth_profile = None
+            depth_sensor = None
+            if self.enable_depth:
+                depth_profile = active.get_stream(
+                    rs.stream.depth
+                ).as_video_stream_profile()
+                actual += (
+                    depth_profile.width(), depth_profile.height(), depth_profile.fps(),
+                )
+                expected += (self.width, self.height, self.fps)
             if actual != expected:
                 raise RuntimeError(
                     f"{self.role}: SDK profile 与请求不一致: actual={actual}, "
                     f"expected={expected}"
                 )
-            depth_sensor = active.get_device().first_depth_sensor()
+            if self.enable_depth:
+                depth_sensor = active.get_device().first_depth_sensor()
             self._metadata = {
                 "role": self.role,
                 "model": model,
@@ -153,22 +165,28 @@ class RealSenseCamera:
                 "width": self.width,
                 "height": self.height,
                 "fps": self.fps,
-                "depth_scale": float(depth_sensor.get_depth_scale()),
+                "depth_enabled": self.enable_depth,
+                "depth_scale": (
+                    float(depth_sensor.get_depth_scale())
+                    if depth_sensor is not None else float("nan")
+                ),
                 "color_intrinsics": self._intrinsics_matrix(
                     color_profile.get_intrinsics()
                 ),
-                "depth_intrinsics": self._intrinsics_matrix(
-                    depth_profile.get_intrinsics()
+                "depth_intrinsics": (
+                    self._intrinsics_matrix(depth_profile.get_intrinsics())
+                    if depth_profile is not None else np.full((3, 3), np.nan)
                 ),
                 "color_format": "RGB8",
-                "depth_format": "Z16_UINT16",
+                "depth_format": "Z16_UINT16" if self.enable_depth else "",
                 "color_stream_profile": (
                     f"{self.width}x{self.height}@{self.fps}:RGB8"
                 ),
                 "depth_stream_profile": (
                     f"{self.width}x{self.height}@{self.fps}:Z16"
+                    if self.enable_depth else ""
                 ),
-                "depth_aligned_to": "color",
+                "depth_aligned_to": "color" if self.enable_depth else "DISABLED",
                 "extrinsics_to_robot": "UNAVAILABLE / NOT_CALIBRATED",
                 "synchronization": "HOST MONOTONIC SOFTWARE ALIGNMENT",
             }
@@ -176,7 +194,7 @@ class RealSenseCamera:
             pipeline.stop()
             raise
         self._pipeline = pipeline
-        self._align = rs.align(rs.stream.color)
+        self._align = rs.align(rs.stream.color) if self.enable_depth else None
         self._shutdown.clear()
         self._thread = threading.Thread(
             target=self._capture_loop,
@@ -188,7 +206,8 @@ class RealSenseCamera:
         while not self.ready and time.monotonic() < deadline:
             time.sleep(0.01)
         if not self.ready:
-            detail = self.last_error or "2 秒内未收到完整 color+depth frameset"
+            expected_frames = "color+depth frameset" if self.enable_depth else "color frame"
+            detail = self.last_error or f"2 秒内未收到完整 {expected_frames}"
             self.stop()
             raise RuntimeError(f"{self.role}: stream 未 READY: {detail}")
 
@@ -198,19 +217,37 @@ class RealSenseCamera:
             try:
                 frameset = self._pipeline.wait_for_frames(timeout_ms=250)
                 host_ns = time.monotonic_ns()
-                aligned = self._align.process(frameset)
-                color = aligned.get_color_frame()
-                depth = aligned.get_depth_frame()
-                if not color or not depth:
-                    raise RuntimeError("frameset 缺少 color/depth")
+                if self.enable_depth:
+                    assert self._align is not None
+                    selected = self._align.process(frameset)
+                    color = selected.get_color_frame()
+                    depth = selected.get_depth_frame()
+                    if not color or not depth:
+                        raise RuntimeError("frameset 缺少 color/depth")
+                else:
+                    color = frameset.get_color_frame()
+                    depth = None
+                    if not color:
+                        raise RuntimeError("frameset 缺少 color")
                 frame = RealSenseFrame(
                     role=self.role,
                     host_receive_monotonic_ns=host_ns,
                     device_timestamp_ms=float(color.get_timestamp()),
                     frame_number=int(color.get_frame_number()),
                     color_rgb=np.asanyarray(color.get_data()).copy(),
-                    depth_uint16=np.asanyarray(depth.get_data()).astype(
-                        np.uint16, copy=True
+                    depth_uint16=(
+                        np.asanyarray(depth.get_data()).astype(np.uint16, copy=True)
+                        if depth is not None else None
+                    ),
+                    depth_host_receive_monotonic_ns=(
+                        host_ns if depth is not None else -1
+                    ),
+                    depth_device_timestamp_ms=(
+                        float(depth.get_timestamp()) if depth is not None
+                        else float("nan")
+                    ),
+                    depth_frame_number=(
+                        int(depth.get_frame_number()) if depth is not None else -1
                     ),
                 )
                 with self._lock:
@@ -218,6 +255,8 @@ class RealSenseCamera:
                     # intrinsics must describe that image rather than the
                     # native pre-align depth stream.
                     try:
+                        if depth is None:
+                            raise ValueError("depth disabled")
                         aligned_depth_profile = (
                             depth.profile.as_video_stream_profile()
                         )
@@ -266,5 +305,6 @@ class RealSenseCamera:
                 self._pipeline.stop()
             finally:
                 self._pipeline = None
+        self._align = None
 
     close = stop

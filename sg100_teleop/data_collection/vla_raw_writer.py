@@ -12,6 +12,7 @@ from typing import Mapping
 import numpy as np
 
 from sg100_teleop.camera.realsense_camera import RealSenseFrame
+from sg100_teleop.data_collection.vla_raw_schema import parse_camera_modalities
 
 
 class BoundedMediaWriter:
@@ -19,17 +20,27 @@ class BoundedMediaWriter:
         self,
         pending_media_dir: str | Path,
         *,
+        camera_roles: tuple[str, ...] = ("head", "right_wrist"),
+        camera_modalities: tuple[str, ...] = ("rgb", "depth"),
         queue_size: int = 180,
         jpeg_quality: int = 97,
     ) -> None:
         if queue_size < 1 or not 95 <= jpeg_quality <= 100:
             raise ValueError("queue_size 或 jpeg_quality 非法")
+        roles = tuple(dict.fromkeys(str(role) for role in camera_roles))
+        if not roles or set(roles) - {"head", "right_wrist"}:
+            raise ValueError("camera_roles 仅支持 head/right_wrist")
+        self.camera_roles = roles
+        self.camera_modalities = parse_camera_modalities(camera_modalities)
         self.root = Path(pending_media_dir)
-        for role in ("head", "right_wrist"):
+        for role in self.camera_roles:
             (self.root / role / "rgb").mkdir(parents=True, exist_ok=False)
-            (self.root / role / "depth").mkdir(parents=True, exist_ok=False)
+            if "depth" in self.camera_modalities:
+                (self.root / role / "depth").mkdir(parents=True, exist_ok=False)
         self.jpeg_quality = int(jpeg_quality)
-        self._queue: queue.Queue[tuple[int, RealSenseFrame, RealSenseFrame]] = (
+        self._queue: queue.Queue[
+            tuple[int, RealSenseFrame, RealSenseFrame | None]
+        ] = (
             queue.Queue(maxsize=int(queue_size))
         )
         self._shutdown = threading.Event()
@@ -48,8 +59,15 @@ class BoundedMediaWriter:
         return self._queue.qsize()
 
     def enqueue(
-        self, index: int, head: RealSenseFrame, wrist: RealSenseFrame
+        self,
+        index: int,
+        head: RealSenseFrame,
+        wrist: RealSenseFrame | None = None,
     ) -> bool:
+        if "head" in self.camera_roles and head is None:
+            raise ValueError("enabled head role 缺少 frame")
+        if "right_wrist" in self.camera_roles and wrist is None:
+            raise ValueError("enabled right_wrist role 缺少 frame")
         try:
             self._queue.put_nowait((int(index), head, wrist))
             self.max_backlog = max(self.max_backlog, self._queue.qsize())
@@ -63,21 +81,24 @@ class BoundedMediaWriter:
 
         stem = f"{index:06d}"
         rgb_path = self.root / role / "rgb" / f"{stem}.jpg"
-        depth_path = self.root / role / "depth" / f"{stem}.png"
         rgb = np.asarray(frame.color_rgb)
-        depth = np.asarray(frame.depth_uint16)
         if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[2] != 3:
             raise ValueError(f"{role} RGB 必须是 uint8 HxWx3")
-        if depth.dtype != np.uint16 or depth.ndim != 2:
-            raise ValueError(f"{role} depth 必须是 uint16 HxW")
         # Capture domain is explicit RGB8; OpenCV encoder expects BGR.
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         if not cv2.imwrite(
             str(rgb_path), bgr, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
         ):
             raise OSError(f"JPEG 写入失败: {rgb_path}")
-        if not cv2.imwrite(str(depth_path), depth):
-            raise OSError(f"uint16 PNG 写入失败: {depth_path}")
+        if "depth" in self.camera_modalities:
+            if frame.depth_uint16 is None:
+                raise ValueError(f"{role} depth enabled 但 frame 不含 depth")
+            depth = np.asarray(frame.depth_uint16)
+            if depth.dtype != np.uint16 or depth.ndim != 2:
+                raise ValueError(f"{role} depth 必须是 uint16 HxW")
+            depth_path = self.root / role / "depth" / f"{stem}.png"
+            if not cv2.imwrite(str(depth_path), depth):
+                raise OSError(f"uint16 PNG 写入失败: {depth_path}")
 
     def _loop(self) -> None:
         while not self._shutdown.is_set() or not self._queue.empty():
@@ -87,8 +108,11 @@ class BoundedMediaWriter:
                 continue
             index, head, wrist = item
             try:
-                self._write_frame("head", index, head)
-                self._write_frame("right_wrist", index, wrist)
+                if "head" in self.camera_roles:
+                    self._write_frame("head", index, head)
+                if "right_wrist" in self.camera_roles:
+                    assert wrist is not None
+                    self._write_frame("right_wrist", index, wrist)
                 self.written_ticks += 1
             except Exception as exc:
                 self.error_count += 1

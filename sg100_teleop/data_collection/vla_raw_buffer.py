@@ -18,6 +18,7 @@ _VECTOR_WIDTHS = {
     "hand_feedback_modes": 11,
     "hand_qpos_canonical_rad": 11,
     "robot_qcmd_17d_rad": 17,
+    "robot_desired_qcmd_17d_rad": 17,
     "robot_qpos_17d_rad": 17,
 }
 
