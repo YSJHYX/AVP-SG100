@@ -108,6 +108,9 @@ tick[k] = episode_start_monotonic_ns + floor(k * 1e9 / 30)
 所有异步 source 在 tick `t_k` 选择 `source_timestamp <= t_k` 的最新 sample；
 绝不按 stream index zip。每层保存 source timestamp、age、sequence 和 valid。
 超过 NPZ 内记录的 freshness threshold 时只置 `valid=False`，不删除该 tick。
+此外 valid 还要求 `source_timestamp_ns >= episode_start_monotonic_ns`（On 边界
+floor）：pre-On 产生的 source sample 即使仍被 latest-before 选中，也只能以
+invalid 出现在 RAW 中，绝不作为正式 sample 使用。
 
 30 Hz 是 learning/data plane，不是 robot control plane。AVP、RM65 sender /
 feedback、SG100 target / vendor scheduler / feedback 保持各自原有频率。
@@ -355,4 +358,58 @@ training_ready = False
 未验证时 hand canonical qpos 为 NaN，`hand_feedback_canonical_valid=False`，
 `robot_qpos_17d_valid=False`。本 recorder 只负责 raw capture，不包含 OpenPI、
 LeRobot、π0.5 normalization、action chunking、image resize、tokenization 或 prompt
-encoding。后续必须另写 `RAW DATA -> Pi0.5 / OpenPI training dataset` adapter。
+encoding。
+
+## 下游管线：RAW → Curated → π0.5-AHFE
+
+RAW 是不可变的完整原始证据：native timestamp/sequence/payload、telemetry /
+writer / sampler diagnostics 与可选 depth 只保存在这一层，供 replay/audit
+无限追溯。下游分两层，完整 contract 见 `sg100_teleop/README.md`
+「π0.5-AHFE Training Data Contract」：
+
+```text
+recording/vla_raw/       RAW（本文档；schema v1–v3）
+      │ build_curated_episode：validation + cleaning + causal transition
+      ▼
+recording/vla_curated/   CURATED v1 FINAL（30 Hz valid-only transition；
+      │                    observation=RGB+qpos17，action=qcmd17）
+      ▼
+datasets/pi05_ahfe/      π0.5-AHFE model-ready（ADAPTER: NOT IMPLEMENTED YET；
+                         dataset NOT GENERATED YET）
+```
+
+- 清洗入口：
+
+```bash
+.venv/bin/python -m sg100_teleop.data_collection.build_curated_episode \
+  recording/vla_raw/episode_000001.npz \
+  --output-dir recording/vla_curated
+```
+
+  默认只写 training-valid transition；0 accepted 时拒绝输出（`--allow-empty`
+  可强制写空 episode 供联调）。被拒原因只进入 `cleaning_report.json`。
+- **component-wise causality（v1 freeze）**：ARM 与 HAND 分别要求
+  `qpos_ts[k] <= qcmd_ts[k] < qpos_ts[next_state_tick]`，两侧同时 PASS 才接受；
+  next 侧 timestamp 经 `next_state_tick_index` 从 RAW 读取，不在 Curated 重复
+  保存。unified `state/action/next_state_timestamp_ns` = 各侧组件 timestamp 的
+  max，是展示层，不替代 component 验证。有效 action 不存在时 reject，绝不
+  fallback 到 desired。
+- **segment**：metadata `segment_offsets` 标记连续段；tick 不连续或 estop /
+  tracking / telemetry validity loss 即切分，action horizon 禁止跨 segment。
+  RAW 未记录 C re-anchor generation event（limitation）；正式 SOP 禁止 episode
+  中按 `C`。
+- **On/Off 精确边界**：On 前允许 warmup/tracking/C，但 0 row、0 media enqueue；
+  正式 source sample 必须 `source_timestamp_ns >= episode_start_monotonic_ns`
+  （pre-On ring 数据只能以 invalid 出现，不静默使用）。Off 接受后立即固定
+  `episode_stop_request_monotonic_ns`，禁止新 tick / row / media enqueue，
+  writer 只 flush Off 前已 enqueue 的内容。
+- Curated 不保存 RAW 的任何派生量（relative timestamp、age、skew/dt 数组、
+  desired/effective norm、native Hz 统计），inspector 从保留的 4 个 native
+  source timestamp 运行时推导；native event rate 从 Curated NOT EXACTLY
+  RECOVERABLE，只能以 RAW sequence/timestamp 证据估计。
+- Curated 禁止重复表示：17D 是唯一 state/action 存储，AHFE arm/hand 分解由
+  `arm_slice=[0,6]` / `hand_slice=[6,17]` slice metadata 确定性完成；
+  SDK degree、MODE7 raw feedback、telemetry sequence、writer diagnostics、
+  depth 不进入 Curated；RGB media 按 RAW frame identity 去重保存。
+- 修改 raw/curated/training 目录、训练字段、17D ordering 或 camera modality
+  时，必须同步更新 README 的 Training Data Contract 与本文档。

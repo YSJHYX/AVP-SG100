@@ -289,6 +289,9 @@ def _frame(role: str, timestamp: int, number: int) -> RealSenseFrame:
 
 def test_causal_alignment_staleness_17d_and_equal_n() -> None:
     tick = 1_000_000_000
+    # episode start 早于所有 source timestamp：On 边界 floor 只允许
+    # post-On source 成为 valid sample
+    start = tick - 1_000
     telemetry = FakeTelemetry([_packet(tick - 10)])
     head = FakeCamera("head", [_frame("head", tick - 50, 1), _frame("head", tick + 1, 2)])
     wrist = FakeCamera("right_wrist", [_frame("right_wrist", tick - 40, 3)])
@@ -296,7 +299,7 @@ def test_causal_alignment_staleness_17d_and_equal_n() -> None:
     writer = MemoryWriter()
     sampler = SynchronizedSampler(
         hz=30,
-        start_monotonic_ns=tick,
+        start_monotonic_ns=start,
         telemetry=telemetry,
         head_camera=head,
         wrist_camera=wrist,
@@ -352,6 +355,19 @@ def _controller(tmp_path: Path):
         head_camera=head,
         wrist_camera=wrist,
     ), telemetry, head, wrist
+
+
+def _record_with_post_on_packet(controller, telemetry, seconds: float = 0.09):
+    """On 后追加 post-On packet 再 Off。
+
+    On 边界语义：tick 0 的 tick_ns == episode start，post-On source 尚不可
+    能出现，因此 tick 0 只能保留 pre-On source 并标 invalid；post-On packet
+    从 tick 1 起有效。
+    """
+    controller.handle_input("On")
+    telemetry.packets.append(_packet(time.monotonic_ns()))
+    time.sleep(seconds)
+    return controller.handle_input("Off")
 
 
 def test_state_machine_only_on_off_and_n_reset_do_not_consume_index(tmp_path: Path) -> None:
@@ -559,16 +575,18 @@ def test_head_only_with_valid_telemetry_keeps_robot_data(tmp_path: Path) -> None
         telemetry=telemetry,
         telemetry_required=True,
     )
-    controller.handle_input("On")
-    controller.handle_input("Off")
+    report = _record_with_post_on_packet(controller, telemetry)
+    assert report.quality == "PASS", report.errors
     arrays = controller.candidate_arrays
     assert arrays["robot_telemetry_present"].item() is True
-    assert arrays["arm_command_valid"].all()
-    assert arrays["arm_feedback_valid"].all()
-    assert arrays["hand_command_valid"].all()
-    assert arrays["robot_qcmd_17d_valid"].all()
+    # On 边界：tick 0 只有 pre-On packet 可见 → invalid，不静默使用
+    assert not arrays["arm_command_valid"][0]
+    assert arrays["arm_command_valid"][1:].all()
+    assert arrays["arm_feedback_valid"][1:].all()
+    assert arrays["hand_command_valid"][1:].all()
+    assert arrays["robot_qcmd_17d_valid"][1:].all()
     np.testing.assert_allclose(
-        arrays["robot_qcmd_17d_rad"][0],
+        arrays["robot_qcmd_17d_rad"][1],
         np.concatenate((10 + np.arange(6), 40 + np.arange(11))),
     )
     assert not arrays["wrist_camera_valid"].any()
@@ -868,11 +886,13 @@ def test_rgb_and_rgbd_episode_npz_keys_remain_identical(tmp_path: Path) -> None:
 
 
 def _sample_single_packet(packet: dict) -> dict[str, np.ndarray]:
-    tick = int(packet["publish_monotonic_ns"]) + 1_000
+    publish = int(packet["publish_monotonic_ns"])
+    start = publish - 1_000  # packet 及其内部 source ts 都在 On 边界之后
+    tick = publish + 1_000
     buffer = VlaRawBuffer()
     sampler = SynchronizedSampler(
         hz=30,
-        start_monotonic_ns=tick,
+        start_monotonic_ns=start,
         telemetry=FakeTelemetry([packet]),
         head_camera=FakeCamera("head", [_frame("head", tick - 10, 1)]),
         wrist_camera=FakeCamera(
@@ -927,18 +947,17 @@ def test_desired17_invalid_if_either_desired_component_invalid(
 
 
 def test_desired_and_effective_are_allowed_to_differ(tmp_path: Path) -> None:
-    controller, _, _, _ = _controller(tmp_path)
-    controller.handle_input("On")
-    report = controller.handle_input("Off")
+    controller, telemetry, _, _ = _controller(tmp_path)
+    report = _record_with_post_on_packet(controller, telemetry)
     assert report.quality == "PASS", report.errors
     arrays = controller.candidate_arrays
     assert arrays["schema_version"].item() == SCHEMA_VERSION == 3
-    assert arrays["robot_desired_qcmd_17d_valid"].all()
-    assert arrays["robot_qcmd_17d_valid"].all()
+    assert arrays["robot_desired_qcmd_17d_valid"][1:].all()
+    assert arrays["robot_qcmd_17d_valid"][1:].all()
     assert arrays["telemetry_publish_hz_requested"].item() == 100.0
     assert not np.array_equal(
-        arrays["robot_desired_qcmd_17d_rad"],
-        arrays["robot_qcmd_17d_rad"],
+        arrays["robot_desired_qcmd_17d_rad"][1:],
+        arrays["robot_qcmd_17d_rad"][1:],
     )
     controller.handle_input("N")
 
@@ -946,14 +965,13 @@ def test_desired_and_effective_are_allowed_to_differ(tmp_path: Path) -> None:
 def test_v3_validator_rejects_desired_provenance_and_ordering_corruption(
     tmp_path: Path,
 ) -> None:
-    controller, _, _, _ = _controller(tmp_path)
-    controller.handle_input("On")
-    controller.handle_input("Off")
+    controller, telemetry, _, _ = _controller(tmp_path)
+    _record_with_post_on_packet(controller, telemetry)
     corrupted = dict(controller.candidate_arrays)
     corrupted["robot_desired_qcmd_17d_rad"] = np.asarray(
         corrupted["robot_desired_qcmd_17d_rad"]
     ).copy()
-    corrupted["robot_desired_qcmd_17d_rad"][0, 0] += 1.0
+    corrupted["robot_desired_qcmd_17d_rad"][1, 0] += 1.0
     corrupted["robot_joint_names"] = np.asarray(
         corrupted["robot_joint_names"]
     )[::-1]

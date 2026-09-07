@@ -19,10 +19,21 @@ from sg100_teleop.data_collection.vla_raw_writer import BoundedMediaWriter
 
 
 def _age_and_valid(
-    tick_ns: int, source_ns: int, threshold_ns: int, declared_valid: bool
+    tick_ns: int,
+    source_ns: int,
+    threshold_ns: int,
+    declared_valid: bool,
+    floor_ns: int = 0,
 ) -> tuple[int, bool]:
+    """Causal freshness gate。
+
+    source 必须满足 ``floor_ns <= source <= tick_ns``：floor 是 episode start
+    （On 边界），保证正式 episode 永不把 pre-On 产生的 source sample 标成
+    valid；pre-On sample 仍可被 latest-before 选中并保留在 RAW 中，但只以
+    invalid 诚实出现，不参与 Curated/训练。
+    """
     source = int(source_ns)
-    if source <= 0 or source > int(tick_ns):
+    if source <= 0 or source > int(tick_ns) or source < int(floor_ns):
         return -1, False
     age = int(tick_ns) - source
     return age, bool(declared_valid and age <= int(threshold_ns))
@@ -113,6 +124,7 @@ class SynchronizedSampler:
         return vector(None if packet is None else packet.get(name), size)
 
     def sample_tick(self, index: int, tick_ns: int, wakeup_ns: int) -> None:
+        floor_ns = self.timeline.start_monotonic_ns
         packet = self.telemetry.latest_before(tick_ns)
         packet_ts = 0 if packet is None else int(packet["publish_monotonic_ns"])
         telemetry_age, telemetry_valid = _age_and_valid(
@@ -120,6 +132,7 @@ class SynchronizedSampler:
             packet_ts,
             self.thresholds.max_telemetry_age_ns,
             packet is not None,
+            floor_ns=floor_ns,
         )
         try:
             requested_hz = (
@@ -135,21 +148,25 @@ class SynchronizedSampler:
         arm_cmd_age, arm_cmd_valid = _age_and_valid(
             tick_ns, arm_cmd_ts, self.thresholds.max_arm_command_age_ns,
             bool(packet and packet.get("arm_command_valid", False)),
+            floor_ns=floor_ns,
         )
         arm_fb_ts = 0 if packet is None else int(packet.get("arm_qpos_timestamp_ns", 0))
         arm_fb_age, arm_fb_valid = _age_and_valid(
             tick_ns, arm_fb_ts, self.thresholds.max_arm_feedback_age_ns,
             bool(packet and packet.get("arm_feedback_valid", False)),
+            floor_ns=floor_ns,
         )
         hand_cmd_ts = 0 if packet is None else int(packet.get("hand_qcmd_timestamp_ns", 0))
         hand_cmd_age, hand_cmd_valid = _age_and_valid(
             tick_ns, hand_cmd_ts, self.thresholds.max_hand_command_age_ns,
             bool(packet and packet.get("hand_command_valid", False)),
+            floor_ns=floor_ns,
         )
         hand_fb_ts = 0 if packet is None else int(packet.get("hand_feedback_timestamp_ns", 0))
         hand_fb_age, hand_fb_valid = _age_and_valid(
             tick_ns, hand_fb_ts, self.thresholds.max_hand_feedback_age_ns,
             bool(packet and packet.get("hand_feedback_valid", False)),
+            floor_ns=floor_ns,
         )
 
         arm_desired = self._packet_value(packet, "arm_q_goal_rad", 6)
@@ -229,7 +246,8 @@ class SynchronizedSampler:
             else (0 if wrist is None else int(wrist.host_receive_monotonic_ns))
         )
         head_age, head_valid = _age_and_valid(
-            tick_ns, head_ts, self.thresholds.max_camera_age_ns, head is not None
+            tick_ns, head_ts, self.thresholds.max_camera_age_ns, head is not None,
+            floor_ns=floor_ns,
         )
         wrist_age, wrist_valid = (
             _age_and_valid(
@@ -237,6 +255,7 @@ class SynchronizedSampler:
                 wrist_ts,
                 self.thresholds.max_camera_age_ns,
                 wrist is not None,
+                floor_ns=floor_ns,
             )
             if wrist_enabled
             else (-1, False)
@@ -254,14 +273,14 @@ class SynchronizedSampler:
         head_depth_age, head_depth_valid = (
             _age_and_valid(
                 tick_ns, head_depth_ts, self.thresholds.max_camera_age_ns,
-                head_has_depth,
+                head_has_depth, floor_ns=floor_ns,
             )
             if depth_enabled else (-1, False)
         )
         wrist_depth_age, wrist_depth_valid = (
             _age_and_valid(
                 tick_ns, wrist_depth_ts, self.thresholds.max_camera_age_ns,
-                wrist_has_depth,
+                wrist_has_depth, floor_ns=floor_ns,
             )
             if depth_enabled and wrist_enabled else (-1, False)
         )

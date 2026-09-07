@@ -132,7 +132,9 @@ class EpisodeController:
                 thresholds=self.thresholds,
             )
             # Materialize tick 0 before returning RECORDING so even an
-            # immediate operator Off has one coherent all-modality row.
+            # immediate operator Off has one row. On 边界语义下 tick 0 的
+            # source 只能是 pre-On 的，会以 invalid 诚实记录（见
+            # _age_and_valid 的 floor 检查），不作为正式 sample。
             self.sampler.sample_tick(
                 0,
                 self.episode_start_monotonic_ns,
