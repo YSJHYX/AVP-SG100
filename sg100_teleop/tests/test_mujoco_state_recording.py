@@ -148,6 +148,25 @@ def test_30_fps_sampling_and_state_fidelity() -> None:
             )
 
 
+def test_prepare_session_creates_directory_before_sampling(tmp_path) -> None:
+    model, data = make_ready_state()
+    recorder = MujocoStateRecorder(
+        model,
+        scene_path=SCENE,
+        recording_dir=tmp_path,
+        record_fps=30.0,
+    )
+    prepared = recorder.prepare_session()
+    assert prepared.is_dir()
+    assert recorder.prepare_session() == prepared
+    assert recorder.frame_count == 0
+    assert not (prepared / "mujoco_recording.npz").exists()
+
+    assert recorder.start(data) == prepared
+    assert recorder.frame_count == 1
+    assert recorder.stop().parent == prepared
+
+
 def test_mp4_smoke() -> None:
     model, data = make_ready_state()
     layout = resolve_robot_layout(model)

@@ -612,7 +612,7 @@ canonical q[11]
     ↓ canonical range check                  # semantics.yaml 机械限位，越界 reject（无 clamp）
     ↓ F_cmd                                  # gain*q+offset（sg100_hardware_map.yaml）
     ↓ SDK range check                        # joint_angle_map.json user 限位，越界 reject（无 clamp）
-    ↓ per-cycle delta limiter                # 与上一命令的差超限 → reject（tracking spike 检测在前）
+    ↓ optional per-cycle delta gate          # None 时关闭；配置数值时超限 → reject
     ↓ velocity / slew limiter                # 限速后的值才可下发（limit 后仍需重过 range check）
     ↓ tracking-spike rejection               # 单帧跳变 > 0.20 rad → safe stop
     ↓ joint allowlist                        # 未解锁轴保持 anchor 目标 + 零输出
@@ -635,6 +635,12 @@ mapping bug。
 | stale_tracking_s | 0.10 |
 | feedback_stall_s | 0.10 |
 | crc_storm_delta | 3（相对 anchor 基线的增量） |
+
+`run_avp_arm_hand_sim` 真机手入口当前显式传入
+`max_cycle_delta_rad=0.20`；超过该值仍会触发
+`PER_CYCLE_DELTA_EXCEEDED`。传入 `None` 可关闭该拒绝门，并让大的合法目标差
+仅由 `max_velocity_rad_s` 逐步追踪。`tracking_spike_rad`、范围、反馈、CRC 和
+速度限幅独立生效。
 
 ---
 
@@ -684,7 +690,7 @@ anchoring，等价即可）。
 | finite check | `_validate_and_map` | reject → safe stop |
 | canonical range | 同上（无 clamp） | reject → safe stop |
 | SDK user range | 同上 + driver `_user_deg_within_vendor_range` | reject → safe stop |
-| per-cycle max delta | `max_cycle_delta_rad` | `PER_CYCLE_DELTA_EXCEEDED` |
+| per-cycle max delta | `max_cycle_delta_rad`（AVP 真机入口当前为 `0.20`） | `PER_CYCLE_DELTA_EXCEEDED`；`None` 时关闭 |
 | velocity limit | `max_velocity_rad_s * dt`（slew） | 限幅（非 reject），结果重验 |
 | tracking spike | `tracking_spike_rad` 单帧跳变 | `TRACKING_SPIKE` |
 | AVP stale timeout | `stale_tracking_ns` | `STALE_AVP_TRACKING` |

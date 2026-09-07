@@ -18,7 +18,7 @@ from sg100_teleop.robot.sg100_driver import (
 )
 
 
-DEFAULT_HARDWARE_VALIDATED_JOINTS = ("index_j3",)
+DEFAULT_HARDWARE_VALIDATED_JOINTS = ("thumb_j1", "thumb_j2", "thumb_j3", "index_j1", "index_j2", "index_j3", "middle_j1", "middle_j2", "little_j1", "little_j2", "little_j3",)
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class SG100RestrictedAVPBackend:
         self, driver, *, joint_allowlist: Iterable[str],
         hardware_validated_joints: Iterable[str] = DEFAULT_HARDWARE_VALIDATED_JOINTS,
         hardware_map: SG100HardwareMap | None = None,
-        max_cycle_delta_rad: float = 0.05,
+        max_cycle_delta_rad: float | None = 0.05,
         max_velocity_rad_s: float = 0.5,
         tracking_spike_rad: float = 0.20,
         stale_tracking_s: float = 0.10,
@@ -69,14 +69,24 @@ class SG100RestrictedAVPBackend:
         if self.vendor_ranges is None or len(self.vendor_ranges) != HAND_DOF:
             raise ValueError("11 SDK command ranges are required")
         values = (
-            max_cycle_delta_rad, max_velocity_rad_s, tracking_spike_rad,
-            stale_tracking_s, feedback_stall_s,
+            max_velocity_rad_s, tracking_spike_rad, stale_tracking_s,
+            feedback_stall_s,
         )
         if not all(np.isfinite(value) and value > 0 for value in values):
             raise ValueError("safety limits must be finite and > 0")
+        if max_cycle_delta_rad is not None and (
+            not np.isfinite(max_cycle_delta_rad) or max_cycle_delta_rad <= 0
+        ):
+            raise ValueError(
+                "max_cycle_delta_rad must be None or finite and > 0"
+            )
         if int(crc_storm_delta) <= 0:
             raise ValueError("crc_storm_delta must be > 0")
-        self.max_cycle_delta_rad = float(max_cycle_delta_rad)
+        self.max_cycle_delta_rad = (
+            None
+            if max_cycle_delta_rad is None
+            else float(max_cycle_delta_rad)
+        )
         self.max_velocity_rad_s = float(max_velocity_rad_s)
         self.tracking_spike_rad = float(tracking_spike_rad)
         self.stale_tracking_ns = int(stale_tracking_s * 1e9)
@@ -192,7 +202,10 @@ class SG100RestrictedAVPBackend:
         active_delta = np.abs(delta[list(self.active_joint_indices)])
         if np.any(active_delta > self.tracking_spike_rad):
             return self._safe_stop("TRACKING_SPIKE")
-        if np.any(active_delta > self.max_cycle_delta_rad):
+        if (
+            self.max_cycle_delta_rad is not None
+            and np.any(active_delta > self.max_cycle_delta_rad)
+        ):
             return self._safe_stop("PER_CYCLE_DELTA_EXCEEDED")
         velocity_step = self.max_velocity_rad_s * float(dt_s)
         limited = self._last_canonical.copy()

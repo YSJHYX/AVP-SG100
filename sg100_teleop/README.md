@@ -80,6 +80,9 @@ IP `192.168.2.175` 是示例，必须替换为 Tracking Streamer 显示的实际
 
 需要 AVP，不需要 RealSense 或真实机器人；不会动真机。输出 MuJoCo/AVP 仿真，
 并在 `recording/` 下产生 runner 自身的 lightweight simulation state recording。
+只要 `--arm-backend real` 或 `--hand-backend real`，对应会话目录还会即时写入
+`real_hardware_errors.jsonl`：逐条保存真机 safe-stop、追踪异常/超时、RM65
+后台错误、操作门状态、未捕获异常和 traceback，并在正常退出时追加统计摘要。
 
 ```bash
 cd ~/VisionProTeleop

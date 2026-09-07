@@ -121,6 +121,27 @@ def test_velocity_slew_limiter_and_per_cycle_delta_guard():
     assert driver.hold_calls == 1 and not backend.enabled
 
 
+def test_disabled_per_cycle_guard_uses_velocity_slew_limiter():
+    driver, backend = make_backend(
+        max_cycle_delta_rad=None,
+        max_velocity_rad_s=0.5,
+    )
+    q0 = np.zeros(HAND_DOF)
+    backend.anchor(q0)
+    backend.set_enabled(True)
+    target = q0.copy()
+    target[5] = 0.1761
+    result = backend.submit(
+        target,
+        tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000,
+        dt_s=0.01,
+    )
+    assert result.accepted and result.slew_limited
+    assert backend.enabled
+    assert np.deg2rad(driver.active_calls[-1][1][5]) == pytest.approx(0.005)
+
+
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
@@ -188,4 +209,3 @@ def test_nonfinite_range_spike_and_estop_are_fail_closed():
     assert backend.submit(
         q0, tracking_received_ns=1, now_ns=1, dt_s=0.01
     ).reason == "ESTOP_LATCHED"
-

@@ -131,15 +131,31 @@ class MujocoStateRecorder:
             return candidate
         raise RuntimeError(f"Could not create a unique session below {self.recording_root}")
 
+    def prepare_session(self) -> Path:
+        """Create the session directory before hardware initialization.
+
+        Real-hardware runners use this early directory to persist connection
+        and startup failures even when simulation sampling never begins.
+        Calling it is optional; :meth:`start` prepares the directory lazily
+        for existing callers.
+        """
+
+        if self._stopped:
+            raise RuntimeError("MuJoCo state recorder has already stopped")
+        if self.session_dir is not None:
+            return self.session_dir
+        self._wall_start = datetime.now().astimezone()
+        self.session_dir = self._create_session_dir(self._wall_start)
+        self.output_path = self.session_dir / "mujoco_recording.npz"
+        self.metadata_path = self.session_dir / "metadata.json"
+        return self.session_dir
+
     def start(self, data: mujoco.MjData) -> Path:
         if self._started:
             raise RuntimeError("MuJoCo state recorder has already started")
         self._validate_data(data)
 
-        self._wall_start = datetime.now().astimezone()
-        self.session_dir = self._create_session_dir(self._wall_start)
-        self.output_path = self.session_dir / "mujoco_recording.npz"
-        self.metadata_path = self.session_dir / "metadata.json"
+        self.prepare_session()
         self._simulation_start = float(data.time)
         self._next_capture_time = self._simulation_start
         self._started = True

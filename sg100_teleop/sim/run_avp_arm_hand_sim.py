@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -44,6 +46,9 @@ from sg100_teleop.robot.sg100_mock_driver import MockSG100Driver
 
 from sg100_teleop.recording.mujoco_state_recorder import (
     MujocoStateRecorder,
+)
+from sg100_teleop.recording.real_hardware_error_recorder import (
+    RealHardwareErrorRecorder,
 )
 
 from sg100_teleop.sim.combined_robot_layout import (
@@ -204,6 +209,89 @@ def _print_sg100_command_debug(
         f"command result   : accepted={hand_result.accepted} "
         f"reason={hand_result.reason}"
         + (" (slew-limited)" if hand_result.slew_limited else "")
+    )
+
+
+def _driver_diagnostics_snapshot(driver) -> dict | None:
+    if driver is None:
+        return None
+    try:
+        return driver.diagnostics
+    except Exception as exc:  # logging must not alter the control path
+        return {"snapshot_error": repr(exc)}
+
+
+def _record_sg100_safe_stop(
+    error_recorder,
+    *,
+    hand_result,
+    q_hand_cmd: np.ndarray,
+    restricted_backend,
+    hand_driver,
+    latest_control_audit,
+    physics_dt: float,
+) -> None:
+    """Persist one rejected real-hand command with its causal context."""
+
+    if error_recorder is None:
+        return
+    now_ns = time.monotonic_ns()
+    feedback = getattr(hand_driver, "latest_feedback", None)
+    tracking_received_ns = None
+    if latest_control_audit is not None:
+        tracking_received_ns = latest_control_audit.get(
+            "tracking_received_monotonic_ns"
+        )
+    driver_diagnostics = _driver_diagnostics_snapshot(hand_driver)
+    try:
+        serial_open = hand_driver.serial_open
+    except Exception as exc:
+        serial_open = f"snapshot_error:{exc!r}"
+    error_recorder.record(
+        severity="ERROR",
+        component="sg100_real_hand",
+        event="SAFE_STOP",
+        message=str(hand_result.reason),
+        details={
+            "command_result": hand_result,
+            "canonical_qcmd_rad": q_hand_cmd,
+            "physics_dt_s": physics_dt,
+            "backend_state_after_rejection": {
+                "anchored": restricted_backend.anchored,
+                "enabled": restricted_backend.enabled,
+                "estopped": restricted_backend.estopped,
+                "active_joint_indices": restricted_backend.active_joint_indices,
+                "active_joint_names": [
+                    restricted_backend.hardware_map.software_joint_order[index]
+                    for index in restricted_backend.active_joint_indices
+                ],
+                "last_canonical_rad": restricted_backend._last_canonical,
+                "last_sdk_target_deg": restricted_backend._last_sdk_target,
+                "max_cycle_delta_rad": restricted_backend.max_cycle_delta_rad,
+                "max_velocity_rad_s": restricted_backend.max_velocity_rad_s,
+                "tracking_spike_rad": restricted_backend.tracking_spike_rad,
+                "stale_tracking_s": restricted_backend.stale_tracking_ns * 1e-9,
+                "feedback_stall_s": restricted_backend.feedback_stall_ns * 1e-9,
+            },
+            "transport": {
+                "port": getattr(hand_driver, "port", None),
+                "serial_open": serial_open,
+                "diagnostics": driver_diagnostics,
+            },
+            "latest_feedback": feedback,
+            "feedback_age_ms": (
+                None
+                if feedback is None
+                else (now_ns - feedback.received_monotonic_ns) * 1e-6
+            ),
+            "latest_control_audit": latest_control_audit,
+            "tracking_age_ms": (
+                None
+                if tracking_received_ns is None
+                else (now_ns - int(tracking_received_ns)) * 1e-6
+            ),
+        },
+        include_stack=True,
     )
 
 
@@ -784,7 +872,7 @@ def build_arg_parser():
     parser.add_argument(
         "--sg100-real-joints",
         nargs="+",
-        default=("index_j3",),
+        default=("thumb_j1", "thumb_j2", "thumb_j3", "index_j1", "index_j2", "index_j3", "middle_j1", "middle_j2", "little_j1", "little_j2", "little_j3",),
         help=(
             "Restricted real-hand active allowlist. 当前真实硬件只解锁 "
             "index_j3(J6)；J7 与 full-11D 均保持阻断。"
@@ -954,6 +1042,12 @@ def main():
 
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    # Assigned after the MuJoCo recording session directory exists.  The
+    # real-arm callback closes over this reference, so background errors are
+    # persisted for the rest of the run without changing its control path.
+    real_error_recorder = None
+    previous_excepthook = None
 
     # Opt-in low-rate command telemetry (see _print_sg100_command_debug).
     _print_sg100_command_debug.enabled = bool(args.sg100_command_debug)
@@ -1264,6 +1358,54 @@ def main():
         / physics_dt
     )
 
+    # Prepare the per-run directory before connecting either real backend so
+    # startup/connection exceptions also have a durable destination.  Actual
+    # MuJoCo sampling starts only after the robot state is initialized.
+    state_recorder = MujocoStateRecorder(
+        model,
+        scene_path=model_path,
+        recording_dir=args.recording_dir,
+        record_fps=args.video_fps,
+        camera_name="workstation_front",
+        hand_qpos_indices=robot_layout.hand_qpos_indices,
+    )
+    recording_session_dir = state_recorder.prepare_session()
+
+    if args.arm_backend == "real" or args.hand_backend == "real":
+        real_error_recorder = RealHardwareErrorRecorder(
+            recording_session_dir,
+            context={
+                "pid": os.getpid(),
+                "cwd": Path.cwd(),
+                "python_executable": sys.executable,
+                "argv": sys.argv,
+                "arguments": vars(args),
+                "model_path": model_path,
+                "recording_session_dir": recording_session_dir,
+                "real_components": {
+                    "arm": args.arm_backend == "real",
+                    "hand": args.hand_backend == "real",
+                },
+            },
+        )
+        previous_excepthook = sys.excepthook
+
+        def real_hardware_excepthook(exception_type, exception, tb):
+            real_error_recorder.record_exception(
+                component="runtime",
+                event="UNHANDLED_EXCEPTION",
+                exception=exception,
+                details={"exception_type_from_hook": exception_type.__name__},
+                traceback_object=tb,
+            )
+            previous_excepthook(exception_type, exception, tb)
+
+        sys.excepthook = real_hardware_excepthook
+        print(
+            "real error log    :",
+            real_error_recorder.path,
+        )
+
 
     # ========================================================
     # Startup arm pose: pre-grasp near the bottle
@@ -1303,6 +1445,20 @@ def main():
                 "send_failure",
             ):
                 print(f"[REAL-ARM] {name}: {detail}")
+            if real_error_recorder is not None:
+                severity = (
+                    "ERROR"
+                    if "error" in name or "failure" in name
+                    else "WARNING" if name == "disarm" else "INFO"
+                )
+                real_error_recorder.record(
+                    severity=severity,
+                    component="rm65_real_arm",
+                    event=name.upper(),
+                    message=detail,
+                    details={"sender_thread_event": True},
+                    include_stack=severity == "ERROR",
+                )
 
         real_arm_backend = RM65RealBackend(
             args.arm_ip,
@@ -1984,19 +2140,19 @@ def main():
     # driven by data.time and finalized once when the session ends.
     # ========================================================
 
-    state_recorder = MujocoStateRecorder(
-        model,
-        scene_path=model_path,
-        recording_dir=args.recording_dir,
-        record_fps=args.video_fps,
-        camera_name="workstation_front",
-        # Explicit hand command/state recording: the authoritative
-        # canonical q_hand_cmd (backend input) and the MuJoCo hand qpos
-        # slice are stored as separate named fields instead of being
-        # inferred from qpos[:, 6:17].
-        hand_qpos_indices=robot_layout.hand_qpos_indices,
-    )
-    recording_session_dir = state_recorder.start(data)
+    assert state_recorder.start(data) == recording_session_dir
+    if real_error_recorder is not None and real_arm_backend is not None:
+        real_error_recorder.record(
+            severity="INFO",
+            component="rm65_real_arm",
+            event="BACKEND_READY",
+            message="RM65 real backend connected and started",
+            details={
+                "joint_state": real_arm_backend.joint_state(),
+                "sender_stats": real_arm_backend.sender_stats,
+                "enabled": real_arm_backend.enabled,
+            },
+        )
 
     hammer_impact_diagnostic = None
     if args.hammer_impact_diagnostic:
@@ -2042,6 +2198,14 @@ def main():
         restricted_hand_backend = SG100RestrictedAVPBackend(
             hand_driver,
             joint_allowlist=args.sg100_real_joints,
+            stale_tracking_s=0.50,
+            # AVP targets are already smoothed by hand_command_filter.  Let
+            # the restricted backend's independent velocity limiter ramp
+            # from the C anchor instead of rejecting the first target solely
+            # because it is more than 0.05 rad away.
+            max_velocity_rad_s=4.0,
+            max_cycle_delta_rad=0.20,
+            tracking_spike_rad=1.00,
         )
     elif args.hand_backend == "mock":
         hand_hardware_map = SG100HardwareMap()
@@ -2072,6 +2236,47 @@ def main():
                 tuple(args.sg100_real_joints),
                 "(C anchor + A enable required)",
             )
+            print(
+                "hand cycle-delta  :",
+                (
+                    "disabled"
+                    if restricted_hand_backend.max_cycle_delta_rad is None
+                    else (
+                        f"{restricted_hand_backend.max_cycle_delta_rad} rad"
+                    )
+                ),
+                "(tracking-spike + velocity limits retained)",
+            )
+            if real_error_recorder is not None:
+                real_error_recorder.record(
+                    severity="INFO",
+                    component="sg100_real_hand",
+                    event="BACKEND_READY",
+                    message="SG100 real backend connected and entered realtime",
+                    details={
+                        "port": getattr(hand_driver, "port", None),
+                        "baudrate": args.hand_baudrate,
+                        "allowlist": tuple(args.sg100_real_joints),
+                        "backend_limits": {
+                            "max_cycle_delta_rad": (
+                                restricted_hand_backend.max_cycle_delta_rad
+                            ),
+                            "max_velocity_rad_s": (
+                                restricted_hand_backend.max_velocity_rad_s
+                            ),
+                            "tracking_spike_rad": (
+                                restricted_hand_backend.tracking_spike_rad
+                            ),
+                            "stale_tracking_s": (
+                                restricted_hand_backend.stale_tracking_ns * 1e-9
+                            ),
+                            "feedback_stall_s": (
+                                restricted_hand_backend.feedback_stall_ns * 1e-9
+                            ),
+                        },
+                        "driver_diagnostics": hand_driver.diagnostics,
+                    },
+                )
 
     arm_hand_collector = None
     if args.collect_arm_hand_data:
@@ -2230,6 +2435,21 @@ def main():
                 print(
                     "[REAL] DISARMED (A); active senders disabled"
                 )
+                if real_error_recorder is not None:
+                    real_error_recorder.record(
+                        severity="INFO",
+                        component="operator_gate",
+                        event="DISARMED_A",
+                        message="Operator toggled real command authority off",
+                        details={
+                            "teleop_state": teleop_arming.state.value,
+                            "hand_anchored": (
+                                restricted_hand_backend.anchored
+                                if restricted_hand_backend is not None
+                                else None
+                            ),
+                        },
+                    )
             else:
                 if restricted_hand_backend is not None:
                     restricted_hand_backend.set_enabled(True)
@@ -2238,6 +2458,31 @@ def main():
                 print(
                     "[REAL] ARMED (A); restricted streaming enabled"
                 )
+                if real_error_recorder is not None:
+                    real_error_recorder.record(
+                        severity="INFO",
+                        component="operator_gate",
+                        event="ARMED_A",
+                        message="Operator enabled real command authority",
+                        details={
+                            "teleop_state": teleop_arming.state.value,
+                            "hand_anchored": (
+                                restricted_hand_backend.anchored
+                                if restricted_hand_backend is not None
+                                else None
+                            ),
+                            "hand_enabled": (
+                                restricted_hand_backend.enabled
+                                if restricted_hand_backend is not None
+                                else None
+                            ),
+                            "arm_enabled": (
+                                real_arm_backend.enabled
+                                if real_arm_backend is not None
+                                else None
+                            ),
+                        },
+                    )
 
         elif keycode in (ord("D"), ord("d")) and (
             real_arm_backend is not None or restricted_hand_backend is not None
@@ -2250,17 +2495,35 @@ def main():
                 "[REAL] DISARMED (D); active senders disabled"
                 if changed else "[REAL] already DISARMED (D)"
             )
+            if real_error_recorder is not None:
+                real_error_recorder.record(
+                    severity="INFO",
+                    component="operator_gate",
+                    event="DISARMED_D",
+                    message="Operator requested real-command disarm",
+                    details={"state_changed": changed},
+                )
 
         elif keycode in (ord("E"), ord("e")) and (
             restricted_hand_backend is not None
         ):
             result = restricted_hand_backend.emergency_stop()
             print("[REAL-HAND]", result.reason, "MODE_NULL requested")
+            if real_error_recorder is not None:
+                real_error_recorder.record(
+                    severity="ERROR",
+                    component="sg100_real_hand",
+                    event="EMERGENCY_STOP",
+                    message=result.reason,
+                    details={"command_result": result},
+                    include_stack=True,
+                )
 
         # ========================================================
     # Main runtime loop
     # ========================================================
 
+    run_outcome = "completed"
     try:
         with (
             mujoco.viewer.launch_passive(
@@ -2355,6 +2618,24 @@ def main():
                     ):
                         tracking_gate.reject_malformed()
                         rejected_tracking_count += 1
+                        if real_error_recorder is not None:
+                            real_error_recorder.record(
+                                severity="WARNING",
+                                component="avp_tracking",
+                                event="MALFORMED_RIGHT_HAND_PAYLOAD",
+                                message=(
+                                    "Candidate tracking frame contained no "
+                                    "usable right-hand payload"
+                                ),
+                                details={
+                                    "frame_status": frame_status,
+                                    "tracking_query_count": tracking_frame_count,
+                                    "rejected_tracking_count": (
+                                        rejected_tracking_count
+                                    ),
+                                    "teleop_state": teleop_arming.state.value,
+                                },
+                            )
 
 
                     # ---------------------------------------------
@@ -2673,6 +2954,26 @@ def main():
                                         "[REAL-HAND] C anchor cached with "
                                         "MODE7 zero output; A still required"
                                     )
+                                    if real_error_recorder is not None:
+                                        real_error_recorder.record(
+                                            severity="INFO",
+                                            component="sg100_real_hand",
+                                            event="C_ANCHOR_CACHED",
+                                            message=(
+                                                "MODE7 zero-output anchor cached; "
+                                                "A enable still required"
+                                            ),
+                                            details={
+                                                "frame_sequence": frame_sequence,
+                                                "q_hand0_runtime_rad": (
+                                                    q_hand0_runtime
+                                                ),
+                                                "command_result": anchor_result,
+                                                "driver_diagnostics": (
+                                                    hand_driver.diagnostics
+                                                ),
+                                            },
+                                        )
 
                                 if (
                                     arm_hand_collector is not None
@@ -3161,6 +3462,24 @@ def main():
                             tracking_gate.reject_malformed()
                             rejected_tracking_count += 1
 
+                            if real_error_recorder is not None:
+                                real_error_recorder.record_exception(
+                                    component="avp_tracking",
+                                    event="TRACKING_FRAME_REJECTED",
+                                    exception=exc,
+                                    details={
+                                        "tracking_query_count": (
+                                            tracking_frame_count
+                                        ),
+                                        "rejected_tracking_count": (
+                                            rejected_tracking_count
+                                        ),
+                                        "teleop_state": (
+                                            teleop_arming.state.value
+                                        ),
+                                    },
+                                )
+
                             if args.verbose:
                                 print(
                                     "Tracking frame "
@@ -3192,6 +3511,71 @@ def main():
                     )
                     and not tracking_lost_printed
                 ):
+                    if real_error_recorder is not None:
+                        last_tracking_ns = (
+                            tracking_gate.last_valid_tracking_monotonic_ns
+                        )
+                        real_error_recorder.record(
+                            severity="ERROR",
+                            component="avp_tracking",
+                            event="TRACKING_TIMEOUT",
+                            message=(
+                                "Right-hand tracking timed out; real targets "
+                                "are held and command authority is invalidated"
+                            ),
+                            details={
+                                "timeout_s": args.tracking_timeout,
+                                "last_valid_tracking_monotonic_ns": (
+                                    last_tracking_ns
+                                ),
+                                "tracking_age_ms": (
+                                    None
+                                    if last_tracking_ns is None
+                                    else (
+                                        now_monotonic_ns - last_tracking_ns
+                                    ) * 1e-6
+                                ),
+                                "tracking_counts": {
+                                    "queries": tracking_frame_count,
+                                    "valid": valid_tracking_count,
+                                    "rejected": rejected_tracking_count,
+                                    "duplicate": tracking_gate.duplicate_frames,
+                                    "invalid": tracking_gate.invalid_frames,
+                                    "malformed": tracking_gate.malformed_frames,
+                                    "stale": tracking_gate.stale_frames,
+                                    "missing_metadata": (
+                                        tracking_gate.missing_metadata_frames
+                                    ),
+                                },
+                                "teleop_state_before_timeout": (
+                                    teleop_arming.state.value
+                                ),
+                                "real_arm_enabled": (
+                                    real_arm_backend.enabled
+                                    if real_arm_backend is not None
+                                    else None
+                                ),
+                                "real_hand_state": (
+                                    None
+                                    if restricted_hand_backend is None
+                                    else {
+                                        "anchored": (
+                                            restricted_hand_backend.anchored
+                                        ),
+                                        "enabled": (
+                                            restricted_hand_backend.enabled
+                                        ),
+                                        "estopped": (
+                                            restricted_hand_backend.estopped
+                                        ),
+                                    }
+                                ),
+                                "hand_driver_diagnostics": (
+                                    _driver_diagnostics_snapshot(hand_driver)
+                                ),
+                            },
+                            include_stack=True,
+                        )
                     if teleop_arming.disarm_for_tracking_timeout():
                         # Real arm: quiesce the sender first, then
                         # command the decelerated stop (v3 §A3.5).
@@ -3381,6 +3765,19 @@ def main():
                                     "[REAL-HAND] safe stop:",
                                     hand_result.reason,
                                 )
+                                _record_sg100_safe_stop(
+                                    real_error_recorder,
+                                    hand_result=hand_result,
+                                    q_hand_cmd=q_hand_cmd,
+                                    restricted_backend=(
+                                        restricted_hand_backend
+                                    ),
+                                    hand_driver=hand_driver,
+                                    latest_control_audit=(
+                                        latest_control_audit
+                                    ),
+                                    physics_dt=physics_dt,
+                                )
                         elif args.hand_backend == "mock" and hand_driver is not None:
                             hand_driver.send_positions_rad(
                                 q_hand_cmd,
@@ -3520,6 +3917,19 @@ def main():
                                 print(
                                     "[REAL-HAND] safe stop:",
                                     hand_result.reason,
+                                )
+                                _record_sg100_safe_stop(
+                                    real_error_recorder,
+                                    hand_result=hand_result,
+                                    q_hand_cmd=q_hand_cmd,
+                                    restricted_backend=(
+                                        restricted_hand_backend
+                                    ),
+                                    hand_driver=hand_driver,
+                                    latest_control_audit=(
+                                        latest_control_audit
+                                    ),
+                                    physics_dt=physics_dt,
                                 )
                         elif args.hand_backend == "mock" and hand_driver is not None:
                             hand_driver.send_positions_rad(
@@ -3811,7 +4221,39 @@ def main():
 
 
     except KeyboardInterrupt:
+        run_outcome = "operator_interrupted"
+        if real_error_recorder is not None:
+            real_error_recorder.record(
+                severity="INFO",
+                component="runtime",
+                event="KEYBOARD_INTERRUPT",
+                message="Operator requested shutdown with Ctrl-C",
+            )
         print()
+
+    except Exception as exc:
+        run_outcome = "runtime_exception"
+        if real_error_recorder is not None:
+            real_error_recorder.record_exception(
+                component="runtime",
+                event="RUNTIME_EXCEPTION",
+                exception=exc,
+                details={
+                    "teleop_state": teleop_arming.state.value,
+                    "tracking_query_count": tracking_frame_count,
+                    "valid_tracking_count": valid_tracking_count,
+                    "rejected_tracking_count": rejected_tracking_count,
+                    "hand_driver_diagnostics": (
+                        _driver_diagnostics_snapshot(hand_driver)
+                    ),
+                    "real_arm_sender_stats": (
+                        real_arm_backend.sender_stats
+                        if real_arm_backend is not None
+                        else None
+                    ),
+                },
+            )
+        raise
 
     finally:
         if telemetry_publisher is not None:
@@ -3949,6 +4391,44 @@ def main():
             else np.round(q_hand0_runtime, 4)
         ),
     )
+
+    if real_error_recorder is not None:
+        real_error_recorder.finish(
+            outcome=run_outcome,
+            details={
+                "recording_path": recording_path,
+                "recorded_frames": state_recorder.frame_count,
+                "tracking_counts": {
+                    "queries": tracking_frame_count,
+                    "valid": valid_tracking_count,
+                    "rejected": rejected_tracking_count,
+                    "duplicate": tracking_gate.duplicate_frames,
+                    "invalid": tracking_gate.invalid_frames,
+                    "malformed": tracking_gate.malformed_frames,
+                    "stale": tracking_gate.stale_frames,
+                    "missing_metadata": (
+                        tracking_gate.missing_metadata_frames
+                    ),
+                },
+                "ik_failures": ik_failure_count,
+                "ik_fallbacks": ik_fallback_count,
+                "final_teleop_state": teleop_arming.state.value,
+                "hand_driver_diagnostics": (
+                    _driver_diagnostics_snapshot(hand_driver)
+                ),
+                "real_arm_sender_stats": (
+                    real_arm_backend.sender_stats
+                    if real_arm_backend is not None
+                    else None
+                ),
+            },
+        )
+        print(
+            "real error log    :",
+            real_error_recorder.path,
+        )
+        if previous_excepthook is not None:
+            sys.excepthook = previous_excepthook
 
     print(
         "========================================"
