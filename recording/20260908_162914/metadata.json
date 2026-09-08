@@ -1,0 +1,59 @@
+{
+  "audio": false,
+  "camera_name": "workstation_front",
+  "camera_observations": {
+    "workstation_front": "base_0_rgb",
+    "wrist_camera": "right_wrist_0_rgb"
+  },
+  "frame_count": 2282,
+  "hand_command_domain": "canonical",
+  "hand_command_missing_frames": 1,
+  "hand_command_semantics": "command != MuJoCo qpos: qpos is the simulation response to this command, not the command itself",
+  "hand_command_source": "SG100Retargeter final backend input (post-filter)",
+  "hand_command_unit": "rad",
+  "hand_dof": 11,
+  "hand_joint_names": [
+    "thumb_j1",
+    "thumb_j2",
+    "thumb_j3",
+    "index_j1",
+    "index_j2",
+    "index_j3",
+    "middle_j1",
+    "middle_j2",
+    "little_j1",
+    "little_j2",
+    "little_j3"
+  ],
+  "hand_qpos_slice": [
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16
+  ],
+  "hand_qpos_source": "MuJoCo simulation state",
+  "mocap_count": 0,
+  "mujoco_timestep": 0.002,
+  "qpos_dimension": 38,
+  "record_fps": 30.0,
+  "recorded_time_span": 76.0340000000042,
+  "scene_path": "sg100_teleop/assets/rm65_sg100/mjcf/rm65_sg100_avp_grasp_scene.xml",
+  "schema_version": 1,
+  "simulation_end_time": 76.0340000000042,
+  "simulation_start_time": 0.0,
+  "state_fields": [
+    "timestamps",
+    "qpos",
+    "mocap_pos",
+    "mocap_quat"
+  ],
+  "video_duration": 76.06666666666666,
+  "wall_start_time": "2026-09-08T16:29:14.431603+08:00"
+}

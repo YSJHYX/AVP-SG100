@@ -39,7 +39,8 @@ joints:
     # outward from the palm plane (d_center 0.144 m, the sweep maximum);
     # the full -149.5 deg over-rotates far beyond natural human thumb
     # abduction and amplified small root motions.
-    teleop_range: [-1.0472, 0.0]
+    #teleop_range: [-1.0472, 0.0]
+    teleop_range: [-2.0, 0.0]
 
   thumb_j3:
     range: [-1.048, 1.57]
@@ -49,10 +50,12 @@ joints:
     negative_direction: extension_outward
 
   index_j1:
-    range: [0.0, 1.57]
+    #range: [0.0, 1.57]
+    range: [0.0, 0.0]  # index MCP is mechanically locked on the SG100 (no abduction)
     semantic: index_adduction
     zero: 0.0
     positive_direction: toward_thumb
+    teleop_range: [0.0, 0.0]
 
   index_j2:
     range: [0.0, 2.18]
@@ -81,10 +84,12 @@ joints:
     negative_direction: extension_toward_dorsal_side
 
   little_j1:
-    range: [-3.14, 0.0]
+    #range: [-3.14, 0.0]
+    range: [0.0, 0.0]
     semantic: little_outward_rotation
     zero: 0.0
     negative_direction: rotate_outward_and_downward
+    teleop_range: [0.0, 0.0]
 
   little_j2:
     range: [0.0, 2.18]
