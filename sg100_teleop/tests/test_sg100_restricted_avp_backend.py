@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from sg100_teleop.robot.sg100_driver import HAND_DOF, MODE_JOINT_POSITION
+from sg100_teleop.robot.sg100_driver import (
+    HAND_DOF,
+    MODE_JOINT_POSITION,
+    SG100CommandLimitContract,
+    SG100HardwareMap,
+)
 from sg100_teleop.robot.sg100_restricted_avp_backend import (
     SG100RestrictedAVPBackend,
 )
@@ -58,9 +63,148 @@ def make_backend(**kwargs):
     return driver, backend
 
 
-def test_real_allowlist_refuses_j7_until_its_hardware_gate_passes():
-    with pytest.raises(ValueError, match="without real active-command evidence"):
-        SG100RestrictedAVPBackend(FakeDriver(), joint_allowlist=("middle_j1",))
+@pytest.fixture(scope="module")
+def command_limit_contract():
+    ranges = load_vendor_user_ranges(DEFAULT_SDK_DIR)
+    assert ranges is not None and len(ranges) == HAND_DOF
+    return SG100CommandLimitContract(SG100HardwareMap(), ranges)
+
+
+@pytest.mark.parametrize("joint_index", range(HAND_DOF))
+def test_every_joint_min_mid_max_and_outside_clamp(
+    command_limit_contract, joint_index
+):
+    row = command_limit_contract.rows[joint_index]
+    low = row.canonical_min_rad
+    high = row.canonical_max_rad
+    mid = 0.5 * (low + high)
+    delta = np.deg2rad(1.0)
+    for requested, expected in (
+        (low - delta, low),
+        (low, low),
+        (mid, mid),
+        (high, high),
+        (high + delta, high),
+    ):
+        desired = np.zeros(HAND_DOF)
+        desired[joint_index] = requested
+        applied = command_limit_contract.apply(desired)
+        assert applied.effective_canonical_rad[joint_index] == pytest.approx(
+            expected, abs=1e-12
+        )
+        assert row.sdk_min_deg <= applied.sdk_sent_deg[joint_index]
+        assert applied.sdk_sent_deg[joint_index] <= row.sdk_max_deg
+
+
+def test_thumb_j3_minus_61_and_float_boundary_clamp_not_reject(
+    command_limit_contract,
+):
+    thumb_j3 = SG100HardwareMap().software_index_of["thumb_j3"]
+    for requested_deg in (-61.0, -60.000447):
+        desired = np.zeros(HAND_DOF)
+        desired[thumb_j3] = np.deg2rad(requested_deg)
+        applied = command_limit_contract.apply(desired)
+        assert np.rad2deg(
+            applied.effective_canonical_rad[thumb_j3]
+        ) == pytest.approx(-60.0)
+        assert applied.sdk_sent_deg[thumb_j3] == pytest.approx(-60.0)
+
+
+def test_middle_j1_is_only_middle_sign_flip(command_limit_contract):
+    rows = {row.joint_name: row for row in command_limit_contract.rows}
+    assert rows["middle_j1"].command_gain == -1.0
+    assert rows["middle_j2"].command_gain == 1.0
+
+    middle = SG100HardwareMap().software_index_of["middle_j1"]
+    for canonical_deg, expected_sdk_deg in (
+        (-50.0, 50.0),
+        (-125.0, 125.0),
+        (1.0, 0.0),
+        (-126.0, 125.0),
+    ):
+        desired = np.zeros(HAND_DOF)
+        desired[middle] = np.deg2rad(canonical_deg)
+        applied = command_limit_contract.apply(desired)
+        assert applied.sdk_sent_deg[middle] == pytest.approx(expected_sdk_deg)
+
+
+def _all_joint_backend():
+    driver = FakeDriver()
+    names = tuple(SG100HardwareMap().software_joint_order)
+    backend = SG100RestrictedAVPBackend(
+        driver,
+        joint_allowlist=names,
+        hardware_validated_joints=names,
+        max_cycle_delta_rad=None,
+        max_velocity_rad_s=100.0,
+        tracking_spike_rad=100.0,
+    )
+    assert backend.anchor(np.zeros(HAND_DOF)).accepted
+    backend.set_enabled(True)
+    return driver, backend
+
+
+@pytest.mark.parametrize("requested_deg", [-61.0, -60.000447])
+def test_thumb_j3_end_to_end_accepted_effective_and_sdk(requested_deg):
+    driver, backend = _all_joint_backend()
+    desired = np.zeros(HAND_DOF)
+    desired[2] = np.deg2rad(requested_deg)
+    result = backend.submit(
+        desired,
+        tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000,
+        dt_s=1.0,
+    )
+    assert result.accepted
+    assert "COMMAND_REJECTED" not in result.reason
+    assert np.rad2deg(result.canonical_qcmd_rad[2]) == pytest.approx(requested_deg)
+    assert np.rad2deg(
+        result.effective_canonical_qcmd_rad[2]
+    ) == pytest.approx(-60.0)
+    assert result.sdk_target_deg[2] == pytest.approx(-60.0)
+    assert driver.active_calls[-1][1][2] == pytest.approx(-60.0)
+    clamp_events = [
+        event for event in backend.drain_safety_events()
+        if event.event == "JOINT_LIMIT_CLAMP"
+    ]
+    assert any(
+        event.joint_name == "thumb_j3"
+        and event.domain == "SDK"
+        and event.effective == pytest.approx(-60.0)
+        for event in clamp_events
+    )
+
+
+def test_clamp_logging_is_on_change_and_mapping_mismatch_is_visible():
+    _, backend = _all_joint_backend()
+    backend.drain_safety_events()
+    desired = np.zeros(HAND_DOF)
+    desired[2] = np.deg2rad(-61.0)
+    for _ in range(2):
+        assert backend.submit(
+            desired, tracking_received_ns=1_000_000_000,
+            now_ns=1_000_000_000, dt_s=1.0,
+        ).accepted
+    events = backend.drain_safety_events()
+    assert sum(event.event == "JOINT_LIMIT_CLAMP" for event in events) == 1
+
+    backend.hardware_map.gain[0] = 2.0
+    mismatch_input = np.zeros(HAND_DOF)
+    mismatch_input[0] = np.deg2rad(100.0)
+    applied = backend.command_limit_contract.apply(mismatch_input)
+    assert applied.sdk_mapping_mismatch_indices == (0,)
+    backend._record_limit_events(applied)
+    assert any(
+        event.event == "SDK_LIMIT_MAPPING_MISMATCH"
+        for event in backend.drain_safety_events()
+    )
+
+
+def test_current_validated_allowlist_accepts_middle_j1():
+    backend = SG100RestrictedAVPBackend(
+        FakeDriver(), joint_allowlist=("middle_j1",)
+    )
+    assert backend.active_joint_indices == (6,)
 
 
 def test_c_anchor_is_zero_output_and_pre_enable_never_sends_active():
@@ -178,19 +322,27 @@ def test_health_failures_force_mode_null(mutation, reason):
 
 def test_nonfinite_range_spike_and_estop_are_fail_closed():
     q0 = np.zeros(HAND_DOF)
-    for target, expected in (
-        (np.full(HAND_DOF, np.nan), "COMMAND_REJECTED"),
-        (np.full(HAND_DOF, 99.0), "COMMAND_REJECTED"),
-    ):
-        driver, backend = make_backend()
-        backend.anchor(q0)
-        backend.set_enabled(True)
-        result = backend.submit(
-            target, tracking_received_ns=1_000_000_000,
-            now_ns=1_000_000_000, dt_s=0.01,
-        )
-        assert result.reason.startswith(expected)
-        assert driver.hold_calls == 1
+    driver, backend = make_backend()
+    backend.anchor(q0)
+    backend.set_enabled(True)
+    result = backend.submit(
+        np.full(HAND_DOF, np.nan), tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=0.01,
+    )
+    assert result.reason.startswith("COMMAND_REJECTED")
+    assert driver.hold_calls == 1
+
+    # Finite range overflow is clamped, never rejected.  The independent
+    # tracking-spike gate may still stop an implausible 99-rad one-tick jump.
+    driver, backend = make_backend()
+    backend.anchor(q0)
+    backend.set_enabled(True)
+    result = backend.submit(
+        np.full(HAND_DOF, 99.0), tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=0.01,
+    )
+    assert result.reason == "TRACKING_SPIKE"
+    assert "COMMAND_REJECTED" not in result.reason
 
     driver, backend = make_backend(tracking_spike_rad=0.1)
     backend.anchor(q0)

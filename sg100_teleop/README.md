@@ -28,6 +28,42 @@ VLA 数据采集。
 结论是 active hold safety 未通过且 offset/zero equivalence unresolved，不是 sign
 已被证伪。
 
+## SG100 Command Safety
+
+真实手位置命令的固定顺序是：AVP desired canonical 11D → canonical command
+limit clamp → `hand_qcmd_effective_canonical_rad` → 单次 `F_cmd` → SDK
+user-degree safety clamp/guard → `Hand_Control_t` → `SetHandControl()`。有限的越界
+位置现在是 **CLAMP, NOT REJECT**；非有限值、反馈失效、mode 异常以及独立的
+tracking spike 等安全故障仍然 fail closed。第二次 SDK-domain clamp 正常应为
+no-op；若变化超过浮点比较 epsilon，会记录 `SDK_LIMIT_MAPPING_MISMATCH`。相同的
+`JOINT_LIMIT_CLAMP` 只在进入 clamp 或请求值显著变化时报告，避免 500 Hz 刷屏。
+
+命令边界不再复制 `sg100_joint_semantics.yaml` 中用于 morphology/retargeting 的
+近似值，而是在启动时由实际加载的 SDK `joint_angle_map.json` user-degree ranges
+和 validated `sg100_hardware_map.yaml` F_cmd 反推：
+
+| joint | canonical min/max (rad) | SDK min/max (deg) | gain | offset (rad) |
+|---|---:|---:|---:|---:|
+| thumb_j1 | 0 / 2.181661565 | 0 / 125 | +1 | 0 |
+| thumb_j2 | -2.617993878 / 0 | -150 / 0 | +1 | 0 |
+| thumb_j3 | -1.047197551 / 1.570796327 | -60 / 90 | +1 | 0 |
+| index_j1 | 0 / 1.570796327 | 0 / 90 | +1 | 0 |
+| index_j2 | 0 / 2.181661565 | 0 / 125 | +1 | 0 |
+| index_j3 | -1.047197551 / 1.570796327 | -60 / 90 | +1 | 0 |
+| middle_j1 | -2.181661565 / 0 | 0 / 125 | **-1** | 0 |
+| middle_j2 | -1.047197551 / 1.570796327 | -60 / 90 | +1 | 0 |
+| little_j1 | -3.141592654 / 0 | -180 / 0 | +1 | 0 |
+| little_j2 | 0 / 2.181661565 | 0 / 125 | +1 | 0 |
+| little_j3 | -1.047197551 / 1.570796327 | -60 / 90 | +1 | 0 |
+
+只有 `middle_j1/J7` 使用反号：canonical `[-125°,0°]` 经
+`sdk=-canonical` 映射到 SDK `[0°,125°]`；`middle_j2/J8` 仍为 `gain=+1`。
+例如 `thumb_j3=-61°` 和浮点边界 `-60.000447°` 最终都发送严格的 `-60°`，
+但 desired/intent 字段仍保留原请求，训练 action 继续使用 final effective 字段。
+
+当前 SDK 没有已验证的逐关节 0.5 A 运行时命令限制，因此本项目不把通用
+`output_limit` 解释为安培，也不猜测或自动写入未注明单位的 Flash 参数。
+
 ## 3. Environment
 
 ```bash

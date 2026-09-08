@@ -58,9 +58,12 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
   `MODE_POSITION` + inherit-cache-PID behavior and the non-round-trip clamp
   make it unsuitable as the authoritative mapping; the migration removed
   its wrapper entry point entirely).
-- Out-of-range guard: the driver loads `joint_angle_map.json` user ranges
-  and REJECTS targets outside them instead of letting the vendor clamp
-  silently — the recorded action always equals the encoded action.
+- Out-of-range guard: the driver loads `joint_angle_map.json` user ranges,
+  derives the exact canonical command limits through inverse F_cmd, clamps in
+  canonical space, and applies a second exact SDK-domain clamp immediately
+  before serialization. The final effective action therefore equals the value
+  handed to `SetHandControl`; a material second-clamp delta is surfaced as
+  `SDK_LIMIT_MAPPING_MISMATCH`.
 - N3/J7 and restricted AVP do not use the unrestricted 11-axis helper. Their
   narrow command APIs
   API builds one `Hand_Control_t` with per-joint fields and calls the same
@@ -131,16 +134,17 @@ monotonic timestamps without implementing protocol code.
 real paths. Real SG100 execution is wrapped by `SG100RestrictedAVPBackend`:
 C caches an F_cmd-mapped MODE7 target with zero output; A is required before
 active output; only real-hardware-validated `index_j3` is currently accepted.
-The envelope rejects nonfinite/canonical-range/SDK-range/gross-delta/spike/
-stale/mode/fault/transport errors, rate-limits velocity, treats CRC storms as
-a safe-stop, and exposes E-stop. Unvalidated F_fb is never written into the
-MuJoCo canonical hand and real-hand data collection is blocked/quarantined.
+The envelope clamps finite position overflow (rather than rejecting it),
+rejects nonfinite/gross-delta/spike/stale/mode/fault/transport errors,
+rate-limits velocity, treats CRC storms as a safe-stop, and exposes E-stop.
+Unvalidated F_fb is never written into the MuJoCo canonical hand and real-hand
+data collection is blocked/quarantined.
 
 ## Joint order
 
 `thumb_j1..thumb_j3, index_j1..index_j3, middle_j1..middle_j2,
-little_j1..little_j3` == SDK joint ids 1..11 (identity hardware map).
-Single conversion authority: `sg100_hardware_map.yaml` +
+little_j1..little_j3` == SDK joint ids 1..11 (identity ordering; J7 command
+gain is -1). Single conversion authority: `sg100_hardware_map.yaml` +
 `SG100HardwareMap`; dataset boundary is canonical radians.
 
 ## Struct ABI (sg100_types.h @ this version)

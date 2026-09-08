@@ -14,7 +14,8 @@ from typing import Iterable
 import numpy as np
 
 from sg100_teleop.robot.sg100_driver import (
-    HAND_DOF, MODE_JOINT_POSITION, SG100HardwareMap,
+    HAND_DOF, MODE_JOINT_POSITION, SG100CommandLimitContract,
+    SG100HardwareMap,
 )
 
 
@@ -31,6 +32,19 @@ class RestrictedCommandResult:
     slew_limited: bool = False
     effective_canonical_qcmd_rad: np.ndarray | None = None
     sent_monotonic_ns: int = 0
+
+
+@dataclass(frozen=True)
+class SG100SafetyEvent:
+    event: str
+    timestamp_ns: int
+    joint_name: str | None = None
+    joint_index: int | None = None
+    domain: str | None = None
+    requested: float | None = None
+    effective: float | None = None
+    unit: str | None = None
+    details: dict | None = None
 
 
 class SG100RestrictedAVPBackend:
@@ -68,6 +82,9 @@ class SG100RestrictedAVPBackend:
         self.vendor_ranges = driver.vendor_user_ranges
         if self.vendor_ranges is None or len(self.vendor_ranges) != HAND_DOF:
             raise ValueError("11 SDK command ranges are required")
+        self.command_limit_contract = SG100CommandLimitContract(
+            self.hardware_map, self.vendor_ranges
+        )
         values = (
             max_velocity_rad_s, tracking_spike_rad, stale_tracking_s,
             feedback_stall_s,
@@ -98,40 +115,96 @@ class SG100RestrictedAVPBackend:
         self._last_canonical: np.ndarray | None = None
         self._last_sdk_target: np.ndarray | None = None
         self._crc_baseline = 0
+        self._safety_events: list[SG100SafetyEvent] = []
+        self._clamp_event_state: dict[int, tuple[float, float]] = {}
 
     def _validate_and_map(self, canonical_qcmd_rad: np.ndarray) -> np.ndarray:
-        q = np.asarray(canonical_qcmd_rad, dtype=np.float64)
-        if q.shape != (HAND_DOF,) or not np.all(np.isfinite(q)):
-            raise ValueError("canonical qcmd must be finite 11D")
-        if np.any(q < self.hardware_map.lower_rad) or np.any(
-            q > self.hardware_map.upper_rad
-        ):
-            raise ValueError("canonical qcmd outside mechanical range; no clamp")
-        # F_cmd exactly once, written explicitly because canonical_to_actual
-        # clips and would hide a gross upstream mapping error.
-        sdk_rad = self.hardware_map.gain * q + self.hardware_map.offset_rad
-        sdk_deg = np.rad2deg(sdk_rad)
-        for index, (low, high) in enumerate(self.vendor_ranges):
-            if not float(low) <= float(sdk_deg[index]) <= float(high):
-                raise ValueError(
-                    f"SDK J{index + 1} target outside range; no clamp"
-                )
-        return sdk_deg
+        """Compatibility helper: validate shape, clamp, map and SDK-guard."""
+
+        return self.command_limit_contract.apply(
+            canonical_qcmd_rad
+        ).sdk_sent_deg
+
+    def _record_limit_events(self, application) -> None:
+        changed = set(application.canonical_clamped_indices)
+        for index in range(HAND_DOF):
+            if index not in changed:
+                if index in self._clamp_event_state:
+                    del self._clamp_event_state[index]
+                    self._safety_events.append(SG100SafetyEvent(
+                        event="JOINT_LIMIT_CLAMP_CLEARED",
+                        timestamp_ns=time.monotonic_ns(),
+                        joint_name=self.hardware_map.software_joint_order[index],
+                        joint_index=index,
+                        domain="SDK",
+                    ))
+                continue
+            requested_sdk_deg = float(np.rad2deg(
+                self.hardware_map.gain[index]
+                * application.desired_canonical_rad[index]
+                + self.hardware_map.offset_rad[index]
+            ))
+            effective_sdk_deg = float(application.sdk_sent_deg[index])
+            previous = self._clamp_event_state.get(index)
+            state = (requested_sdk_deg, effective_sdk_deg)
+            # Entry and meaningful requested/effective changes only.  This
+            # avoids a 500 Hz stream of identical clamp diagnostics.
+            if previous is None or max(
+                abs(state[0] - previous[0]), abs(state[1] - previous[1])
+            ) >= 0.1:
+                self._safety_events.append(SG100SafetyEvent(
+                    event="JOINT_LIMIT_CLAMP",
+                    timestamp_ns=time.monotonic_ns(),
+                    joint_name=self.hardware_map.software_joint_order[index],
+                    joint_index=index,
+                    domain="SDK",
+                    requested=requested_sdk_deg,
+                    effective=effective_sdk_deg,
+                    unit="deg",
+                    details={
+                        "desired_canonical_rad": float(
+                            application.desired_canonical_rad[index]
+                        ),
+                        "effective_canonical_rad": float(
+                            application.effective_canonical_rad[index]
+                        ),
+                    },
+                ))
+                self._clamp_event_state[index] = state
+        for index in application.sdk_mapping_mismatch_indices:
+            self._safety_events.append(SG100SafetyEvent(
+                event="SDK_LIMIT_MAPPING_MISMATCH",
+                timestamp_ns=time.monotonic_ns(),
+                joint_name=self.hardware_map.software_joint_order[index],
+                joint_index=index,
+                domain="SDK",
+                requested=float(application.sdk_before_guard_deg[index]),
+                effective=float(application.sdk_sent_deg[index]),
+                unit="deg",
+            ))
+
+    def drain_safety_events(self) -> tuple[SG100SafetyEvent, ...]:
+        events = tuple(self._safety_events)
+        self._safety_events.clear()
+        return events
 
     def anchor(self, canonical_qcmd_rad: np.ndarray) -> RestrictedCommandResult:
         """C gate: cache mapped targets with zero gains/output, never raw F_fb."""
 
-        sdk_target = self._validate_and_map(canonical_qcmd_rad)
+        application = self.command_limit_contract.apply(canonical_qcmd_rad)
+        self._record_limit_events(application)
+        sdk_target = application.sdk_sent_deg
         submission = self.driver.send_mode7_zero_output_sdk_targets(sdk_target)
         if submission is None:
             return self._safe_stop("ANCHOR_ZERO_OUTPUT_REJECTED")
-        self._last_canonical = np.asarray(canonical_qcmd_rad, dtype=np.float64).copy()
+        self._last_canonical = application.effective_canonical_rad.copy()
         self._last_sdk_target = sdk_target.copy()
         self._crc_baseline = int(self.driver.diagnostics.get("crc_error_count", 0))
         self.anchored = True
         self.enabled = False
         return RestrictedCommandResult(
-            True, "ANCHORED_ZERO_OUTPUT", self._last_canonical.copy(),
+            True, "ANCHORED_ZERO_OUTPUT",
+            application.desired_canonical_rad.copy(),
             sdk_target.copy(), self.active_joint_indices,
             effective_canonical_qcmd_rad=self._last_canonical.copy(),
             sent_monotonic_ns=int(submission.sent_monotonic_ns),
@@ -193,10 +266,11 @@ class SG100RestrictedAVPBackend:
         if crc_delta >= self.crc_storm_delta:
             return self._safe_stop("CRC_STORM")
         try:
-            candidate = np.asarray(canonical_qcmd_rad, dtype=np.float64)
-            self._validate_and_map(candidate)
+            application = self.command_limit_contract.apply(canonical_qcmd_rad)
         except ValueError as exc:
             return self._safe_stop(f"COMMAND_REJECTED:{exc}")
+        self._record_limit_events(application)
+        candidate = application.effective_canonical_rad
         assert self._last_canonical is not None
         delta = candidate - self._last_canonical
         active_delta = np.abs(delta[list(self.active_joint_indices)])
@@ -212,10 +286,10 @@ class SG100RestrictedAVPBackend:
         for index in self.active_joint_indices:
             limited[index] += float(np.clip(delta[index], -velocity_step, velocity_step))
         slew_limited = bool(np.any(np.abs(limited - candidate) > 1e-12))
-        try:
-            sdk_target = self._validate_and_map(limited)
-        except ValueError as exc:
-            return self._safe_stop(f"LIMITED_COMMAND_REJECTED:{exc}")
+        limited_application = self.command_limit_contract.apply(limited)
+        sdk_target = limited_application.sdk_sent_deg
+        if limited_application.sdk_mapping_mismatch_indices:
+            self._record_limit_events(limited_application)
         # Unopened joints retain the anchor/last target and carry zero output.
         assert self._last_sdk_target is not None
         transmitted = self._last_sdk_target.copy()
@@ -226,11 +300,15 @@ class SG100RestrictedAVPBackend:
         )
         if submission is None:
             return self._safe_stop("SET_HAND_CONTROL_REJECTED")
-        self._last_canonical = limited
+        final_effective = (
+            np.deg2rad(transmitted) - self.hardware_map.offset_rad
+        ) / self.hardware_map.gain
+        self._last_canonical = final_effective.copy()
         self._last_sdk_target = transmitted
         return RestrictedCommandResult(
-            True, "ACCEPTED", candidate.copy(), transmitted.copy(),
+            True, "ACCEPTED", application.desired_canonical_rad.copy(),
+            transmitted.copy(),
             self.active_joint_indices, slew_limited,
-            effective_canonical_qcmd_rad=limited.copy(),
+            effective_canonical_qcmd_rad=final_effective.copy(),
             sent_monotonic_ns=int(submission.sent_monotonic_ns),
         )

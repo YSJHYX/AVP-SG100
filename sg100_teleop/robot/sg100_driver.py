@@ -46,6 +46,12 @@ DEFAULT_SEMANTICS_PATH = (
 
 HAND_DOF = 11
 
+# Runtime command-limit comparisons use degrees because that is the public
+# SetHandControl user-angle domain.  This epsilon is comparison/diagnostic
+# tolerance only; every submitted value is still clipped to the exact vendor
+# boundary.
+SDK_LIMIT_COMPARE_EPSILON_DEG = 1e-6
+
 # Per-joint control modes actually used by this stack (CtrlMode_e in the
 # vendor header include/sg100_types.h @ V1.5_NO_TACTILE, lines 165-176:
 # MODE_NULL=0, MODE_POSITION=1, ..., MODE_JOINT_POSITION=7).  These are the
@@ -255,6 +261,121 @@ class SG100CommandSent:
     sent_monotonic_ns: int
     command_bundle_id: int | None
     transmission_confirmed: str = "successfully_transmitted"
+
+
+@dataclass(frozen=True)
+class SG100JointLimit:
+    """One row of the authoritative canonical -> SDK command contract."""
+
+    joint_name: str
+    canonical_min_rad: float
+    canonical_max_rad: float
+    sdk_min_deg: float
+    sdk_max_deg: float
+    command_gain: float
+    command_offset_rad: float
+
+
+@dataclass(frozen=True)
+class SG100LimitApplication:
+    """Desired, clamped and mapped values for one whole-hand command."""
+
+    desired_canonical_rad: np.ndarray
+    canonical_clamped_rad: np.ndarray
+    sdk_before_guard_deg: np.ndarray
+    sdk_sent_deg: np.ndarray
+    effective_canonical_rad: np.ndarray
+    canonical_clamped_indices: tuple[int, ...]
+    sdk_clamped_indices: tuple[int, ...]
+    sdk_mapping_mismatch_indices: tuple[int, ...]
+
+
+class SG100CommandLimitContract:
+    """Limits derived once from runtime SDK ranges and the validated F_cmd.
+
+    The retargeting/morphology limits remain untouched.  Command-safe
+    canonical limits are the exact inverse image of the production SDK's
+    current ``joint_angle_map.json`` user-degree ranges, so there is no second
+    hand-maintained table to drift.
+    """
+
+    def __init__(
+        self,
+        hardware_map: "SG100HardwareMap",
+        vendor_user_ranges: list[tuple[float, float]],
+    ) -> None:
+        if len(vendor_user_ranges) != HAND_DOF:
+            raise ValueError("11 SDK command ranges are required")
+        self.hardware_map = hardware_map
+        sdk_min = np.asarray([v[0] for v in vendor_user_ranges], dtype=np.float64)
+        sdk_max = np.asarray([v[1] for v in vendor_user_ranges], dtype=np.float64)
+        if (
+            sdk_min.shape != (HAND_DOF,)
+            or not np.all(np.isfinite(sdk_min))
+            or not np.all(np.isfinite(sdk_max))
+            or np.any(sdk_min > sdk_max)
+        ):
+            raise ValueError("SDK command ranges must be 11 finite [min,max] pairs")
+        self.sdk_min_deg = sdk_min
+        self.sdk_max_deg = sdk_max
+
+        sdk_min_rad = np.deg2rad(sdk_min)
+        sdk_max_rad = np.deg2rad(sdk_max)
+        inverse_a = (sdk_min_rad - hardware_map.offset_rad) / hardware_map.gain
+        inverse_b = (sdk_max_rad - hardware_map.offset_rad) / hardware_map.gain
+        self.canonical_min_rad = np.minimum(inverse_a, inverse_b)
+        self.canonical_max_rad = np.maximum(inverse_a, inverse_b)
+
+        self.rows = tuple(
+            SG100JointLimit(
+                joint_name=hardware_map.software_joint_order[i],
+                canonical_min_rad=float(self.canonical_min_rad[i]),
+                canonical_max_rad=float(self.canonical_max_rad[i]),
+                sdk_min_deg=float(self.sdk_min_deg[i]),
+                sdk_max_deg=float(self.sdk_max_deg[i]),
+                command_gain=float(hardware_map.gain[i]),
+                command_offset_rad=float(hardware_map.offset_rad[i]),
+            )
+            for i in range(HAND_DOF)
+        )
+
+    def apply(self, desired_canonical_rad: np.ndarray) -> SG100LimitApplication:
+        desired = np.asarray(desired_canonical_rad, dtype=np.float64)
+        if desired.shape != (HAND_DOF,) or not np.all(np.isfinite(desired)):
+            raise ValueError("canonical qcmd must be finite 11D")
+
+        canonical = np.clip(
+            desired, self.canonical_min_rad, self.canonical_max_rad
+        )
+        sdk_before = np.rad2deg(
+            self.hardware_map.gain * canonical
+            + self.hardware_map.offset_rad
+        )
+        # Second, SDK-domain guard immediately before serialization.  np.clip
+        # guarantees the physical range is never enlarged by epsilon.
+        sdk_sent = np.clip(sdk_before, self.sdk_min_deg, self.sdk_max_deg)
+        effective = (
+            np.deg2rad(sdk_sent) - self.hardware_map.offset_rad
+        ) / self.hardware_map.gain
+
+        canonical_changed = np.flatnonzero(
+            np.abs(canonical - desired) > 0.0
+        )
+        sdk_delta = np.abs(sdk_sent - sdk_before)
+        sdk_changed = np.flatnonzero(sdk_delta > 0.0)
+        mismatch = np.flatnonzero(
+            sdk_delta > SDK_LIMIT_COMPARE_EPSILON_DEG
+        )
+        return SG100LimitApplication(
+            desired_canonical_rad=desired.copy(),
+            canonical_clamped_rad=canonical.copy(),
+            sdk_before_guard_deg=sdk_before.copy(),
+            sdk_sent_deg=sdk_sent.copy(),
+            effective_canonical_rad=effective.copy(),
+            canonical_clamped_indices=tuple(int(i) for i in canonical_changed),
+            sdk_clamped_indices=tuple(int(i) for i in sdk_changed),
+            sdk_mapping_mismatch_indices=tuple(int(i) for i in mismatch),
+        )
 
 
 @dataclass(frozen=True)

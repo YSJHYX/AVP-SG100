@@ -216,9 +216,8 @@ def test_same_canonical_command_reaches_mujoco_ctrl_and_real_backend(sim):
 def test_j7_mapping_does_not_mutate_shared_canonical_command(sim):
     model, data, layout = sim
     driver = FakeDriver()
-    # J7 尚无真机证据：restricted backend 构造必须拒绝它进入
-    # allowlist；因此这里直接驱动 internal F_cmd + anchor/submit 路径，
-    # 仅验证映射方向与 shared command 的不可变性。
+    # This test keeps the active allowlist on index_j3 so J7 remains a pure
+    # F_cmd mapping check and cannot affect the fake transmitted payload.
     backend = SG100RestrictedAVPBackend(
         driver,
         joint_allowlist=("index_j3",),
@@ -268,11 +267,11 @@ def test_j7_mapping_does_not_mutate_shared_canonical_command(sim):
     assert sdk_deg[6] == pytest.approx(0.0)
 
 
-def test_j7_still_blocked_from_real_allowlist():
-    with pytest.raises(ValueError, match="active-command evidence"):
-        SG100RestrictedAVPBackend(
-            FakeDriver(), joint_allowlist=("middle_j1",)
-        )
+def test_j7_is_present_in_current_hardware_validated_allowlist():
+    backend = SG100RestrictedAVPBackend(
+        FakeDriver(), joint_allowlist=("middle_j1",)
+    )
+    assert backend.active_joint_indices == (6,)
 
 
 # ----------------------------------------------------------------------

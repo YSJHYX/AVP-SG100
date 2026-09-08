@@ -20,10 +20,10 @@ description; this docstring summarizes the load-bearing facts):
   ``SG100HardwareMap`` (F_cmd) plus one rad<->deg conversion.  Callback
   values remain explicitly in the SDK callback domain unless a separate,
   fully validated ``SG100FeedbackMap`` (F_fb) is supplied and enabled.
-- Because the vendor send-side clamp is not round-trip safe (a target
-  outside the json user range would be silently clamped, making the
-  recorded action differ from the encoded one), targets outside the
-  loaded ``joint_angle_map.json`` ranges are REJECTED here instead.
+- Command-safe canonical limits are derived from the runtime vendor ranges;
+  commands are clamped there, mapped once through F_cmd, and clamped again in
+  the SDK user-degree domain before serialization.  Recorded effective action
+  therefore equals the value handed to ``SetHandControl``.
 - Realtime entry follows the vendor production pattern
   (teaching_mode_example.cpp): seed the control cache with MODE_NULL
   (no drive output), wait one scheduler cycle so the cache is what the
@@ -56,6 +56,7 @@ from sg100_teleop.robot.sg100_driver import (
     HAND_DOF,
     MODE_JOINT_POSITION,
     SG100CommandSent,
+    SG100CommandLimitContract,
     SG100Driver,
     SG100FeedbackMap,
     SG100HandFeedback,
@@ -587,6 +588,13 @@ class SG100SDKDriver(SG100Driver):
         self._output_limit = quantize_gain(output_limit)
 
         self._vendor_user_ranges = load_vendor_user_ranges(self.sdk_dir)
+        self.command_limit_contract = (
+            SG100CommandLimitContract(
+                self.hardware_map, self._vendor_user_ranges
+            )
+            if self._vendor_user_ranges is not None
+            else None
+        )
 
         self._lib: ctypes.CDLL | None = None
         self._connected = False
@@ -832,20 +840,19 @@ class SG100SDKDriver(SG100Driver):
         """Send one whole-hand target through vendor ``SetHandControl``.
 
         Fail-closed until ``enter_realtime`` succeeded: before that the
-        cached control is MODE_NULL and no position target may overwrite
-        it.  Targets whose vendor user-domain degrees fall outside the
-        ``joint_angle_map.json`` range are rejected (never silently
-        clamped) so the recorded action always equals the encoded action.
+        cached control is MODE_NULL and no position target may overwrite it.
+        Out-of-range finite targets are clamped by the authoritative runtime
+        command contract; non-finite/malformed targets still fail closed.
         """
 
         if not self._connected or not self._realtime:
             return None
 
-        sdk_user_rad = self.hardware_map.canonical_to_actual(q_rad)
-        positions_deg = np.rad2deg(sdk_user_rad)
-        if not self._user_deg_within_vendor_range(positions_deg):
+        if self.command_limit_contract is None:
             self._rejected_commands += 1
             return None
+        limited = self.command_limit_contract.apply(q_rad)
+        positions_deg = limited.sdk_sent_deg
         payload = np.ascontiguousarray(
             positions_deg, dtype=np.float32
         )
@@ -862,9 +869,7 @@ class SG100SDKDriver(SG100Driver):
         if accepted != 1:
             return None
         event = SG100CommandSent(
-            q_rad=self.hardware_map.clamp_canonical(
-                np.asarray(q_rad, dtype=np.float64)
-            ),
+            q_rad=limited.effective_canonical_rad.copy(),
             sent_monotonic_ns=time.monotonic_ns(),
             command_bundle_id=command_bundle_id,
         )
@@ -921,9 +926,7 @@ class SG100SDKDriver(SG100Driver):
         positions = np.asarray(positions_deg, dtype=np.float64)
         if positions.shape != (HAND_DOF,) or not np.all(np.isfinite(positions)):
             raise ValueError("positions_deg must contain 11 finite values")
-        if not self._user_deg_within_vendor_range(positions):
-            self._rejected_commands += 1
-            return None
+        positions = self._clamp_user_deg_to_vendor_range(positions)
         payload = np.ascontiguousarray(positions, dtype=np.float32)
         modes = np.full(HAND_DOF, MODE_JOINT_POSITION, dtype=np.uint8)
         zeros = np.zeros(HAND_DOF, dtype=np.uint16)
@@ -953,9 +956,7 @@ class SG100SDKDriver(SG100Driver):
         positions = np.asarray(positions_deg, dtype=np.float64)
         if positions.shape != (HAND_DOF,) or not np.all(np.isfinite(positions)):
             raise ValueError("positions_deg must contain 11 finite values")
-        if not self._user_deg_within_vendor_range(positions):
-            self._rejected_commands += 1
-            return None
+        positions = self._clamp_user_deg_to_vendor_range(positions)
         gains = (float(kp), float(ki), float(kd), float(output_limit))
         if not all(np.isfinite(value) for value in gains):
             raise ValueError("PID/output_limit values must be finite")
@@ -1004,10 +1005,10 @@ class SG100SDKDriver(SG100Driver):
     ) -> SG100Mode7ActiveSubmission | None:
         """Submit one SDK-domain MODE7 frame with exactly one driven joint.
 
-        This narrow test-only path never calls ``SG100HardwareMap`` and never
-        clamps. The caller must supply an independently proven command-domain
+        This narrow test-only path never calls ``SG100HardwareMap``. The
+        caller must supply an independently proven command-domain
         seed; J7 must never use raw feedback as that seed. Every value is
-        range-checked against the runtime vendor map, and the call is rejected
+        guarded against the runtime vendor map, and the call is rejected
         unless exactly one position loop produces output.
         """
 
@@ -1019,10 +1020,7 @@ class SG100SDKDriver(SG100Driver):
         positions = np.asarray(positions_deg, dtype=np.float64)
         if positions.shape != (HAND_DOF,) or not np.all(np.isfinite(positions)):
             raise ValueError("positions_deg must contain 11 finite values")
-        # No clamp: rejection preserves the evidentiary value of the target.
-        if not self._user_deg_within_vendor_range(positions):
-            self._rejected_commands += 1
-            return None
+        positions = self._clamp_user_deg_to_vendor_range(positions)
         gains = [float(kp), float(ki), float(kd), float(output_limit)]
         if not all(np.isfinite(value) for value in gains):
             raise ValueError("PID/output_limit values must be finite")
@@ -1100,6 +1098,22 @@ class SG100SDKDriver(SG100Driver):
             if value < low or value > high:
                 return False
         return True
+
+    def _clamp_user_deg_to_vendor_range(
+        self, positions_deg: np.ndarray
+    ) -> np.ndarray:
+        """Final exact SDK-domain guard used immediately before serialization."""
+
+        positions = np.asarray(positions_deg, dtype=np.float64)
+        if positions.shape != (HAND_DOF,) or not np.all(np.isfinite(positions)):
+            raise ValueError("positions_deg must contain 11 finite values")
+        if self._vendor_user_ranges is None:
+            raise SG100SDKDriverError(
+                "joint_angle_map.json missing: cannot prove SDK command limits"
+            )
+        low = np.asarray([v[0] for v in self._vendor_user_ranges])
+        high = np.asarray([v[1] for v in self._vendor_user_ranges])
+        return np.clip(positions, low, high)
 
     # -- diagnostics ----------------------------------------------------------
 

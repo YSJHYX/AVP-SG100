@@ -295,6 +295,55 @@ def _record_sg100_safe_stop(
     )
 
 
+def _emit_sg100_safety_events(restricted_backend, error_recorder) -> None:
+    """Print and persist rate-limited command-limit events."""
+
+    if restricted_backend is None:
+        return
+    for event in restricted_backend.drain_safety_events():
+        details = dict(event.details or {})
+        details.update({
+            "joint": event.joint_name,
+            "joint_index": event.joint_index,
+            "domain": event.domain,
+            "requested": event.requested,
+            "effective": event.effective,
+            "unit": event.unit,
+            "timestamp_ns": event.timestamp_ns,
+        })
+        if event.event == "SDK_LIMIT_MAPPING_MISMATCH":
+            print(
+                "ERROR SDK_LIMIT_MAPPING_MISMATCH",
+                f"joint={event.joint_name}",
+                f"requested={event.requested} deg",
+                f"effective={event.effective} deg",
+            )
+            severity = "ERROR"
+        elif event.event == "JOINT_LIMIT_CLAMP":
+            print(
+                "JOINT_LIMIT_CLAMP",
+                f"joint={event.joint_name}",
+                f"requested={event.requested:.6f} deg",
+                f"effective={event.effective:.6f} deg",
+                f"domain={event.domain}",
+            )
+            severity = "WARNING"
+        else:
+            print(
+                "JOINT_LIMIT_CLAMP_CLEARED",
+                f"joint={event.joint_name}",
+            )
+            severity = "INFO"
+        if error_recorder is not None:
+            error_recorder.record(
+                severity=severity,
+                component="sg100_real_hand",
+                event=event.event,
+                message=event.event,
+                details=details,
+            )
+
+
 def extract_wrist_roll(
     rotation: np.ndarray,
     axis: np.ndarray,
@@ -2945,6 +2994,10 @@ def main():
                                     anchor_result = restricted_hand_backend.anchor(
                                         q_hand0_runtime
                                     )
+                                    _emit_sg100_safety_events(
+                                        restricted_hand_backend,
+                                        real_error_recorder,
+                                    )
                                     if not anchor_result.accepted:
                                         raise RuntimeError(
                                             "SG100 restricted C anchor failed: "
@@ -3744,6 +3797,10 @@ def main():
                                 ),
                                 dt_s=physics_dt,
                             )
+                            _emit_sg100_safety_events(
+                                restricted_hand_backend,
+                                real_error_recorder,
+                            )
                             if hand_result.accepted:
                                 hand_telemetry_sequence += 1
                                 latest_hand_telemetry = {
@@ -3896,6 +3953,10 @@ def main():
                                     ]
                                 ),
                                 dt_s=physics_dt,
+                            )
+                            _emit_sg100_safety_events(
+                                restricted_hand_backend,
+                                real_error_recorder,
                             )
                             if hand_result.accepted:
                                 hand_telemetry_sequence += 1

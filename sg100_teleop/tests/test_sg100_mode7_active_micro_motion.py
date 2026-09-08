@@ -207,7 +207,7 @@ def test_native_per_joint_serializer_matches_exact_hand_control():
             assert (p, i, d, limit) == (0, 0, 0, 0)
 
 
-def test_driver_active_path_bypasses_maps_has_one_native_call_and_no_clamp():
+def test_driver_active_path_bypasses_maps_has_one_native_call_and_sdk_clamp():
     class Capture:
         def __init__(self): self.calls = []
         def sg100_set_hand_control(self, *args):
@@ -227,12 +227,16 @@ def test_driver_active_path_bypasses_maps_has_one_native_call_and_no_clamp():
     np.testing.assert_allclose(sent[0], positions)
     assert np.flatnonzero(sent[5]).tolist() == [5]
     positions[5] = 900.0
-    assert driver.send_mode7_active_single_joint(5, positions) is None
-    assert len(capture.calls) == 1  # reject, never clamp-and-send
+    clamped = driver.send_mode7_active_single_joint(5, positions)
+    assert clamped is not None
+    assert len(capture.calls) == 2
+    assert capture.calls[-1][0][5] == pytest.approx(
+        driver.vendor_user_ranges[5][1]
+    )
     positions[5] = 1.25
     with pytest.raises(ValueError, match="vendor-evidenced"):
         driver.send_mode7_active_single_joint(5, positions, output_limit=0.4)
-    assert len(capture.calls) == 1
+    assert len(capture.calls) == 2
 
 
 def test_two_stage_gate_blocks_skip_requires_move_and_allows_one_delta():
