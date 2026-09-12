@@ -246,8 +246,10 @@ def test_velocity_slew_limiter_and_per_cycle_delta_guard():
     backend.set_enabled(True)
     target = q0.copy()
     target[5] = 0.02
+    jumped_target = target.copy()
+    jumped_target[5] = 0.08
     result = backend.submit(
-        target, tracking_received_ns=1_000_000_000,
+        jumped_target, tracking_received_ns=1_000_000_000,
         now_ns=1_000_000_000, dt_s=0.01,
     )
     assert result.accepted and result.slew_limited
@@ -257,12 +259,71 @@ def test_velocity_slew_limiter_and_per_cycle_delta_guard():
     backend.anchor(q0)
     backend.set_enabled(True)
     target[5] = 0.04
-    result = backend.submit(
+    first = backend.submit(
         target, tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=0.01,
+    )
+    assert first.accepted and first.slew_limited
+    assert np.deg2rad(driver.active_calls[-1][1][5]) == pytest.approx(0.005)
+
+    jumped_target = target.copy()
+    jumped_target[5] = 0.08
+    result = backend.submit(
+        jumped_target, tracking_received_ns=1_000_000_000,
         now_ns=1_000_000_000, dt_s=0.01,
     )
     assert result.reason == "PER_CYCLE_DELTA_EXCEEDED"
     assert driver.hold_calls == 1 and not backend.enabled
+
+
+def test_first_post_enable_command_only_bypasses_per_cycle_guard():
+    q0 = np.zeros(HAND_DOF)
+    driver, backend = make_backend(
+        max_cycle_delta_rad=0.03,
+        max_velocity_rad_s=0.5,
+        tracking_spike_rad=0.20,
+    )
+    backend.anchor(q0)
+    backend.set_enabled(True)
+
+    target = q0.copy()
+    target[5] = 0.08
+    first = backend.submit(
+        target, tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=0.01,
+    )
+    assert first.accepted and first.slew_limited
+    assert backend.enabled
+    assert np.deg2rad(driver.active_calls[-1][1][5]) == pytest.approx(0.005)
+
+    # The stable second target is compared with the first target, not with
+    # the much slower velocity-limited output.
+    second = backend.submit(
+        target, tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=0.01,
+    )
+    assert second.accepted and second.slew_limited
+    assert np.deg2rad(driver.active_calls[-1][1][5]) == pytest.approx(0.010)
+
+    # A later raw-target jump still sees the ordinary per-cycle guard.
+    jumped_target = target.copy()
+    jumped_target[5] = 0.12
+    third = backend.submit(
+        jumped_target, tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=0.01,
+    )
+    assert third.reason == "PER_CYCLE_DELTA_EXCEEDED"
+    assert driver.hold_calls == 1 and not backend.enabled
+
+    # Re-enabling grants a new one-command exemption, but the independent
+    # tracking-spike safety gate is never bypassed.
+    backend.set_enabled(True)
+    spike = q0.copy()
+    spike[5] = 0.30
+    assert backend.submit(
+        spike, tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=0.01,
+    ).reason == "TRACKING_SPIKE"
 
 
 def test_disabled_per_cycle_guard_uses_velocity_slew_limiter():

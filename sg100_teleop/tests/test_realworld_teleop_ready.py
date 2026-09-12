@@ -14,6 +14,10 @@ from sg100_teleop.sim.combined_robot_layout import (
     initialize_robot_state,
     resolve_robot_layout,
 )
+from sg100_teleop.sim.camera_observations import (
+    CAMERA_TO_OBSERVATION_KEY,
+    validate_camera_observation_contract,
+)
 from sg100_teleop.sim.run_avp_arm_hand_sim import (
     TCP_BODY,
     compute_startup_arm_q,
@@ -38,9 +42,7 @@ FORBIDDEN_NAMES = (
     "obj_apple",
     "obj_mug",
     "workstation_floor_visual",
-    "workstation_front",
     "demo_camera",
-    "wrist_camera",
 )
 
 
@@ -75,7 +77,7 @@ def test_ready_keyframe_matches_actual_grasp_startup() -> None:
         17,
         17,
         17,
-        0,
+        2,
     )
     assert real_model.nkey == 1
     assert mujoco.mj_name2id(
@@ -144,8 +146,15 @@ def test_joint_semantics_and_robot_contract_are_unchanged() -> None:
 
 def test_realworld_scene_remains_robot_only() -> None:
     model = mujoco.MjModel.from_xml_path(str(REALWORLD_XML))
-    assert model.ncam == 0
+    assert model.ncam == 2
     assert model.nbody == 20
+    assert tuple(model.camera(index).name for index in range(model.ncam)) == (
+        "workstation_front",
+        "wrist_camera",
+    )
+    assert set(validate_camera_observation_contract(model)) == set(
+        CAMERA_TO_OBSERVATION_KEY
+    )
     for name in FORBIDDEN_NAMES:
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name) < 0
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) < 0

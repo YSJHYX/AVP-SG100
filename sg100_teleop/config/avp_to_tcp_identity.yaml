@@ -19,5 +19,5 @@ avp_to_tcp_local_rotation:
 filter:
   position_tau: 0.06          # seconds
   rotation_tau: 0.06          # seconds
-  max_linear_velocity: 0.25   # m/s
+  max_linear_velocity: 0.25   # m/s速度降一点滤波再强一点
   max_angular_velocity: 1.5   # rad/s

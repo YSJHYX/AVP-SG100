@@ -12,7 +12,10 @@ from typing import Mapping
 import numpy as np
 
 from sg100_teleop.camera.realsense_camera import RealSenseFrame
-from sg100_teleop.data_collection.vla_raw_schema import parse_camera_modalities
+from sg100_teleop.data_collection.vla_raw_schema import (
+    DEFAULT_CAMERA_MODALITIES,
+    parse_camera_modalities,
+)
 
 
 class BoundedMediaWriter:
@@ -21,7 +24,7 @@ class BoundedMediaWriter:
         pending_media_dir: str | Path,
         *,
         camera_roles: tuple[str, ...] = ("head", "right_wrist"),
-        camera_modalities: tuple[str, ...] = ("rgb", "depth"),
+        camera_modalities: tuple[str, ...] = DEFAULT_CAMERA_MODALITIES,
         queue_size: int = 180,
         jpeg_quality: int = 97,
     ) -> None:

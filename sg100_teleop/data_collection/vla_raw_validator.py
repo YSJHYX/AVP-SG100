@@ -9,8 +9,8 @@ from typing import Mapping
 import numpy as np
 
 from sg100_teleop.data_collection.vla_raw_schema import (
-    DEFAULT_CAMERA_MODALITIES,
     DEFAULT_REQUIRED_CAMERAS,
+    LEGACY_CAMERA_MODALITIES,
     ROBOT_JOINT_NAMES,
     parse_camera_modalities,
     parse_required_cameras,
@@ -271,7 +271,7 @@ def validate_episode(
         stored_modalities = arrays.get("camera_modalities")
         enabled_camera_modalities = (
             parse_camera_modalities(str(np.asarray(stored_modalities).item()))
-            if stored_modalities is not None else DEFAULT_CAMERA_MODALITIES
+            if stored_modalities is not None else LEGACY_CAMERA_MODALITIES
         )
     if "camera_modalities" in arrays:
         modality_contract_keys = {

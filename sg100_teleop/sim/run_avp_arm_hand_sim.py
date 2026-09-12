@@ -44,6 +44,10 @@ from sg100_teleop.robot.sg100_driver import SG100HardwareMap
 
 from sg100_teleop.robot.sg100_mock_driver import MockSG100Driver
 
+from sg100_teleop.recording.arm_joint_comparison import (
+    ArmJointComparisonRecorder,
+)
+
 from sg100_teleop.recording.mujoco_state_recorder import (
     MujocoStateRecorder,
 )
@@ -86,11 +90,11 @@ from sg100_teleop.tracking.avp_wrist_mapper import AVPWristRelativeMapper, make_
 
 DEFAULT_MODEL = (
     "sg100_teleop/assets/rm65_sg100/"
-    "mjcf/rm65_sg100_avp_grasp_scene.xml"
+    # "mjcf/rm65_sg100_avp_grasp_scene.xml"
     # "mjcf/rm65_sg100_demo_hammer_peg_assembly_scene.xml"
     # "mjcf/rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
     # "mjcf/rm65_sg100_demo_maintenance_kit_packing_scene.xml"
-    # 'mjcf/rm65_sg100_realworld_teleop_scene.xml'
+    'mjcf/rm65_sg100_realworld_teleop_scene.xml'
 )
 
 DEFAULT_CALIBRATION = (
@@ -1018,14 +1022,25 @@ def build_arg_parser():
     )
 
     parser.add_argument(
+        "--arm-not-moving-stop",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Stop the real arm on sustained low measured velocity relative "
+            "to commanded velocity (arm_not_moving). Default: off, warning "
+            "only. Target/feedback timeouts, controller faults and gross "
+            "position-error stops remain active."
+        ),
+    )
+
+    parser.add_argument(
         "--arm-max-follow-error-deg",
         type=float,
         default=20.0,
         help=(
             "Gross cmd-vs-actual position mismatch bound in deg for "
-            "the real backend. Primary liveness check is velocity-based "
-            "dead-arm detection; ordinary low-follow lag never reaches "
-            "this bound (default: 20)"
+            "the real backend; remains active even when "
+            "--arm-not-moving-stop is off (default: 20)"
         ),
     )
 
@@ -1033,6 +1048,23 @@ def build_arg_parser():
         "--arm-verbose",
         action="store_true",
         help="Print real backend events and timing statistics",
+    )
+
+    parser.add_argument(
+        "--arm-joint-compare",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Read-only MuJoCo/feedback/sent joint comparison JSONL log; "
+            "requires --arm-backend real (default: off)"
+        ),
+    )
+
+    parser.add_argument(
+        "--arm-joint-compare-hz",
+        type=float,
+        default=2.0,
+        help="Joint comparison sampling rate in (0, 10] Hz (default: 2)",
     )
 
     parser.add_argument(
@@ -1150,6 +1182,16 @@ def main():
             "--collect-arm-hand-data requires --arm-backend real; "
             "simulated qpos is not RM65 measured feedback"
         )
+
+    if args.arm_joint_compare and args.arm_backend != "real":
+        raise ValueError("--arm-joint-compare requires --arm-backend real")
+
+    if (
+        not math.isfinite(args.arm_joint_compare_hz)
+        or not 0.0 < args.arm_joint_compare_hz <= 10.0
+        or not math.isfinite(1e9 / args.arm_joint_compare_hz)
+    ):
+        raise ValueError("--arm-joint-compare-hz must be finite and in (0, 10]")
 
     if args.hammer_impact_diagnostic and args.arm_backend != "sim":
         raise ValueError(
@@ -1492,13 +1534,16 @@ def main():
                 "connected",
                 "disarm",
                 "send_failure",
+                "arm_not_moving_warning",
             ):
                 print(f"[REAL-ARM] {name}: {detail}")
             if real_error_recorder is not None:
                 severity = (
                     "ERROR"
                     if "error" in name or "failure" in name
-                    else "WARNING" if name == "disarm" else "INFO"
+                    else "WARNING"
+                    if name in ("disarm", "arm_not_moving_warning")
+                    else "INFO"
                 )
                 real_error_recorder.record(
                     severity=severity,
@@ -1522,6 +1567,7 @@ def main():
             gross_follow_error_rad=np.deg2rad(
                 args.arm_max_follow_error_deg
             ),
+            arm_not_moving_stop=args.arm_not_moving_stop,
             on_event=real_arm_event,
         )
         real_arm_backend.connect()
@@ -1532,6 +1578,11 @@ def main():
             f"(follow={args.arm_follow}, {args.arm_send_hz} Hz, "
             f"PROFILE_{args.arm_safety_profile}, "
             f"tool={args.arm_tool_profile})"
+        )
+        print(
+            "[REAL-ARM] arm_not_moving stop: "
+            + ("ON" if args.arm_not_moving_stop else "OFF (warning only)")
+            + "; other stop protections remain active"
         )
         print(
             "[REAL-ARM] keys: C = calibrate anchor | "
@@ -2572,8 +2623,20 @@ def main():
     # Main runtime loop
     # ========================================================
 
+    arm_joint_comparison_recorder = None
     run_outcome = "completed"
     try:
+        if args.arm_joint_compare:
+            arm_joint_comparison_recorder = ArmJointComparisonRecorder(
+                recording_session_dir,
+                rate_hz=args.arm_joint_compare_hz,
+                feedback_timeout_ms=args.arm_feedback_timeout_ms,
+            )
+            print(
+                "[ARM-JOINT-COMPARE] read-only log:",
+                arm_joint_comparison_recorder.path,
+                f"@ {args.arm_joint_compare_hz:g} Hz (background writer)",
+            )
         with (
             mujoco.viewer.launch_passive(
                 model,
@@ -3919,6 +3982,14 @@ def main():
                             data,
                         )
 
+                        if arm_joint_comparison_recorder is not None:
+                            arm_joint_comparison_recorder.maybe_record(
+                                mujoco_qpos=data.qpos,
+                                arm_qpos_indices=robot_layout.arm_qpos_indices,
+                                feedback=feedback,
+                                arm_backend=real_arm_backend,
+                            )
+
                         state_recorder.maybe_record(
                             data
                         )
@@ -4317,6 +4388,8 @@ def main():
         raise
 
     finally:
+        if arm_joint_comparison_recorder is not None:
+            arm_joint_comparison_recorder.request_close()
         if telemetry_publisher is not None:
             telemetry_publisher.close()
         if hammer_impact_diagnostic is not None:
@@ -4352,6 +4425,15 @@ def main():
             finally:
                 real_arm_backend.disconnect()
                 print("[REAL-ARM] backend disconnected")
+        if arm_joint_comparison_recorder is not None:
+            log_closed = arm_joint_comparison_recorder.close()
+            print(
+                "[ARM-JOINT-COMPARE]",
+                f"written={arm_joint_comparison_recorder.written_samples}",
+                f"dropped={arm_joint_comparison_recorder.dropped_samples}",
+                f"closed={log_closed}",
+                f"error={arm_joint_comparison_recorder.last_error}",
+            )
         if arm_hand_collector is not None:
             arm_hand_recording_path = arm_hand_collector.finalize()
             print(

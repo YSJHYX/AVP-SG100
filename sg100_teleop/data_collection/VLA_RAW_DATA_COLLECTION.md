@@ -67,8 +67,8 @@ D405 尚未到位时，正式支持 D455 head-only camera bring-up：
   --hz 30
 ```
 
-默认仍为 `--camera-modalities rgb,depth` 以保持旧 H1 命令兼容；上面的当前 H1
-SOP 显式选择 RGB-only。
+默认是 `--camera-modalities rgb`，D455 与 D405 都只启动 RGB8。研发任务需要
+深度时再显式选择 `--camera-modalities rgb,depth`。
 
 `--telemetry optional` 是显式 camera-only 模式：不创建 telemetry socket，`On`
 不要求 publisher alive，所有 robot joint value arrays 为 NaN、robot valid 全为
@@ -130,8 +130,8 @@ rate；旧 v1/v2 可从 tick-age 重建 publish timestamp。
 - right wrist：Intel RealSense D405；
 - production 默认启用 `head,right_wrist`；partial bring-up 只启用 `head`，且完全
   不实例化 D405 pipeline；
-- `--camera-modalities` 正式支持 `rgb` 与 `rgb,depth`，默认 `rgb,depth` 以保持
-  旧命令兼容；RGB 是 VLA recorder 必需模态，`depth`/depth-only 会被 CLI 拒绝；
+- `--camera-modalities` 正式支持 `rgb` 与 `rgb,depth`，默认 `rgb`；RGB 是 VLA
+  recorder 必需模态，`depth`/depth-only 会被 CLI 拒绝；
 - RGB-only 时 pipeline 只 enable RGB8，不 enable depth stream、不创建 align 或
   depth ndarray，不压缩/写入 depth PNG；这会实际降低 USB、CPU、IO 与容量占用；
 - RGB-D 时采 RGB8 + raw Z16 `uint16`，禁止 uint8 conversion、normalization、

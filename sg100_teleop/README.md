@@ -382,7 +382,7 @@ action，必须形成显式 dataset policy，不能静默切换。
 
 ## 10. Camera Modalities
 
-正式 π0.5 推荐 `--camera-modalities rgb`：head D455 RGB + right wrist D405 RGB。
+正式 π0.5 默认 `--camera-modalities rgb`：head D455 RGB + right wrist D405 RGB。
 Depth 不直接进入当前 π0.5 image encoder，但能力保留；研发/几何 debug 使用
 `--camera-modalities rgb,depth`，保存 raw aligned Z16 uint16 PNG。
 

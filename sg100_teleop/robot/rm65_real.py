@@ -75,6 +75,7 @@ class RM65RealBackend(ArmBackend):
         target_timeout_s: float = DEFAULT_TARGET_TIMEOUT_S,
         feedback_timeout_s: float = DEFAULT_FEEDBACK_TIMEOUT_S,
         gross_follow_error_rad: float = DEFAULT_GROSS_FOLLOW_ERROR_RAD,
+        arm_not_moving_stop: bool = True,
         max_send_failures: int = DEFAULT_MAX_SEND_FAILURES,
         lower_rad: np.ndarray = RM65_JOINT_LOWER_RAD,
         upper_rad: np.ndarray = RM65_JOINT_UPPER_RAD,
@@ -115,7 +116,9 @@ class RM65RealBackend(ArmBackend):
             target_timeout_s=target_timeout_s,
             feedback_timeout_s=feedback_timeout_s,
             gross_follow_error_rad=gross_follow_error_rad,
+            arm_not_moving_stop=arm_not_moving_stop,
         )
+        self._next_motion_warning_ns = 0
         self._max_send_failures = int(max_send_failures)
 
         self._enabled = False
@@ -265,6 +268,7 @@ class RM65RealBackend(ArmBackend):
         if enabled:
             self._send_failures = 0
             self._monitor.reset_follow_error_state()
+            self._next_motion_warning_ns = 0
             feedback = self.joint_state()
             if feedback is not None:
                 self._limiter.reset(feedback.q_rad)
@@ -465,13 +469,26 @@ class RM65RealBackend(ArmBackend):
                     commanded_velocity_rad_s=(
                         self._limiter.commanded_velocity_rad_s
                     ),
-                    actual_velocity_rad_s=feedback.qd_rad_s,
+                    actual_velocity_rad_s=(
+                        feedback.qd_rad_s if feedback is not None else None
+                    ),
                     dt_s=dt_s,
                 )
                 if trigger is not None:
                     self._stop_sequence.execute(trigger.name + "/" + trigger.detail)
                     last_cmd = None
                 elif target is not None:
+                    warning = self._monitor.motion_warning
+                    if warning is None:
+                        self._next_motion_warning_ns = 0
+                    elif now_ns >= self._next_motion_warning_ns:
+                        # Keep warning-only mode observable without logging
+                        # at the CANFD sender rate (normally 100 Hz).
+                        self._next_motion_warning_ns = now_ns + 1_000_000_000
+                        self._on_event(
+                            "arm_not_moving_warning",
+                            warning.detail + "; automatic motion stop disabled",
+                        )
                     # Advance the limiter EVERY tick toward the latest
                     # target and stream the result: the sender performs
                     # the 60 Hz -> send-rate interpolation.  Stale data

@@ -670,10 +670,20 @@ def test_controller_production_default_still_blocks_missing_d405(
     assert controller.state is EpisodeState.READY
 
 
-def test_camera_modality_cli_default_rgb_and_depth_only_rejected() -> None:
+def test_camera_modality_cli_defaults_to_rgb_and_depth_only_rejected() -> None:
     parser = build_recorder_arg_parser()
     default = parser.parse_args(["--head-serial", "D455"])
-    assert default.camera_modalities == ("rgb", "depth")
+    assert default.camera_modalities == ("rgb",)
+    dual = parser.parse_args([
+        "--head-serial", "D455",
+        "--wrist-serial", "D405",
+        "--telemetry", "optional",
+    ])
+    _, head, wrist, _, _ = create_runtime_sources(
+        dual, camera_factory=lambda **kwargs: kwargs
+    )
+    assert head["enable_depth"] is False
+    assert wrist["enable_depth"] is False
     rgb = parser.parse_args([
         "--head-serial", "D455",
         "--camera-modalities", "rgb",
@@ -776,7 +786,9 @@ def test_rgbd_default_preserves_uint16_depth_and_independent_depth_fields(
         depth_frame_number=8,
     )
     writer = BoundedMediaWriter(
-        tmp_path / "media", camera_roles=("head",)
+        tmp_path / "media",
+        camera_roles=("head",),
+        camera_modalities=("rgb", "depth"),
     )
     assert writer.enqueue(0, frame)
     writer.close()
@@ -813,7 +825,9 @@ def test_validator_rejects_unexpected_depth_in_rgb_episode(tmp_path: Path) -> No
 
 
 def test_v1_h1_rgbd_episode_contract_remains_readable(tmp_path: Path) -> None:
-    controller, _, _ = _head_only_controller(tmp_path)
+    controller, _, _ = _head_only_controller(
+        tmp_path, camera_modalities=("rgb", "depth")
+    )
     controller.handle_input("On")
     controller.handle_input("Off")
     legacy = dict(controller.candidate_arrays)

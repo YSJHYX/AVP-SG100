@@ -3,14 +3,11 @@
   <!--
     Real-world AVP teleop robot (visual twin for the REAL RM65 + SG100).
 
-    Byte-for-byte derived from the current production
-    rm65_sg100_avp_grasp_robot.xml (working tree at commit 01c2e6a), with
-    exactly ONE change:
-
-      * the embedded <camera name="wrist_camera"> on sg100_base_link is
-        removed.  The real-world teleop scene carries no camera sensors
-        (model.ncam must be 0); VLA observation cameras stay exclusive to
-        the rm65_sg100_avp_grasp_scene.xml simulation workflow.
+    Derived from the current production rm65_sg100_avp_grasp_robot.xml
+    (working tree at commit 01c2e6a).  The embedded non-renderable
+    <camera name="wrist_camera"> is retained on sg100_base_link so the
+    real-world scene satisfies the MujocoStateRecorder VLA observation
+    contract while remaining a robot-only visual twin.
 
     Everything else is identical to production, so the 17-DoF kinematic
     tree, joint/actuator names and order, meshes, materials, collision
@@ -122,6 +119,18 @@
                     priority="1"
                     group="3"
                     rgba="0 1 0 0"
+                  />
+                  <!--
+                    Non-renderable wrist observation camera required by the
+                    VLA state recording contract.  The transform is identical
+                    to the production AVP grasp model, and follows the hand as
+                    a direct child of sg100_base_link.
+                  -->
+                  <camera
+                    name="wrist_camera"
+                    pos="0.016859 -0.160165 0.000"
+                    xyaxes="0.999993640 -0.003566422 0.000000000 -0.002427369 -0.680613254 0.732638865"
+                    fovy="75"
                   />
                   <body name="thumb_link1" pos="0.0315 -0.0318581 0.0384">
                     <inertial pos="0.0120772 0.00239257 0.0136728" quat="0.896107 -0.329025 0.284087 -0.0896036" mass="0.0113388" diaginertia="1.6811e-06 1.39718e-06 7.75511e-07" />

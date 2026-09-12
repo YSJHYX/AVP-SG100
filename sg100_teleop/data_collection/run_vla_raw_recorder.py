@@ -49,7 +49,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--camera-modalities",
         type=parse_camera_modalities,
         default=DEFAULT_CAMERA_MODALITIES,
-        help="支持 rgb 或 rgb,depth（默认保持 RGB-D）",
+        help="支持 rgb 或 rgb,depth（默认 D455/D405 均为 RGB-only）",
     )
     parser.add_argument("--head-serial", required=True)
     parser.add_argument(
@@ -125,14 +125,14 @@ def create_runtime_sources(
     head = camera_factory(
         role="head",
         serial=args.head_serial,
-        expected_model="Intel RealSense D455",
+        expected_model="RealSense D455",
         **common,
     )
     wrist = (
         camera_factory(
             role="right_wrist",
             serial=args.wrist_serial,
-            expected_model="Intel RealSense D405",
+            expected_model="RealSense D405",
             **common,
         )
         if "right_wrist" in roles

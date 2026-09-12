@@ -1,11 +1,9 @@
 """Safety watchdogs and the ordered stop sequence (v3 §A3.5).
 
-Dead-arm detection is VELOCITY-based (v3 §A3.3 failure taxonomy): a
-lagging arm is moving (healthy physics of the low-follow mode, however
-large its time constant), a dead arm is not.  This makes the detector
-immune to tracking-lag changes and removes the need to model the lag
-with position thresholds.  The position check survives only as a wide
-gross-mismatch bound.
+Dead-arm detection is VELOCITY-based (v3 §A3.3 failure taxonomy).
+With arm_not_moving_stop=False, insufficient motion produces a warning
+instead of a stop. Freshness, controller faults, and gross position
+mismatch remain independent stop conditions.
 """
 
 from __future__ import annotations
@@ -44,7 +42,8 @@ class SafetyMonitor:
        faster than ``velocity_fault_threshold_rad_s`` for
        ``velocity_fault_window_s`` while the measured arm velocity
        stayed below ``velocity_fault_ratio`` of the commanded one
-       (dead stream / stalled arm);
+       (dead stream / stalled arm). When arm_not_moving_stop is False,
+       this is exposed as motion_warning and the remaining checks still run;
     5. ``follow_error`` — gross position mismatch beyond
        ``gross_follow_error_rad`` (last-resort bound; ordinary tracking
        lag never reaches it).
@@ -58,6 +57,7 @@ class SafetyMonitor:
         velocity_fault_threshold_rad_s: float = 0.1,
         velocity_fault_ratio: float = 0.3,
         velocity_fault_window_s: float = 0.3,
+        arm_not_moving_stop: bool = True,
     ) -> None:
         if target_timeout_s <= 0.0 or feedback_timeout_s <= 0.0:
             raise ValueError("watchdog timeouts must be positive")
@@ -78,11 +78,14 @@ class SafetyMonitor:
         )
         self.velocity_fault_ratio = float(velocity_fault_ratio)
         self.velocity_fault_window_s = float(velocity_fault_window_s)
+        self.arm_not_moving_stop = bool(arm_not_moving_stop)
+        self.motion_warning: SafetyTrigger | None = None
         self._velocity_fault_elapsed_s = 0.0
 
     def reset_follow_error_state(self) -> None:
         """Clear liveness bookkeeping (call on re-arm)."""
         self._velocity_fault_elapsed_s = 0.0
+        self.motion_warning = None
 
     def check(
         self,
@@ -95,6 +98,7 @@ class SafetyMonitor:
         actual_velocity_rad_s: np.ndarray | None = None,
         dt_s: float | None = None,
     ) -> SafetyTrigger | None:
+        self.motion_warning = None
         if latest_target is None:
             return SafetyTrigger("target_missing", "no target published")
         target_age_s = (
@@ -141,12 +145,15 @@ class SafetyMonitor:
                         self._velocity_fault_elapsed_s
                         >= self.velocity_fault_window_s
                     ):
-                        return SafetyTrigger(
+                        motion_fault = SafetyTrigger(
                             "arm_not_moving",
                             f"cmd {v_cmd:.2f} rad/s vs actual "
                             f"{v_actual:.2f} rad/s for "
                             f"{self._velocity_fault_elapsed_s:.2f} s",
                         )
+                        if self.arm_not_moving_stop:
+                            return motion_fault
+                        self.motion_warning = motion_fault
                 else:
                     self._velocity_fault_elapsed_s = 0.0
             else:

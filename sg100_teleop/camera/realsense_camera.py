@@ -11,6 +11,12 @@ from typing import Any
 import numpy as np
 
 
+_FIXED_COLOR_CONTROLS: dict[str, tuple[float, float]] = {
+    "D405": (7000.0, 16.0),
+    "D455": (39.0, 5.0),
+}
+
+
 @dataclass(frozen=True)
 class RealSenseFrame:
     role: str
@@ -103,6 +109,56 @@ class RealSenseCamera:
             dtype=np.float64,
         )
 
+    @staticmethod
+    def _configure_fixed_color_controls(rs, device, model: str) -> dict[str, Any]:
+        """Apply the production color controls; no runtime override exists."""
+
+        camera_family = next(
+            (name for name in _FIXED_COLOR_CONTROLS if model.endswith(name)),
+            None,
+        )
+        if camera_family is None:
+            raise RuntimeError(f"没有为 {model!r} 配置固定彩色相机参数")
+        exposure_us, gain = _FIXED_COLOR_CONTROLS[camera_family]
+
+        color_sensors = []
+        for sensor in device.query_sensors():
+            if any(
+                profile.stream_type() == rs.stream.color
+                for profile in sensor.get_stream_profiles()
+            ):
+                color_sensors.append(sensor)
+        if len(color_sensors) != 1:
+            raise RuntimeError(
+                f"{model}: 应有且仅有一个 color stream sensor，"
+                f"实际找到 {len(color_sensors)} 个"
+            )
+        sensor = color_sensors[0]
+        controls = (
+            (rs.option.enable_auto_exposure, 0.0, "enable_auto_exposure"),
+            (rs.option.exposure, exposure_us, "exposure_us"),
+            (rs.option.gain, gain, "gain"),
+            (
+                rs.option.enable_auto_white_balance,
+                1.0,
+                "enable_auto_white_balance",
+            ),
+        )
+        applied: dict[str, Any] = {}
+        for option, value, name in controls:
+            if not sensor.supports(option):
+                raise RuntimeError(f"{model}: 彩色传感器不支持固定参数 {name}")
+            sensor.set_option(option, value)
+            actual = float(sensor.get_option(option))
+            if not np.isclose(actual, value, atol=1e-6, rtol=0.0):
+                raise RuntimeError(
+                    f"{model}: 固定参数 {name} 写入失败: "
+                    f"requested={value}, actual={actual}"
+                )
+            applied[name] = bool(actual) if name.startswith("enable_") else actual
+        applied["white_balance_mode"] = "AUTO"
+        return applied
+
     def start(self) -> None:
         if self._thread is not None:
             return
@@ -156,8 +212,12 @@ class RealSenseCamera:
                     f"{self.role}: SDK profile 与请求不一致: actual={actual}, "
                     f"expected={expected}"
                 )
+            active_device = active.get_device()
+            color_controls = self._configure_fixed_color_controls(
+                rs, active_device, model
+            )
             if self.enable_depth:
-                depth_sensor = active.get_device().first_depth_sensor()
+                depth_sensor = active_device.first_depth_sensor()
             self._metadata = {
                 "role": self.role,
                 "model": model,
@@ -189,6 +249,7 @@ class RealSenseCamera:
                 "depth_aligned_to": "color" if self.enable_depth else "DISABLED",
                 "extrinsics_to_robot": "UNAVAILABLE / NOT_CALIBRATED",
                 "synchronization": "HOST MONOTONIC SOFTWARE ALIGNMENT",
+                "color_controls": color_controls,
             }
         except Exception:
             pipeline.stop()

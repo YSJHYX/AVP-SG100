@@ -112,6 +112,10 @@ class SG100RestrictedAVPBackend:
         self.anchored = False
         self.enabled = False
         self.estopped = False
+        # The first valid post-enable AVP sample establishes the reference for
+        # the per-cycle target-delta guard.  It still passes through the
+        # independent tracking-spike gate and velocity slew limiter.
+        self._last_cycle_candidate: np.ndarray | None = None
         self._last_canonical: np.ndarray | None = None
         self._last_sdk_target: np.ndarray | None = None
         self._crc_baseline = 0
@@ -202,6 +206,7 @@ class SG100RestrictedAVPBackend:
         self._crc_baseline = int(self.driver.diagnostics.get("crc_error_count", 0))
         self.anchored = True
         self.enabled = False
+        self._last_cycle_candidate = None
         return RestrictedCommandResult(
             True, "ANCHORED_ZERO_OUTPUT",
             application.desired_canonical_rad.copy(),
@@ -213,7 +218,12 @@ class SG100RestrictedAVPBackend:
     def set_enabled(self, enabled: bool) -> None:
         if enabled and (not self.anchored or self.estopped):
             raise RuntimeError("C anchor is required before enable")
-        self.enabled = bool(enabled)
+        requested = bool(enabled)
+        if requested and not self.enabled:
+            self._last_cycle_candidate = None
+        elif not requested:
+            self._last_cycle_candidate = None
+        self.enabled = requested
         if not self.enabled:
             self.driver.hold_passive()
 
@@ -226,6 +236,7 @@ class SG100RestrictedAVPBackend:
             self.driver.hold_passive()
         finally:
             self.enabled = False
+            self._last_cycle_candidate = None
         return RestrictedCommandResult(False, reason)
 
     def submit(
@@ -276,9 +287,21 @@ class SG100RestrictedAVPBackend:
         active_delta = np.abs(delta[list(self.active_joint_indices)])
         if np.any(active_delta > self.tracking_spike_rad):
             return self._safe_stop("TRACKING_SPIKE")
+
+        previous_cycle_candidate = self._last_cycle_candidate
+        self._last_cycle_candidate = candidate.copy()
+        cycle_delta = (
+            None
+            if previous_cycle_candidate is None
+            else candidate - previous_cycle_candidate
+        )
         if (
-            self.max_cycle_delta_rad is not None
-            and np.any(active_delta > self.max_cycle_delta_rad)
+            cycle_delta is not None
+            and self.max_cycle_delta_rad is not None
+            and np.any(
+                np.abs(cycle_delta[list(self.active_joint_indices)])
+                > self.max_cycle_delta_rad
+            )
         ):
             return self._safe_stop("PER_CYCLE_DELTA_EXCEEDED")
         velocity_step = self.max_velocity_rad_s * float(dt_s)

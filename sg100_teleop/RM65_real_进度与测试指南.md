@@ -156,10 +156,59 @@ PYTHONPATH=. python sg100_teleop/sim/run_avp_arm_hand_sim.py --ip 192.168.2.179 
 | `--arm-safety-profile` | 10 | 10/25/50 → qdot 0.5/1.25/2.5 rad/s、qddot 2/5/10 rad/s²(**仅 10 经真机验证**) |
 | `--arm-target-timeout-ms` | 150 | 目标老化 watchdog |
 | `--arm-feedback-timeout-ms` | 200 | 反馈老化 watchdog |
-| `--arm-max-follow-error-deg` | 20 | 位置粗判上限(主检测是速度式死臂) |
+| `--arm-not-moving-stop` | 关闭 | 显式添加后，持续低于指令速度的 30% 达约 0.3 s 时自动停臂；默认只告警，不因此停臂。也可用 `--no-arm-not-moving-stop` 显式关闭 |
+| `--arm-max-follow-error-deg` | 20 | 位置粗判上限；不受 `--arm-not-moving-stop` 开关影响 |
 | `--arm-verbose` | off | 后端事件+每 0.5 s sender 指标 |
+| `--arm-joint-compare` | 关闭 | 只读记录 MuJoCo 实际 qpos、同轮反馈、最后成功下发的关节角和逐关节差值；仅 real 模式可用 |
+| `--arm-joint-compare-hz` | 2 | 对比日志采样频率，须在 `(0, 10]` Hz；不改变运动或反馈频率 |
 
 网络拓扑:控制器走有线 NIC(192.168.1.x),AVP 走无线(192.168.2.x),互不干扰。
+
+2026-09-10 更新：上述开关作用于 `run_avp_arm_hand_sim` 的真机运行入口。
+不添加开关时，`arm_not_moving` 仅输出 `arm_not_moving_warning`，持续异常时
+最多每秒告警一次；加 `--arm-not-moving-stop` 恢复此前的自动停臂行为。
+本文件前面的快动作 disarm 记录是旧行为。目标/反馈超时、控制器报错、
+位置粗判、连续发送失败及 D/Ctrl-C 停止不受影响。直接调用后端的既有
+测试脚本默认仍保留原来的自动停臂行为。此变更不代表新的真机验证通过。
+
+### 2026-09-11：只读关节对比日志
+
+安全停止当前任务后，在原真机启动命令中添加以下参数并重启：
+
+```bash
+--arm-joint-compare
+```
+
+默认关闭（也支持 `--no-arm-joint-compare`），不开启时不创建日志线程或文件。
+开启后默认每秒采样 2 次，写入本次录制目录的
+`recording/<本次时间>/arm_joint_comparison.jsonl`，运行期间即可读取；
+不依赖 MuJoCo `data.time`，也不要求按 C/A 或使能运动。
+可用 `--arm-joint-compare-hz 5` 调整采样频率，最高 10 Hz。
+
+所有数组均按 `joint_1` 到 `joint_6` 排列，角度同时保留 rad 和 deg：
+
+| 字段 | 含义 |
+|---|---|
+| `mujoco_qpos_deg` | 本轮反馈同步、`mj_forward` 后读取的实际 MuJoCo 关节值，不是目标角或离线重建 |
+| `feedback_q_deg` / `feedback_received_monotonic_ns` | 同一轮用于更新模型的反馈快照及其主机接收时间，不再次轮询 SDK |
+| `sent_q_deg` / `sent_monotonic_ns` | 后端缓存的最后一次成功下发值（经过限速器），不是 IK goal，也不是 verbose 的 `arm cmd` |
+| `mujoco_minus_feedback_deg` | 逐关节 `模型 − 反馈`，用于检查数值同步 |
+| `sent_minus_feedback_deg` | 逐关节 `最后下发 − 反馈`，用于观察指令与反馈差异 |
+| `feedback_age_ms` / `feedback_valid` / `feedback_fresh` / `comparison_valid` | 反馈年龄、有效性、新鲜度；新鲜度沿用当前反馈超时参数，仅标记，不触发停止 |
+| `sent_age_ms` / `feedback_minus_sent_time_ms` | 下发值年龄及反馈与下发时间差；两者异步，不能把差值直接当作零偏或严格配对的跟踪误差 |
+| `arm_enabled` | 采样时的机械臂使能状态；未使能时仍可采样 |
+
+没有下发记录时，`sent_*` 角度及相关差值为 `null`，不会伪造为零角度；
+缺少反馈时，相应字段也为 `null`。日志不自动判断或修改关节零位、方向。
+real 模式正常时 `模型 − 反馈` 应接近零，因为模型本来就复制反馈：这只证明
+数值同步，不证明实际安装朝向、机械零位或外部测量标定正确。
+
+采样只复制内存和读取后端缓存，不发送 SDK 请求、不取走数据采集的命令事件。
+文件序列化、写入和逐行 flush 在后台线程执行，队列有界；队列满时丢弃日志样本，
+写入失败仅停止日志写入，不改变控制或安全逻辑。退出时在真机断开后限时等待日志收尾，
+终端输出写入条数、丢弃条数和日志错误。强制退出或磁盘故障可能丢失未写出的样本。
+
+无硬件回归：`python -m unittest sg100_teleop.tests.test_arm_joint_comparison`。
 
 ---
 

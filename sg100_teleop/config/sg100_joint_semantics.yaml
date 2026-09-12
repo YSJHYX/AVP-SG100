@@ -50,12 +50,12 @@ joints:
     negative_direction: extension_outward
 
   index_j1:
-    #range: [0.0, 1.57]
-    range: [0.0, 0.0]  # index MCP is mechanically locked on the SG100 (no abduction)
+    range: [0.0, 1.57]
+    #range: [0.0, 0.0]  # index MCP is mechanically locked on the SG100 (no abduction)
     semantic: index_adduction
     zero: 0.0
     positive_direction: toward_thumb
-    teleop_range: [0.0, 0.0]
+    #teleop_range: [0.0, 0.0]
 
   index_j2:
     range: [0.0, 2.18]
@@ -84,12 +84,12 @@ joints:
     negative_direction: extension_toward_dorsal_side
 
   little_j1:
-    #range: [-3.14, 0.0]
-    range: [0.0, 0.0]
+    range: [-3.14, 0.0]
+    #range: [0.0, 0.0]
     semantic: little_outward_rotation
     zero: 0.0
     negative_direction: rotate_outward_and_downward
-    teleop_range: [0.0, 0.0]
+    #teleop_range: [0.0, 0.0]
 
   little_j2:
     range: [0.0, 2.18]

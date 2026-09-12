@@ -10,7 +10,9 @@
     table, real objects, real room) is passthrough, so this scene carries
     ONLY the robot:
 
-      * NO workstation_front / demo_camera / wrist_camera  (model.ncam = 0)
+      * workstation_front + wrist_camera exist only as non-renderable VLA
+        observation sensors required by MujocoStateRecorder
+      * NO demo_camera
       * NO table, wooden crate, Coke, apple, mug, or any grasp object
       * NO floor plane, workstation fixture, debug site, or mocap marker
       * NO world light geometry (RealityKit owns real-world lighting)
@@ -20,8 +22,8 @@
     rm65_sg100_avp_grasp_v8_compat.usdz, which remain untouched.
 
     The robot definition comes from rm65_sg100_realworld_teleop_robot.xml:
-    the current production rm65_sg100_avp_grasp_robot.xml with only the
-    embedded wrist_camera removed, so joint/actuator/body names, meshes,
+    the current production rm65_sg100_avp_grasp_robot.xml, including its
+    non-renderable wrist_camera sensor, so joint/actuator/body names, meshes,
     collision geoms, and joint zero/reference semantics are all identical
     to production.  The realworld_ready keyframe below snapshots the actual
     pre-grasp IK startup state used by run_avp_arm_hand_sim.py; it does not
@@ -71,6 +73,20 @@
       diffuse="0.58 0.58 0.58"
       specular="0.08 0.08 0.08"
       castshadow="false"
+    />
+
+    <!--
+      Fixed head/workstation observation camera required by the VLA state
+      recording contract.  It has no geometry, collision, mass, or effect on
+      the robot-only USDZ exported for Vision Pro passthrough.  Its calibrated
+      pose matches the production AVP grasp scene.
+    -->
+    <camera
+      name="workstation_front"
+      mode="fixed"
+      pos="-0.050000000 -0.073461236 0.900000000"
+      xyaxes="0.000000000 -1.000000000 0.000000000 0.808212783 0.000000000 0.588890565"
+      fovy="50"
     />
   </worldbody>
 
