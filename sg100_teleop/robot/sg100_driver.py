@@ -10,7 +10,7 @@ docs/Realtime_Performance_Analysis.md, include/sg100_types.h):
   middle(7,8), little(9,10,11)
 - the production command API is ``SetHandControl(Hand_Control_t)``:
   per-joint position is the SDK USER-ANGLE domain in DEGREES; the SDK
-  applies ``joint_angle_map.json`` (clamp + a*x + b) and converts to
+  applies ``joint_angle_map_v3.0.json`` / R (clamp + a*x + b) and converts to
   wire radians when the scheduler transmits
 - the hand status callback applies the SDK inverse map and rad-to-degree
   conversion without consulting returned joint mode. Real N1 proved
@@ -295,7 +295,7 @@ class SG100CommandLimitContract:
 
     The retargeting/morphology limits remain untouched.  Command-safe
     canonical limits are the exact inverse image of the production SDK's
-    current ``joint_angle_map.json`` user-degree ranges, so there is no second
+    current ``joint_angle_map_v3.0.json`` / R user-degree ranges, so there is no second
     hand-maintained table to drift.
     """
 
@@ -421,7 +421,7 @@ class SG100HardwareMap:
     legacy inverse helper: canonical = gain * (sdk_user - offset)
 
     The result is the SDK API coordinate expressed in radians; the vendor
-    then applies ``joint_angle_map.json`` on commands.  An identity map does
+    then applies ``joint_angle_map_v3.0.json`` / R on commands. An identity map does
     NOT establish physical 1:1 scale. Real MODE7 entry established the
     joint-angle-scale domain but left the physical canonical mapping blocked;
     this class must not be read as, or automatically reused for, inbound

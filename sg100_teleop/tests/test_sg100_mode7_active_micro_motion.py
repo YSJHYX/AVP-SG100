@@ -438,8 +438,8 @@ def _session_setup(tmp_path, monkeypatch, *, fail_phase=None, failure=None):
     (evidence / "summary.json").write_text(json.dumps(_history(current)))
     sdk_dir = tmp_path / "sdk"
     sdk_dir.mkdir()
-    (sdk_dir / "joint_angle_map.json").write_bytes(
-        (Path(DEFAULT_SDK_DIR) / "joint_angle_map.json").read_bytes()
+    (sdk_dir / "joint_angle_map_v3.0.json").write_bytes(
+        (Path(DEFAULT_SDK_DIR) / "joint_angle_map_v3.0.json").read_bytes()
     )
     _SessionDriver.instances.clear()
     monkeypatch.setattr(active, "SG100SDKDriver", _SessionDriver)

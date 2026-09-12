@@ -5,7 +5,7 @@
 // 10 ms realtime exchange, and control/status flow exclusively through the
 // public C++ API:
 //
-//   connect            SetConfig + SetConfigSearchDir + Init +
+//   connect            validate v3 RIGHT map + SetConfig + Init +
 //                      RegisterHandStatusCallback/RegisterErrorCallback +
 //                      Start()            (scheduler thread starts)
 //   set_hand_control   Hand_Control_t (id=i+1, per-joint mode/gains,
@@ -31,6 +31,7 @@
 // verification is pending, so the wrapper preserves every returned mode.
 
 #include "sg100_device.h"
+#include "sg100_angle_map.h"
 #include "sg100_types.h"
 
 #include <algorithm>
@@ -214,20 +215,61 @@ Hand_Control_t build_hand_control(const float* positions_deg,
     return control;
 }
 
+// No transport: require the explicit v3 file AND verify that the SDK's
+// runtime search chooses the same RIGHT parameters (never a legacy map).
+bool load_v3_right_map(const std::string& directory,
+                       SG100AngleMapParams& parameters) {
+    SG100AngleMapParams expected{};
+    const auto file = LoadJointAngleMapFile(
+        directory + "/joint_angle_map_v3.0.json",
+        SG100AngleMapHand::RIGHT, expected);
+    if (!file.success || file.source != SG100AngleMapSource::V3) return false;
+    const auto runtime = LoadJointAngleMapFromSearchDir(
+        directory, SG100AngleMapHand::RIGHT, parameters);
+    if (!runtime.success || runtime.source != SG100AngleMapSource::V3 ||
+        runtime.hand != SG100AngleMapHand::RIGHT) return false;
+    for (int j = 0; j < JOINT_COUNT; ++j) {
+        const auto& a = expected[j];
+        const auto& b = parameters[j];
+        if (a.a != b.a || a.b != b.b || a.min_angle != b.min_angle ||
+            a.max_angle != b.max_angle) return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 extern "C" {
 
 // -- lifecycle ---------------------------------------------------------------
 
-// Open the vendor RS485 active transport.  config_dir is passed to
-// SetConfigSearchDir so joint_angle_map.json resolves next to the SDK.
+// Read the vendor-selected v3 RIGHT map without opening a serial port.
+// Also serves as the ABI marker for the v3-pinned production bridge.
+int sg100_load_angle_map_v3(const char* config_dir, double* parameters_out,
+                           int count) {
+    if (!config_dir || !config_dir[0] || !parameters_out ||
+        count != JOINT_COUNT) return 0;
+    SG100AngleMapParams parameters{};
+    if (!load_v3_right_map(config_dir, parameters)) return 0;
+    for (int j = 0; j < JOINT_COUNT; ++j) {
+        parameters_out[4 * j] = parameters[j].a;
+        parameters_out[4 * j + 1] = parameters[j].b;
+        parameters_out[4 * j + 2] = parameters[j].min_angle;
+        parameters_out[4 * j + 3] = parameters[j].max_angle;
+    }
+    return 1;
+}
+
+// Open the vendor RS485 active transport only after v3/R validation.
 // Returns 0 on success, negative vendor/connect error otherwise.
 int sg100_connect(const char* port, int baudrate, const char* config_dir) {
     std::lock_guard<std::mutex> lock(g_device_mutex);
     if (g_device || !port || baudrate <= 0) {
         return -1;
     }
+    SG100AngleMapParams parameters{};
+    if (!config_dir || !config_dir[0] ||
+        !load_v3_right_map(config_dir, parameters)) return -4;
     {
         std::lock_guard<std::mutex> status_lock(g_status_mutex);
         g_latest = StatusSnapshot{};
@@ -244,8 +286,14 @@ int sg100_connect(const char* port, int baudrate, const char* config_dir) {
     install_crc_telemetry();
 
     g_device = new SG100Device("VPT_SG100");
-    if (config_dir && config_dir[0] != '\0') {
-        g_device->SetConfigSearchDir(std::string(config_dir));
+    g_device->SetConfigSearchDir(std::string(config_dir));
+    if (!g_device->SetAngleMapHand(SG100AngleMapHand::RIGHT) ||
+        !g_device->ValidateAngleMap() ||
+        g_device->GetAngleMapStatus().source != SG100AngleMapSource::V3) {
+        delete g_device;
+        g_device = nullptr;
+        uninstall_crc_telemetry();
+        return -4;
     }
     SG100Config config;
     config.port = std::string(port);

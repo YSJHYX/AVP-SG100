@@ -532,7 +532,7 @@ def _sdk_fingerprint(sdk_dir: Path) -> dict:
     except OSError:
         commit = ""
     lib = sdk_shared_library(sdk_dir)
-    mapping = sdk_dir / "joint_angle_map.json"
+    mapping = sdk_dir / "joint_angle_map_v3.0.json"
     return {
         "sdk_dir": str(sdk_dir),
         "sdk_commit": commit or "UNKNOWN",
@@ -540,6 +540,7 @@ def _sdk_fingerprint(sdk_dir: Path) -> dict:
         "lib_md5": digest(lib, "md5") if lib.exists() else "MISSING",
         "lib_sha256": digest(lib, "sha256") if lib.exists() else "MISSING",
         "joint_angle_map_path": str(mapping),
+        "joint_angle_map_hand": "R",
         "joint_angle_map_md5": (
             digest(mapping, "md5") if mapping.exists() else "MISSING"
         ),
@@ -547,8 +548,8 @@ def _sdk_fingerprint(sdk_dir: Path) -> dict:
             digest(mapping, "sha256") if mapping.exists() else "MISSING"
         ),
         "joint_angle_map_proof": (
-            "runtime identity strace-proven by N0; re-hashed at session "
-            "start"
+            "v3/R required by driver; native/Python parameters checked "
+            "before connection; re-hashed at session start"
         ),
     }
 

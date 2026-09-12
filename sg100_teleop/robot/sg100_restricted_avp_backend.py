@@ -62,7 +62,10 @@ class SG100RestrictedAVPBackend:
         crc_storm_delta: int = 3,
     ) -> None:
         self.driver = driver
-        self.hardware_map = hardware_map or SG100HardwareMap()
+        self.hardware_map = (
+            hardware_map or getattr(driver, "hardware_map", None)
+            or SG100HardwareMap()
+        )
         requested = tuple(dict.fromkeys(str(value) for value in joint_allowlist))
         validated = set(str(value) for value in hardware_validated_joints)
         unknown = set(requested) - set(self.hardware_map.software_joint_order)

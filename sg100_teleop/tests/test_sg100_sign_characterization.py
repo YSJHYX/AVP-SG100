@@ -286,7 +286,7 @@ def test_selftest_does_not_mutate_mappings_and_stays_offline(tmp_path) -> None:
     hardware_map_path = (
         ROOT / "sg100_teleop" / "config" / "sg100_hardware_map.yaml"
     )
-    json_map_path = Path(DEFAULT_SDK_DIR) / "joint_angle_map.json"
+    json_map_path = Path(DEFAULT_SDK_DIR) / "joint_angle_map_v3.0.json"
     before = (hardware_map_path.read_bytes(), json_map_path.read_bytes())
     result = subprocess.run(
         [sys.executable, "-m",

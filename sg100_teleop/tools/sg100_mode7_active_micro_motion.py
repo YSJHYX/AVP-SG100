@@ -769,7 +769,9 @@ def _metadata(choice: FirstJointChoice, delta_deg: float, sdk_dir: Path) -> dict
     semantics_path = ROOT / "sg100_teleop/config/sg100_joint_semantics.yaml"
     return {
         "sdk_commit": _git_head(sdk_dir),
-        "runtime_map_hash_sha256": _sha256(sdk_dir / "joint_angle_map.json"),
+        "runtime_map_path": str(sdk_dir / "joint_angle_map_v3.0.json"),
+        "runtime_map_hand": "R",
+        "runtime_map_hash_sha256": _sha256(sdk_dir / "joint_angle_map_v3.0.json"),
         "canonical_semantics_hash_sha256": _sha256(semantics_path),
         "outbound_hardware_map_hash_sha256": _sha256(map_path),
         "selected_joint": f"J{choice.joint_id}",
@@ -811,7 +813,7 @@ def _dry_run(args) -> int:
     hardware_map = SG100HardwareMap()
     ranges = load_vendor_user_ranges(Path(args.sdk_dir))
     if ranges is None:
-        raise RuntimeError("SDK joint_angle_map.json ranges unavailable")
+        raise RuntimeError("SDK joint_angle_map_v3.0.json / R ranges unavailable")
     artifact, history = latest_successful_mode7_artifact(args.recording_root)
     current = np.zeros(HAND_DOF)
     for item in history["per_joint"]:

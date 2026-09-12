@@ -1,5 +1,34 @@
 # SG100 Latest SDK Integration (V1.5_NO_TACTILE)
 
+## Current command-map contract (2026-09-12)
+
+The real driver now requires `joint_angle_map_v3.0.json`, version `3.0`,
+RIGHT (`R`). The legacy flat `joint_angle_map.json` is not a fallback.
+Before opening the serial port, Python compares all 11 `[a,b,min,max]`
+rows with the native SDK loader. The bridge explicitly selects RIGHT and
+validates v3 before `Init()` / `Start()`. Missing, invalid or mismatched
+maps fail closed. `BACKEND_READY` driver diagnostics record the map path,
+hand, parameters and outbound command gains.
+
+| Canonical joint | Canonical direction | v3/R SDK user direction | F_cmd gain |
+|---|---|---|---|
+| `index_j1` / J4 | positive | negative (`[-90,0]` deg) | -1 |
+| `middle_j1` / J7 | negative | positive (`[0,125]` deg) | -1 |
+| `little_j1` / J9 | negative | positive (`[0,180]` deg) | -1 |
+
+MuJoCo, retargeting and recorded canonical targets keep their original
+signs. Only the real command boundary changes coordinates. For example,
+canonical J4 `+30 deg` / J9 `-60 deg` becomes SDK user `-30 deg` / `+60 deg`;
+the SDK's v3/R `a=-1,b=0` then produces wire `+30 deg` / `-60 deg` instead
+of clamping both targets to zero. Limits for every joint also come from v3,
+including J2's `[-150,0]` user-degree range.
+
+This is an offline-verified command-path correction, not a new physical
+validation of feedback. Independent `F_fb` validation, C/A gating, velocity
+limits, per-cycle guards, fault handling and passive startup remain in force.
+The N0/N1 hardware evidence and SDK fingerprints below are historical; they
+must not be used to infer that the current SDK still loads the legacy map.
+
 Status: **MODE7 ENTRY PASS / ANGLE-SCALE DOMAIN SUPPORTED / J6 ACTIVE
 COMMAND PASS ON REAL HARDWARE; J7 SOFTWARE READY / HARDWARE PENDING.**
 N0 established the link and feedback cadence.  Real N1 artifact
@@ -143,8 +172,8 @@ data collection is blocked/quarantined.
 ## Joint order
 
 `thumb_j1..thumb_j3, index_j1..index_j3, middle_j1..middle_j2,
-little_j1..little_j3` == SDK joint ids 1..11 (identity ordering; J7 command
-gain is -1). Single conversion authority: `sg100_hardware_map.yaml` +
+little_j1..little_j3` == SDK joint ids 1..11 (identity ordering; J4/J7/J9 command
+gains are -1 under v3/R). Single conversion authority: `sg100_hardware_map.yaml` +
 `SG100HardwareMap`; dataset boundary is canonical radians.
 
 ## Struct ABI (sg100_types.h @ this version)

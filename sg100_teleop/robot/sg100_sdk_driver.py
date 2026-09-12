@@ -9,7 +9,7 @@ description; this docstring summarizes the load-bearing facts):
   0x26/0x27 are vendor-internal details that upper layers must not see).
 - ``SetHandControl`` input domain is documented by the SDK as its user-angle
   coordinate in degrees.
-  The SDK applies ``joint_angle_map.json`` (per-joint clamp + a*x + b) and
+  The SDK applies ``joint_angle_map_v3.0.json`` / R (clamp + a*x + b) and
   converts to wire radians internally. Status applies the inverse map and
   rad-to-degree conversion without mode branching. Real N1 proved MODE_NULL
   position is raw/accumulated-like; the vendor CONFIRMED mode-7
@@ -124,6 +124,8 @@ def sdk_shared_library(sdk_dir: Path | str = DEFAULT_SDK_DIR) -> Path:
     return sdk_dir / "lib" / subdir / name
 
 DEFAULT_BAUDRATE = 1_000_000
+VENDOR_ANGLE_MAP_FILENAME = "joint_angle_map_v3.0.json"
+VENDOR_ANGLE_MAP_HAND = "R"
 
 # CtrlMode_e (sg100_types.h @ V1.5_NO_TACTILE, lines 165-176) — per-JOINT
 # control modes, distinct from the palm runtime mode (SwitchToRealtimeMode).
@@ -214,28 +216,55 @@ def quantize_gain(value: float, range_: float = _PID_RANGE) -> int:
     return int(round(clipped * _QUANT_MAX / range_)) & 0xFFFF
 
 
-def load_vendor_user_ranges(sdk_dir: Path) -> list[tuple[float, float]] | None:
-    """Per-joint [min, max] user-degree ranges from joint_angle_map.json.
+def load_vendor_angle_map(sdk_dir: Path) -> np.ndarray | None:
+    """Load v3/R rows [a, b, min_angle, max_angle] in SDK joint order.
 
-    Returns None when the file is absent (no vendor range guard possible).
-    The values mirror what the SDK clamps on send; rejecting outside-range
-    targets here keeps the recorded action equal to the encoded action.
+    The deployed hand/model is RIGHT. Both v3 hand maps must be valid, as
+    required by the vendor loader. Never fall back to the legacy flat map:
+    its J4/J9 user-angle signs differ from v3 even in the same SDK checkout.
+    Returned values use the SDK's float32 precision, represented as float64.
     """
 
-    path = Path(sdk_dir) / "joint_angle_map.json"
+    path = Path(sdk_dir) / VENDOR_ANGLE_MAP_FILENAME
     if not path.exists():
         return None
-    with path.open("r") as f:
+    with path.open("r", encoding="utf-8") as f:
         mapping = json.load(f)
-    entries = mapping.get("joint_angle_map", [])
-    if not entries:
+    if not isinstance(mapping, dict) or mapping.get("version") != "3.0":
+        raise ValueError(f"{path}: expected angle-map version '3.0'")
+    hands = mapping.get("joint_angle_map")
+    if not isinstance(hands, dict):
+        raise ValueError(f"{path}: expected v3 R/L angle maps")
+    parsed = {}
+    fields = ("a", "b", "min_angle", "max_angle")
+    for hand in ("R", "L"):
+        entries = hands.get(hand)
+        if not isinstance(entries, list) or len(entries) != HAND_DOF:
+            raise ValueError(f"{path}: {hand} must contain exactly 11 joints")
+        rows = []
+        for joint, entry in enumerate(entries, start=1):
+            if not isinstance(entry, dict) or any(
+                not isinstance(entry.get(key), (int, float))
+                or isinstance(entry.get(key), bool)
+                for key in fields
+            ):
+                raise ValueError(f"{path}: {hand}/J{joint} needs numeric {fields}")
+            with np.errstate(over="ignore", invalid="ignore"):
+                row = np.asarray([entry[key] for key in fields], dtype=np.float32)
+            if not np.all(np.isfinite(row)) or row[0] == 0 or row[2] > row[3]:
+                raise ValueError(f"{path}: invalid {hand}/J{joint} scale or range")
+            rows.append(row)
+        parsed[hand] = np.asarray(rows, dtype=np.float64)
+    return parsed[VENDOR_ANGLE_MAP_HAND]
+
+
+def load_vendor_user_ranges(sdk_dir: Path) -> list[tuple[float, float]] | None:
+    """SDK user-degree limits from v3/R only; None when v3 is absent."""
+
+    parameters = load_vendor_angle_map(sdk_dir)
+    if parameters is None:
         return None
-    ranges: list[tuple[float, float]] = []
-    for entry in entries[:HAND_DOF]:
-        ranges.append(
-            (float(entry["min_angle"]), float(entry["max_angle"]))
-        )
-    return ranges
+    return [(float(row[2]), float(row[3])) for row in parameters]
 
 
 def _load_wrapper_library(
@@ -286,12 +315,11 @@ def _load_wrapper_library(
     lib = ctypes.CDLL(str(path))
     # The wrapper is checked into this repository for convenient startup.
     # A checkout can preserve timestamps such that the source-mtime test
-    # alone misses an older C ABI.  The per-joint serializer is the explicit
-    # ABI marker for the mixed-output MODE7 update; rebuild before binding
-    # signatures if the marker is absent.
+    # alone misses an older C ABI. The v3 loader marks the bridge that pins
+    # the SDK to the same RIGHT map as Python before opening the serial port.
     if (
         library_path is None
-        and not hasattr(lib, "sg100_test_serialize_hand_control_per_joint")
+        and not hasattr(lib, "sg100_load_angle_map_v3")
     ):
         _build_wrapper(sdk_dir=sdk_dir, output_path=path)
         lib = ctypes.CDLL(str(path))
@@ -302,6 +330,13 @@ def _load_wrapper_library(
         ctypes.c_char_p,
     ]
     lib.sg100_connect.restype = ctypes.c_int
+    lib.sg100_load_angle_map_v3.argtypes = [
+        ctypes.c_char_p,
+        np.ctypeslib.ndpointer(dtype=np.float64, shape=(HAND_DOF, 4),
+                              flags="C_CONTIGUOUS"),
+        ctypes.c_int,
+    ]
+    lib.sg100_load_angle_map_v3.restype = ctypes.c_int
     lib.sg100_disconnect.argtypes = []
     lib.sg100_disconnect.restype = ctypes.c_int
     lib.sg100_is_connected.argtypes = []
@@ -408,6 +443,7 @@ def _load_wrapper_library(
 # explicitly at link time; GCC/clang export them by default).
 _WRAPPER_EXPORTS = (
     "sg100_connect",
+    "sg100_load_angle_map_v3",
     "sg100_disconnect",
     "sg100_is_connected",
     "sg100_poll_status",
@@ -571,7 +607,7 @@ class SG100SDKDriver(SG100Driver):
         )
         self.sdk_dir = Path(
             sdk_dir if sdk_dir is not None else DEFAULT_SDK_DIR
-        )
+        ).expanduser().resolve()
         self.control_mode = int(control_mode)
         # Historical name retained for API compatibility as an additional
         # enable gate.  It can no longer claim or unlock canonical feedback
@@ -587,13 +623,17 @@ class SG100SDKDriver(SG100Driver):
         self._pid_d = quantize_gain(kd)
         self._output_limit = quantize_gain(output_limit)
 
-        self._vendor_user_ranges = load_vendor_user_ranges(self.sdk_dir)
-        self.command_limit_contract = (
-            SG100CommandLimitContract(
-                self.hardware_map, self._vendor_user_ranges
+        self._vendor_angle_map = load_vendor_angle_map(self.sdk_dir)
+        if self._vendor_angle_map is None:
+            raise SG100SDKDriverError(
+                f"{self.sdk_dir / VENDOR_ANGLE_MAP_FILENAME} missing: "
+                "v3/R is required; refusing legacy angle-map fallback"
             )
-            if self._vendor_user_ranges is not None
-            else None
+        self._vendor_user_ranges = [
+            (float(row[2]), float(row[3])) for row in self._vendor_angle_map
+        ]
+        self.command_limit_contract = SG100CommandLimitContract(
+            self.hardware_map, self._vendor_user_ranges
         )
 
         self._lib: ctypes.CDLL | None = None
@@ -637,6 +677,15 @@ class SG100SDKDriver(SG100Driver):
     def connect(self) -> None:
         if self._connected:
             return
+        # Offline vendor API: compare all a/b/limits before opening a port.
+        # This also catches a config changed since this driver was created.
+        native_map = np.zeros((HAND_DOF, 4), dtype=np.float64)
+        if self._wrapper().sg100_load_angle_map_v3(
+            str(self.sdk_dir).encode(), native_map, HAND_DOF
+        ) != 1 or not np.array_equal(native_map, self._vendor_angle_map):
+            raise SG100SDKDriverError(
+                "SDK v3/R angle map disagrees with Python; refusing connection"
+            )
         code = self._wrapper().sg100_connect(
             self.port.encode(),
             self.baudrate,
@@ -1109,7 +1158,7 @@ class SG100SDKDriver(SG100Driver):
             raise ValueError("positions_deg must contain 11 finite values")
         if self._vendor_user_ranges is None:
             raise SG100SDKDriverError(
-                "joint_angle_map.json missing: cannot prove SDK command limits"
+                f"{VENDOR_ANGLE_MAP_FILENAME} missing: cannot prove SDK command limits"
             )
         low = np.asarray([v[0] for v in self._vendor_user_ranges])
         high = np.asarray([v[1] for v in self._vendor_user_ranges])
@@ -1127,6 +1176,13 @@ class SG100SDKDriver(SG100Driver):
             )
         )
         return {
+            "angle_map": {
+                "path": str(self.sdk_dir / VENDOR_ANGLE_MAP_FILENAME),
+                "version": "3.0",
+                "hand": VENDOR_ANGLE_MAP_HAND,
+                "parameters_a_b_min_max": self._vendor_angle_map.tolist(),
+                "command_gain": self.hardware_map.gain.tolist(),
+            },
             "hand_status_callbacks": int(
                 lib.sg100_hand_status_callbacks()
             ),

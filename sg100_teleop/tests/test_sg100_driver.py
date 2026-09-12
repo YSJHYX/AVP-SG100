@@ -87,12 +87,16 @@ def test_boundary_conversion_with_gain_offset():
     np.testing.assert_allclose(recovered, q, atol=1e-12)
 
 
-def test_command_is_clamped_to_canonical_limits():
+@pytest.mark.parametrize("requested", [-100.0, 100.0])
+def test_command_is_clamped_to_canonical_limits(requested):
     hardware_map = SG100HardwareMap()
-    q = np.full(HAND_DOF, 100.0)  # far outside every joint range
+    q = np.full(HAND_DOF, requested)  # far outside every joint range
     actual = hardware_map.canonical_to_actual(q)
-    assert np.all(actual <= hardware_map.upper_rad + 1e-12)
-    assert np.all(actual >= hardware_map.lower_rad - 1e-12)
+    # SDK user angles have different signs; check limits in canonical space.
+    recovered = hardware_map.actual_to_canonical(actual)
+    np.testing.assert_allclose(
+        recovered, np.clip(q, hardware_map.lower_rad, hardware_map.upper_rad)
+    )
 
 
 def test_command_shape_enforced():

@@ -213,6 +213,31 @@ def test_same_canonical_command_reaches_mujoco_ctrl_and_real_backend(sim):
 # ----------------------------------------------------------------------
 
 
+def test_v3_side_mapping_keeps_mujoco_and_recording_domain_canonical(sim):
+    _, data, layout = sim
+    driver = FakeDriver()
+    backend = SG100RestrictedAVPBackend(
+        driver, joint_allowlist=("index_j1", "little_j1"),
+        max_velocity_rad_s=10, tracking_spike_rad=10,
+    )
+    assert backend.anchor(np.zeros(HAND_DOF)).accepted
+    backend.set_enabled(True)
+    shared = np.zeros(HAND_DOF)
+    shared[[3, 8]] = np.deg2rad([30, -60])
+    original = shared.copy()
+    write_robot_controls(data, layout, np.zeros(6), shared)
+    result = backend.submit(
+        shared, tracking_received_ns=1_000_000_000,
+        now_ns=1_000_000_000, dt_s=1,
+    )
+    assert result.accepted
+    np.testing.assert_array_equal(shared, original)
+    np.testing.assert_array_equal(data.ctrl[layout.hand_actuator_ids], original)
+    np.testing.assert_array_equal(result.canonical_qcmd_rad, original)
+    np.testing.assert_allclose(result.effective_canonical_qcmd_rad, original)
+    np.testing.assert_allclose(driver.active_calls[-1][1][[3, 8]], [-30, 60])
+
+
 def test_j7_mapping_does_not_mutate_shared_canonical_command(sim):
     model, data, layout = sim
     driver = FakeDriver()

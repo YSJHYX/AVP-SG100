@@ -21,6 +21,7 @@ and test_hand_data_contract_measured.py).
 from __future__ import annotations
 
 import ctypes
+import json
 import struct
 from pathlib import Path
 
@@ -212,14 +213,13 @@ def test_g_load_vendor_user_ranges_from_disk() -> None:
 def test_g_out_of_range_targets_are_rejected(tmp_path) -> None:
     sdk_dir = tmp_path / "sdk"
     sdk_dir.mkdir()
-    (sdk_dir / "joint_angle_map.json").write_text(
-        '{"joint_angle_map": ['
-        + ",".join(
-            f'{{"a": 1.0, "b": 0.0, "min_angle": 0.0, "max_angle": 90.0}}'
-            for _ in range(HAND_DOF)
-        )
-        + "]}"
-    )
+    entries = [
+        {"a": 1.0, "b": 0.0, "min_angle": 0.0, "max_angle": 90.0}
+        for _ in range(HAND_DOF)
+    ]
+    (sdk_dir / "joint_angle_map_v3.0.json").write_text(json.dumps({
+        "version": "3.0", "joint_angle_map": {"R": entries, "L": entries},
+    }))
     driver = SG100SDKDriver(
         "/dev/null", hardware_map=SG100HardwareMap(), sdk_dir=sdk_dir
     )
@@ -407,29 +407,20 @@ def test_probe_null_construction_verifies_11_mode_bytes(wrapper_lib) -> None:
     assert mode_bytes == [MODE_NULL] * HAND_DOF
 
 
-# -- N1: canonical <-> SDK user-angle candidate mapping ----------------------
-#
-# Candidate (PROPOSED, not applied to the production map): gain +1 on all
-# joints except middle_j1 (canonical range mirrors the runtime SDK user
-# range), offset 0 (N0 static probe read ~0 deg at the mechanical zero
-# pose).  The a/b coefficients in joint_angle_map.json describe
-# user->wire and are deliberately NOT used to derive this sign.
-
-N1_CANDIDATE_GAIN = [1.0] * 11
-N1_CANDIDATE_GAIN[6] = -1.0  # middle_j1: canonical [-2.18,0] rad vs J7 [0,125] deg
-N1_CANDIDATE_OFFSET_DEG = [0.0] * 11
+# -- v3/R: production canonical -> SDK user-angle mapping -------------------
+# F_cmd differs from the SDK's user->wire a/b, and proves no inbound F_fb.
+V3_COMMAND_GAIN = [1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
 
 
-def test_n1_candidate_mapping_fits_runtime_sdk_ranges() -> None:
+def test_v3_command_mapping_fits_runtime_sdk_ranges() -> None:
     hardware_map = SG100HardwareMap()
     ranges = load_vendor_user_ranges(Path(DEFAULT_SDK_DIR))
-    # The file this reads is the N0-runtime-PROVEN joint_angle_map.json
-    # (md5 8a0c1de4a7d60a47a016dd453fb49ee3).  If the SDK install changes,
-    # this test intentionally re-checks against whatever is installed.
+    # Re-check the production map against the installed v3/R user ranges.
     assert ranges is not None
+    np.testing.assert_array_equal(hardware_map.gain, V3_COMMAND_GAIN)
 
     for joint in range(HAND_DOF):
-        gain = N1_CANDIDATE_GAIN[joint]
+        gain = hardware_map.gain[joint]
         user_deg = sorted(
             np.rad2deg(
                 gain * np.array(
@@ -447,22 +438,21 @@ def test_n1_candidate_mapping_fits_runtime_sdk_ranges() -> None:
         )
 
 
-def test_n1_candidate_mapping_roundtrips_all_11_axes() -> None:
+def test_v3_command_mapping_roundtrips_all_11_axes() -> None:
     hardware_map = SG100HardwareMap()
     rng = np.random.default_rng(20260903)
     canonical = rng.uniform(
         hardware_map.lower_rad, hardware_map.upper_rad
     )
-    gain = np.asarray(N1_CANDIDATE_GAIN)
+    gain = hardware_map.gain
     sdk_user_deg = gain * np.rad2deg(canonical)  # offset 0
     recovered = np.deg2rad(sdk_user_deg / gain)
     np.testing.assert_allclose(recovered, canonical, atol=1e-12)
 
 
-def test_n1_middle_j1_mirror_is_real_not_assumed() -> None:
-    # Document WHY middle_j1 is the only -1: its canonical range is the
-    # numeric mirror of the runtime SDK user range.  Every other joint's
-    # canonical range equals its SDK user range numerically.
+def test_v3_mirrored_command_ranges_are_j4_j7_j9() -> None:
+    # v3/R has three mirrored USER-angle ranges. This is an outbound numeric
+    # contract, not physical validation of the independent feedback map.
     hardware_map = SG100HardwareMap()
     ranges = load_vendor_user_ranges(Path(DEFAULT_SDK_DIR))
     assert ranges is not None
@@ -482,7 +472,7 @@ def test_n1_middle_j1_mirror_is_real_not_assumed() -> None:
             abs(canonical_deg[0] - sdk_range[0]) < 0.5
             and abs(canonical_deg[1] - sdk_range[1]) < 0.5
         )
-        if joint == 6:  # middle_j1
+        if joint in (3, 6, 8):  # index_j1, middle_j1, little_j1
             assert mirrored and not equal
         else:
             assert equal and not mirrored, f"joint {joint} changed shape"

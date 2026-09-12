@@ -19,7 +19,7 @@ Hard guarantees of this tool:
 
 Runtime mapping proof: with ``--execute`` the tool re-executes itself
 under ``strace -f -e trace=openat`` and extracts the exact
-``joint_angle_map.json`` file(s) the running libsg100_sdk.so opens —
+``joint_angle_map_v3.0.json`` file(s) the running libsg100_sdk.so opens —
 never inferring from git HEAD, cwd, or similarly named files.  The
 successful open's absolute path, hashes, and parsed J1..J11 rows are
 reported.  The SDK is not altered in any way.
@@ -110,7 +110,7 @@ _OPENAT_RE = re.compile(
 def parse_map_opens(
     strace_log: Path, tracee_cwd: Path
 ) -> list[dict]:
-    """Extract every joint_angle_map.json openat attempt from a strace log.
+    """Extract v3 and historical legacy angle-map openat attempts.
 
     Each entry: {raw_path, resolved, fd}.  fd >= 0 means the open
     SUCCEEDED — that is the file the running SDK actually parsed.
@@ -119,7 +119,9 @@ def parse_map_opens(
 
     entries: list[dict] = []
     for line in strace_log.read_text(errors="replace").splitlines():
-        if "joint_angle_map.json" not in line:
+        if not any(name in line for name in (
+            "joint_angle_map_v3.0.json", "joint_angle_map.json"
+        )):
             continue
         match = _OPENAT_RE.search(line.strip())
         if match is None:
@@ -139,6 +141,10 @@ def parse_map_opens(
 
 
 def successful_map_open(entries: list[dict]) -> dict | None:
+    # v3 has runtime priority; legacy remains readable for historical traces.
+    for entry in entries:
+        if entry["fd"] >= 0 and Path(entry["resolved"]).name == "joint_angle_map_v3.0.json":
+            return entry
     for entry in entries:
         if entry["fd"] >= 0:
             return entry
@@ -148,8 +154,11 @@ def successful_map_open(entries: list[dict]) -> dict | None:
 def parse_map_rows(path: Path) -> list[dict]:
     with path.open("r") as f:
         mapping = json.load(f)
+    entries = mapping.get("joint_angle_map", [])
+    if mapping.get("version") == "3.0":
+        entries = entries["R"]
     rows = []
-    for entry in mapping.get("joint_angle_map", [])[:HAND_DOF]:
+    for entry in entries[:HAND_DOF]:
         rows.append(
             {
                 "a": float(entry["a"]),
@@ -168,7 +177,7 @@ def run_traced_probe(args: argparse.Namespace) -> int:
     if strace is None:
         print(
             "PROBE FAIL: strace is required to prove the runtime "
-            "joint_angle_map.json; install strace or do not claim the "
+            "joint_angle_map_v3.0.json; install strace or do not claim the "
             "runtime map"
         )
         return 1
@@ -211,7 +220,7 @@ def run_traced_probe(args: argparse.Namespace) -> int:
         if not entries:
             print("runtime joint_angle_map: NO OPEN OBSERVED")
             print(
-                "  (the SDK opened no joint_angle_map.json during the "
+                "  (the SDK opened no angle-map configuration during the "
                 "probe; either it never encoded a frame or it used an "
                 "in-process default — treat the runtime map as UNPROVEN)"
             )
