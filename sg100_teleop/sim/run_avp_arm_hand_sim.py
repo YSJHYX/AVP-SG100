@@ -29,6 +29,17 @@ from sg100_teleop.hand.canonical_hand import CanonicalHandState
 
 from sg100_teleop.control.joint_command_filter import JointCommandFilter
 
+from sg100_teleop.control.grasp_mode import (
+    CLAW_THUMB_J1_RAD,
+    GraspMode,
+    GraspModeController,
+)
+
+from sg100_teleop.control.scripted_hand import (
+    ScriptHandController,
+    ScriptMotion,
+)
+
 from sg100_teleop.control.tcp_target_filter import TcpTargetFilter
 
 from sg100_teleop.control.teleop_arming import (
@@ -2580,6 +2591,13 @@ def main():
         q_hand_goal
     )
 
+    grasp_mode_controller = GraspModeController(
+        joint_order=tuple(retargeter.joint_order),
+    )
+    script_hand_controller = ScriptHandController(
+        joint_order=tuple(retargeter.joint_order),
+    )
+
     q_hand_cmd = (
         q_hand_goal.copy()
     )
@@ -2635,6 +2653,11 @@ def main():
         "max hand velocity  :",
         args.max_hand_velocity,
         "rad/s",
+    )
+    print(
+        "grasp mode         :",
+        grasp_mode_controller.mode.value,
+        "(1=FREE 2=HAND 3=CLAW 4=SCRIPT J/K/L)",
     )
 
     # ========================================================
@@ -3316,6 +3339,7 @@ def main():
         return requested
 
     def on_viewer_key(keycode: int) -> None:
+        nonlocal q_hand_goal
         if keycode in (ord("C"), ord("c")):
             request_neutral_calibration()
 
@@ -3423,6 +3447,59 @@ def main():
                     details={"command_result": result},
                     include_stack=True,
                 )
+
+        elif keycode == ord("1"):
+            script_hand_controller.exit()
+            mode = grasp_mode_controller.set_mode(GraspMode.FREE)
+            print("[HAND] grasp mode:", mode.value, "| FREE: no joint holds")
+
+        elif keycode == ord("2"):
+            script_hand_controller.exit()
+            mode = grasp_mode_controller.set_mode(GraspMode.HAND)
+            print(
+                "[HAND] grasp mode:",
+                mode.value,
+                "| HAND: lock index_j1/little_j1=0",
+            )
+
+        elif keycode == ord("3"):
+            script_hand_controller.exit()
+            mode = grasp_mode_controller.set_mode(GraspMode.CLAW)
+            print(
+                "[HAND] grasp mode:",
+                mode.value,
+                "| CLAW: little_j1=-180deg, thumb_j2 init -150deg then follow, "
+                f"thumb_j1=+{np.rad2deg(CLAW_THUMB_J1_RAD):.0f}deg hold",
+            )
+
+        elif keycode == ord("4"):
+            q_seed = script_hand_controller.enter(hand_command_filter.value)
+            q_hand_goal = q_seed
+            print(
+                "[HAND] source: script SHAPING claw "
+                "(same pose as 3, not AVP) | J close  K hold  L open"
+            )
+
+        elif keycode in (ord("J"), ord("j")):
+            if not script_hand_controller.enabled:
+                print("[HAND] J ignored; press 4 for script source")
+            else:
+                motion = script_hand_controller.set_motion(ScriptMotion.CLOSING)
+                print("[HAND] script:", motion.value)
+
+        elif keycode in (ord("K"), ord("k")):
+            if not script_hand_controller.enabled:
+                print("[HAND] K ignored; press 4 for script source")
+            else:
+                motion = script_hand_controller.set_motion(ScriptMotion.HOLD)
+                print("[HAND] script:", motion.value)
+
+        elif keycode in (ord("L"), ord("l")):
+            if not script_hand_controller.enabled:
+                print("[HAND] L ignored; press 4 for script source")
+            else:
+                motion = script_hand_controller.set_motion(ScriptMotion.OPENING)
+                print("[HAND] script:", motion.value)
 
         # ========================================================
     # Main runtime loop
@@ -3588,6 +3665,10 @@ def main():
                                 retargeter.retarget_with_stages(
                                     canonical
                                 )
+                            )
+                            q_hand_candidate = grasp_mode_controller.apply(
+                                q_hand_candidate,
+                                dt_s=tracking_period,
                             )
 
                             # Full hand command provenance (audit only):
@@ -3857,6 +3938,10 @@ def main():
                                 hand_command_filter.reset(
                                     q_hand0_runtime
                                 )
+                                if script_hand_controller.enabled:
+                                    q_hand_goal = script_hand_controller.enter(
+                                        q_hand0_runtime
+                                    )
 
                                 if restricted_hand_backend is not None:
                                     anchor_result = restricted_hand_backend.anchor(
@@ -4328,9 +4413,10 @@ def main():
 
                                 # The hand goal comes from the same sensory
                                 # frame used by the wrist/arm branch above.
-                                q_hand_goal = (
-                                    q_hand_candidate.copy()
-                                )
+                                if not script_hand_controller.enabled:
+                                    q_hand_goal = (
+                                        q_hand_candidate.copy()
+                                    )
 
                                 latest_control_audit = {
                                     "raw_avp_wrist_pose": T_avp_wrist.copy(),
@@ -4572,6 +4658,10 @@ def main():
                     physics_accumulator
                     >= physics_dt
                 ):
+                    if script_hand_controller.enabled:
+                        q_script = script_hand_controller.step(physics_dt)
+                        if q_script is not None:
+                            q_hand_goal = q_script
 
                     # ---------------------------------------------
                     # RM65 command
