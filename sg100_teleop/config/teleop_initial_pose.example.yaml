@@ -9,12 +9,12 @@ arm:
   # Controller address comes from the runner's --arm-ip/--arm-port options.
   # RealMan controller joint order. Exactly six named entries are required.
   angles_deg:
-    joint_1: 30.0
-    joint_2: 30.0
-    joint_3: 30.0
-    joint_4: 30.0
-    joint_5: 30.0
-    joint_6: 30.0
+    joint_1: null
+    joint_2: null
+    joint_3: null
+    joint_4: null
+    joint_5: null
+    joint_6: null
   # Planned rm_movej parameters. Low speed is intentional for startup.
   speed_percent: 5
   timeout_s: 60
@@ -26,16 +26,16 @@ hand:
   # Port/SDK settings come from --hand-port/--hand-baudrate/--hand-sdk-dir.
   # Canonical SG100 order. Exactly eleven named entries are required.
   angles_deg:
-    thumb_j1: 0.0
-    thumb_j2: 0.0
-    thumb_j3: 0.0
-    index_j1: 0.0
-    index_j2: 0.0
-    index_j3: 0.0
-    middle_j1: 0.0
-    middle_j2: 0.0
-    little_j1: 0.0
-    little_j2: 0.0
-    little_j3: 0.0
+    thumb_j1: null
+    thumb_j2: null
+    thumb_j3: null
+    index_j1: null
+    index_j2: null
+    index_j3: null
+    middle_j1: null
+    middle_j2: null
+    little_j1: null
+    little_j2: null
+    little_j3: null
   # The low-gain target stays active for this long before passive cleanup.
   command_duration_s: 3.0

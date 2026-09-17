@@ -124,7 +124,7 @@ DEFAULT_MODEL = (
     # "mjcf/rm65_sg100_demo_hammer_peg_assembly_scene.xml"
     # "mjcf/rm65_sg100_demo_drawer_loading_and_closing_scene.xml"
     # "mjcf/rm65_sg100_demo_maintenance_kit_packing_scene.xml"
-    'mjcf/rm65_sg100_realworld_teleop_scene.xml'
+    'mjcf/rm65_sg100_realworld_teleop_scene.xml' 
 )
 
 DEFAULT_CALIBRATION = (
