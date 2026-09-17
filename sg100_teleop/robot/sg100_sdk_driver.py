@@ -321,6 +321,14 @@ def _load_wrapper_library(
         library_path is None
         and not hasattr(lib, "sg100_load_angle_map_v3")
     ):
+        # Windows cannot overwrite a mapped DLL; release it first.
+        if sys.platform == "win32":
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            if not kernel32.FreeLibrary(ctypes.c_void_p(lib._handle)):
+                raise SG100SDKDriverError(
+                    "cannot unload stale wrapper DLL before rebuild"
+                )
+        lib = None
         _build_wrapper(sdk_dir=sdk_dir, output_path=path)
         lib = ctypes.CDLL(str(path))
 
@@ -535,7 +543,7 @@ def _build_wrapper(
             "if errorlevel 1 exit /b 1\r\n"
             # No path below contains a space (repo + SDK checkouts);
             # unquoted arguments avoid cmd/cl quote-pairing pitfalls.
-            f"cl /nologo /std:c++14 /EHsc /O2 /MD /LD "
+            f"cl /nologo /utf-8 /std:c++14 /EHsc /O2 /MD /LD "
             f"/I{sdk_dir / 'include'} {WRAPPER_SOURCE} "
             f"/Fe{output_path} "
             f"/link /LIBPATH:{sdk_lib.parent} {sdk_lib.stem}.lib "
@@ -559,9 +567,12 @@ def _build_wrapper(
         ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
+        detail = "\n".join(
+            part for part in (result.stdout, result.stderr) if part
+        )
         raise SG100SDKDriverError(
             "failed to compile SG100 C wrapper:\n"
-            f"{' '.join(cmd)}\n{result.stderr}"
+            f"{' '.join(cmd)}\n{detail}"
         )
     # cl drops .obj/.lib/.exp next to the output; they are build
     # byproducts, keep only the DLL itself.
