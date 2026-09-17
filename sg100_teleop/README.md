@@ -112,6 +112,111 @@ Control plane 与 data plane 相互独立。Recorder 只接收 UDP cache 和相�
 IP `192.168.2.175` 是示例，必须替换为 Tracking Streamer 显示的实际 IP。Bash
 多行命令中的反斜杠 `\` 必须是该行最后一个字符。
 
+### 可选：按自定义关节角初始化真机后再开始遥操
+
+初始姿态功能已经集成到 `sg100_teleop/sim/run_avp_arm_hand_sim.py`。角度全部写在
+`sg100_teleop/config/teleop_initial_pose.example.yaml`，单位为度；先复制为已被
+`.gitignore` 排除的 `teleop_initial_pose.local.yaml`，再填写全部 6+11 个 `null`。
+控制器 IP、端口、串口和 SDK 路径继续使用 runner 原有命令行参数，不在姿态文件中
+重复配置。
+
+先只校验配置、关节限位和 canonical→SDK 映射，不打开硬件：
+
+```bash
+.venv/bin/python sg100_teleop/sim/run_avp_arm_hand_sim.py \
+  --ip <AVP_IP> \
+  --arm-backend real --arm-ip <RM65_IP> \
+  --hand-backend real --hand-port /dev/ttyUSB0 \
+  --initial-pose-config sg100_teleop/config/teleop_initial_pose.local.yaml \
+  --initial-pose-dry-run
+```
+
+现场清空工作区、急停有人值守并核对 dry-run 输出后，去掉
+`--initial-pose-dry-run` 运行正常遥操命令。程序连接 RM65 并显示当前角度后，必须
+输入 `INITIALIZE` 才会依次执行 RM65、SG100 初始化；两者成功后程序自动进入正常
+WAIT-C 状态，不需要第二个启动脚本。监督式自动化可显式增加
+`--initial-pose-auto-confirm` 跳过文字确认。
+
+RM65 使用低速、阻塞式规划运动并核对最终反馈；SG100 使用当前生产
+canonical→SDK 映射、运行时限位和低增益 MODE7，到位观察窗口结束后恢复
+`MODE_NULL`，不会绕过后续 `C/A` 遥操门控。由于独立 `F_fb` 尚未验证，程序只能
+证明 SG100 目标被 transport 接受且收到新的全 MODE7 反馈，最终手姿仍需操作者
+目视确认。任何配置截断、反馈缺失或控制错误都会阻止进入遥操。
+
+### RM65 + SG100 通讯延迟测试
+
+`scripts/communication_latency_benchmark.py` 实现验收表“通讯延迟测试”的六项内容：
+两台设备状态请求延迟、SG100 新反馈周期、臂手同一编号指令的发送时差、CRC/超时/
+估计缺帧率、中断后 100 ms 检出与 20 ms 禁止新目标，以及静止、运动、运动并开启
+正常日志与无界面绘图负载三种工况。每次重复单独判定，不以三次合并平均值代替单次
+结果。
+
+默认只显示完整计划，不打开设备、不创建输出目录：
+
+```bash
+.venv/bin/python scripts/communication_latency_benchmark.py
+```
+
+先用模拟数据检查统计与文件输出链路：
+
+```bash
+.venv/bin/python scripts/communication_latency_benchmark.py \
+  --simulate \
+  --profiles all
+```
+
+仅做无位移的静止工况时，RM65 重复发送当前实测关节角，SG100 只发送零输出 MODE7
+缓存；仍会触碰真实通讯接口，因此必须在急停有人值守时使用：
+
+```bash
+.venv/bin/python scripts/communication_latency_benchmark.py \
+  --execute \
+  --profiles stationary \
+  --rm65-ip <RM65_IP> \
+  --sg100-port /dev/ttyUSB0
+```
+
+完整验收默认按表格要求执行三种工况、每种预热 30 s、采集 5 min、重复 3 次，并对
+上游目标中断和反馈消费中断各重复 5 次。运动仅允许当前已验证的
+`index_j3/J6`，RM65 默认 J1 ±1°、SG100 默认 J6 ±0.5°；机械手必须已经处于
+`teleop_initial_pose.local.yaml` 中填写的中心姿态。脚本不会替操作者确认实际姿态，
+也不会自动 homing。脚本同时硬性限制 RM65 振幅不超过 3°、SG100 振幅不超过
+0.5°：
+
+```bash
+.venv/bin/python scripts/communication_latency_benchmark.py \
+  --execute \
+  --profiles all \
+  --rm65-ip <RM65_IP> \
+  --sg100-port /dev/ttyUSB0 \
+  --initial-pose-config \
+    sg100_teleop/config/teleop_initial_pose.local.yaml \
+  --allow-motion
+```
+
+脚本会再次要求输入 `RUN MOTION TEST`。结果写入
+`recording/communication_latency/<timestamp>/`：`report.json` 保存每次运行的
+mean/P95/P99/max、计数、比例和逐项 PASS/FAIL，`raw_samples.csv` 保留所有原始有效
+样本与超时，`anomalies.jsonl` 单列 CRC、无效反馈、异常间隔、序号缺口和未匹配
+指令。每轮还要求采集时长、查询数、有效反馈数和指令包数达到配置值的 95%，并把
+无效反馈帧纳入 0.1% 错误率门槛。中断测试会实际关闭进程内臂手联合命令门，并用
+门关闭后的试投递确认两台设备 API 均未收到新目标。原始数据按轮即时追加，避免
+45 min 完整测试在内存中堆积；任一实机轮次失败后不再重新使能后续工况。短于
+30 s/5 min、少于 3 次、
+跳过任一工况或中断测试时，只会标记为
+`SCREENING_PASS_NOT_FULL_ACCEPTANCE`。
+
+验收表中带“待确认”的阈值按临时值执行；反馈频率的 20 Hz 目前解释为最低频率。
+SG100 公共 SDK 不暴露 0x26 在线缆上的实际发送时刻和响应事务号，所以报告中的
+SG100 RTT 是“请求入队开始→第一条更新且有效的 callback”的不可关联代理；周期性
+callback 也可能满足等待，因此它可能高估或低估真实线缆 RTT。指令同步
+使用 RM65 `rm_movej_canfd` 成功返回与 SG100 `SetHandControl` 缓存接受时刻，只
+表示发送同步，不能代替实际动作同步测量。自动化反馈中断在消费端注入，真实拔线/
+断电及物理重连仍需另做有人值守的现场测试，报告会保留这项限制而不会输出无条件
+PASS。“日志与可视化”工况使用逐指令 flush 的 JSONL 和 Matplotlib Agg 无界面渲染，
+用于复现写盘/绘图负载，不等同于生产 GUI。完整协议全部达标时结果为
+`PASS_WITH_MEASUREMENT_QUALIFICATIONS`。
+
 ### A. AVP simulation only
 
 需要 AVP，不需要 RealSense 或真实机器人；不会动真机。输出 MuJoCo/AVP 仿真，

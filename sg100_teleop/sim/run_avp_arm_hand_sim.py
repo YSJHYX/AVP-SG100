@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import os
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
+
+# Keep the documented ``python sg100_teleop/sim/...py`` invocation working
+# even when this checkout has not been installed in editable mode.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import mujoco
 import mujoco.viewer
 import numpy as np
+import yaml
 
 from avp_stream import VisionProStreamer
 
@@ -40,9 +50,18 @@ from sg100_teleop.retargeting.thumb_debug import (
     hand_tip_geometry_mm,
 )
 
-from sg100_teleop.robot.sg100_driver import SG100HardwareMap
+from sg100_teleop.robot.sg100_driver import (
+    MODE_JOINT_POSITION,
+    SG100CommandLimitContract,
+    SG100HardwareMap,
+)
 
 from sg100_teleop.robot.sg100_mock_driver import MockSG100Driver
+
+from sg100_teleop.robot.rm65_sim import (
+    RM65_JOINT_LOWER_RAD,
+    RM65_JOINT_UPPER_RAD,
+)
 
 from sg100_teleop.recording.arm_joint_comparison import (
     ArmJointComparisonRecorder,
@@ -157,6 +176,631 @@ WRIST_ROLL_FALLBACK_AXIS_LOCAL = np.array(
     [0.0, 0.0, 1.0],
     dtype=np.float64,
 )
+
+# ============================================================
+# Optional operator-defined real-hardware startup pose
+# ============================================================
+
+INITIAL_ARM_JOINT_NAMES = tuple(f"joint_{index}" for index in range(1, 7))
+INITIAL_HAND_JOINT_NAMES = tuple(SG100_JOINT_ORDER)
+
+# Same vendor-evidenced low-gain group used by the restricted MODE7 path.
+INITIAL_HAND_KP = 0.1
+INITIAL_HAND_KI = 0.0
+INITIAL_HAND_KD = 0.0
+INITIAL_HAND_OUTPUT_LIMIT = 0.5
+
+_RM_INITIAL_STATUS_TEXT = {
+    0: "success",
+    1: "controller rejected the request",
+    -1: "send failed",
+    -2: "receive failed or timed out",
+    -3: "reply parsing failed",
+    -4: "in-position device check failed",
+    -5: "single-thread receive timed out",
+}
+
+
+class TeleopInitialPoseError(RuntimeError):
+    """Fail-closed startup-pose configuration or hardware error."""
+
+
+@dataclasses.dataclass(frozen=True)
+class InitialArmPoseConfig:
+    angles_deg: np.ndarray
+    speed_percent: int
+    timeout_s: int
+    tolerance_deg: float
+    max_start_delta_deg: float
+
+
+@dataclasses.dataclass(frozen=True)
+class InitialHandPoseConfig:
+    angles_deg: np.ndarray
+    command_duration_s: float
+
+
+@dataclasses.dataclass(frozen=True)
+class TeleopInitialPoseConfig:
+    arm: InitialArmPoseConfig
+    hand: InitialHandPoseConfig
+
+
+@dataclasses.dataclass(frozen=True)
+class TeleopInitialPosePlan:
+    config: TeleopInitialPoseConfig
+    hand_sdk_user_deg: np.ndarray
+
+
+def _initial_pose_mapping(value: Any, field: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TeleopInitialPoseError(f"{field} must be a YAML mapping")
+    return value
+
+
+def _initial_pose_float(value: Any, field: str) -> float:
+    if isinstance(value, bool) or value is None:
+        raise TeleopInitialPoseError(f"{field} must be a finite number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TeleopInitialPoseError(
+            f"{field} must be a finite number"
+        ) from exc
+    if not np.isfinite(parsed):
+        raise TeleopInitialPoseError(f"{field} must be a finite number")
+    return parsed
+
+
+def _initial_pose_int(
+    value: Any,
+    field: str,
+    low: int,
+    high: int,
+) -> int:
+    if isinstance(value, bool):
+        raise TeleopInitialPoseError(
+            f"{field} must be an integer in [{low}, {high}]"
+        )
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TeleopInitialPoseError(
+            f"{field} must be an integer in [{low}, {high}]"
+        ) from exc
+    if parsed != value or not low <= parsed <= high:
+        raise TeleopInitialPoseError(
+            f"{field} must be an integer in [{low}, {high}]"
+        )
+    return parsed
+
+
+def _initial_pose_joint_vector(
+    value: Any,
+    expected_names: Sequence[str],
+    field: str,
+) -> np.ndarray:
+    mapping = _initial_pose_mapping(value, field)
+    expected = set(expected_names)
+    provided = set(mapping)
+    missing = [name for name in expected_names if name not in provided]
+    extra = sorted(str(name) for name in provided - expected)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing {missing}")
+        if extra:
+            details.append(f"unknown {extra}")
+        raise TeleopInitialPoseError(f"{field}: " + "; ".join(details))
+    return np.asarray(
+        [
+            _initial_pose_float(mapping[name], f"{field}.{name}")
+            for name in expected_names
+        ],
+        dtype=np.float64,
+    )
+
+
+def load_teleop_initial_pose_config(
+    path: Path | str,
+) -> TeleopInitialPoseConfig:
+    """Load a strict named-joint startup pose; all angles are degrees."""
+
+    config_path = Path(path).expanduser().resolve()
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise TeleopInitialPoseError(
+            f"cannot read initial-pose config {config_path}: {exc}"
+        ) from exc
+    except yaml.YAMLError as exc:
+        raise TeleopInitialPoseError(
+            f"invalid YAML in initial-pose config {config_path}: {exc}"
+        ) from exc
+
+    root = _initial_pose_mapping(raw, "root")
+    if root.get("version") != 1:
+        raise TeleopInitialPoseError("initial-pose config version must be 1")
+    if root.get("angle_unit") != "deg":
+        raise TeleopInitialPoseError("angle_unit must be exactly 'deg'")
+
+    arm = _initial_pose_mapping(root.get("arm"), "arm")
+    hand = _initial_pose_mapping(root.get("hand"), "hand")
+    arm_tolerance = _initial_pose_float(
+        arm.get("tolerance_deg", 1.0), "arm.tolerance_deg"
+    )
+    max_start_delta = _initial_pose_float(
+        arm.get("max_start_delta_deg", 120.0),
+        "arm.max_start_delta_deg",
+    )
+    hand_duration = _initial_pose_float(
+        hand.get("command_duration_s", 3.0),
+        "hand.command_duration_s",
+    )
+    if not 0.0 < arm_tolerance <= 5.0:
+        raise TeleopInitialPoseError("arm.tolerance_deg must be in (0, 5]")
+    if not 0.0 < max_start_delta <= 360.0:
+        raise TeleopInitialPoseError(
+            "arm.max_start_delta_deg must be in (0, 360]"
+        )
+    if not 0.1 <= hand_duration <= 30.0:
+        raise TeleopInitialPoseError(
+            "hand.command_duration_s must be in [0.1, 30]"
+        )
+
+    return TeleopInitialPoseConfig(
+        arm=InitialArmPoseConfig(
+            angles_deg=_initial_pose_joint_vector(
+                arm.get("angles_deg"),
+                INITIAL_ARM_JOINT_NAMES,
+                "arm.angles_deg",
+            ),
+            speed_percent=_initial_pose_int(
+                arm.get("speed_percent", 5),
+                "arm.speed_percent",
+                1,
+                20,
+            ),
+            timeout_s=_initial_pose_int(
+                arm.get("timeout_s", 60),
+                "arm.timeout_s",
+                1,
+                180,
+            ),
+            tolerance_deg=arm_tolerance,
+            max_start_delta_deg=max_start_delta,
+        ),
+        hand=InitialHandPoseConfig(
+            angles_deg=_initial_pose_joint_vector(
+                hand.get("angles_deg"),
+                INITIAL_HAND_JOINT_NAMES,
+                "hand.angles_deg",
+            ),
+            command_duration_s=hand_duration,
+        ),
+    )
+
+
+def build_teleop_initial_pose_plan(
+    config: TeleopInitialPoseConfig,
+    *,
+    sdk_dir: Path | str | None = None,
+) -> TeleopInitialPosePlan:
+    """Validate arm, canonical hand, and runtime SDK limits offline."""
+
+    arm_low = np.rad2deg(RM65_JOINT_LOWER_RAD)
+    arm_high = np.rad2deg(RM65_JOINT_UPPER_RAD)
+    outside_arm = np.flatnonzero(
+        (config.arm.angles_deg < arm_low)
+        | (config.arm.angles_deg > arm_high)
+    )
+    if outside_arm.size:
+        messages = [
+            (
+                f"{INITIAL_ARM_JOINT_NAMES[index]}="
+                f"{config.arm.angles_deg[index]:.3f} deg outside "
+                f"[{arm_low[index]:.3f}, {arm_high[index]:.3f}]"
+            )
+            for index in outside_arm
+        ]
+        raise TeleopInitialPoseError(
+            "invalid RM65 initial target: " + "; ".join(messages)
+        )
+
+    hardware_map = SG100HardwareMap()
+    if tuple(hardware_map.software_joint_order) != INITIAL_HAND_JOINT_NAMES:
+        raise TeleopInitialPoseError(
+            "SG100 joint order changed; update initial-pose integration"
+        )
+    hand_rad = np.deg2rad(config.hand.angles_deg)
+    outside_hand = np.flatnonzero(
+        (hand_rad < hardware_map.lower_rad)
+        | (hand_rad > hardware_map.upper_rad)
+    )
+    if outside_hand.size:
+        messages = [
+            (
+                f"{INITIAL_HAND_JOINT_NAMES[index]}="
+                f"{config.hand.angles_deg[index]:.3f} deg outside "
+                "canonical range "
+                f"[{np.rad2deg(hardware_map.lower_rad[index]):.3f}, "
+                f"{np.rad2deg(hardware_map.upper_rad[index]):.3f}]"
+            )
+            for index in outside_hand
+        ]
+        raise TeleopInitialPoseError(
+            "invalid SG100 initial target: " + "; ".join(messages)
+        )
+
+    try:
+        from sg100_teleop.robot.sg100_sdk_driver import (
+            DEFAULT_SDK_DIR,
+            load_vendor_user_ranges,
+        )
+
+        resolved_sdk_dir = DEFAULT_SDK_DIR if sdk_dir is None else Path(sdk_dir)
+        vendor_ranges = load_vendor_user_ranges(resolved_sdk_dir)
+    except Exception as exc:
+        raise TeleopInitialPoseError(
+            f"cannot load SG100 runtime angle limits: {exc}"
+        ) from exc
+    if vendor_ranges is None:
+        raise TeleopInitialPoseError(
+            f"SG100 runtime angle map is missing under {resolved_sdk_dir}"
+        )
+    application = SG100CommandLimitContract(
+        hardware_map,
+        vendor_ranges,
+    ).apply(hand_rad)
+    if (
+        application.canonical_clamped_indices
+        or application.sdk_clamped_indices
+        or not np.allclose(
+            application.effective_canonical_rad,
+            hand_rad,
+            rtol=0.0,
+            atol=1e-7,
+        )
+    ):
+        raise TeleopInitialPoseError(
+            "SG100 initial target would be clamped by runtime SDK limits; "
+            "edit the YAML instead of relying on implicit clamping"
+        )
+    return TeleopInitialPosePlan(
+        config=config,
+        hand_sdk_user_deg=application.sdk_sent_deg.copy(),
+    )
+
+
+def _print_initial_pose_vector(
+    title: str,
+    names: Sequence[str],
+    values: np.ndarray,
+) -> None:
+    print(title)
+    for name, value in zip(names, values, strict=True):
+        print(f"  {name:>10s}: {value:9.3f} deg")
+
+
+def print_teleop_initial_pose_plan(
+    plan: TeleopInitialPosePlan,
+    *,
+    arm_ip: str,
+    arm_port: int,
+    hand_port: str,
+    hand_baudrate: int,
+) -> None:
+    config = plan.config
+    print("\n=== REAL TELEOP INITIAL POSE PLAN (NO MOTION YET) ===")
+    print(f"RM65 endpoint : {arm_ip}:{arm_port}")
+    print(f"SG100 endpoint: {hand_port} @ {hand_baudrate}")
+    _print_initial_pose_vector(
+        "RM65 target (controller degrees):",
+        INITIAL_ARM_JOINT_NAMES,
+        config.arm.angles_deg,
+    )
+    _print_initial_pose_vector(
+        "SG100 target (canonical degrees):",
+        INITIAL_HAND_JOINT_NAMES,
+        config.hand.angles_deg,
+    )
+    _print_initial_pose_vector(
+        "SG100 mapped SDK user degrees:",
+        INITIAL_HAND_JOINT_NAMES,
+        plan.hand_sdk_user_deg,
+    )
+    print(
+        f"RM65 motion   : planned movej, {config.arm.speed_percent}% speed, "
+        f"timeout {config.arm.timeout_s}s"
+    )
+    print(
+        f"SG100 motion  : MODE7 low gain "
+        f"{INITIAL_HAND_KP}/{INITIAL_HAND_KI}/{INITIAL_HAND_KD}, "
+        f"output_limit={INITIAL_HAND_OUTPUT_LIMIT}, command for "
+        f"{config.hand.command_duration_s:g}s"
+    )
+    print("Movement order: RM65 first, then SG100, then WAIT-C teleop.")
+
+
+class RM65InitialPoseSession:
+    """Own one low-speed planned RM65 startup move before CANFD starts."""
+
+    def __init__(
+        self,
+        ip: str,
+        port: int,
+        config: InitialArmPoseConfig,
+    ) -> None:
+        self.ip = str(ip)
+        self.port = int(port)
+        self.config = config
+        self._arm: Any | None = None
+
+    def connect(self) -> None:
+        try:
+            from Robotic_Arm.rm_ctypes_wrap import rm_thread_mode_e
+            from Robotic_Arm.rm_robot_interface import RoboticArm
+        except ImportError as exc:
+            raise TeleopInitialPoseError(
+                "Robotic_Arm SDK is unavailable in this Python environment"
+            ) from exc
+        arm = RoboticArm(rm_thread_mode_e.RM_SINGLE_MODE_E)
+        handle = arm.rm_create_robot_arm(self.ip, self.port)
+        if handle is None or getattr(handle, "id", -1) == -1:
+            arm.rm_destroy()
+            raise TeleopInitialPoseError(
+                f"cannot connect to RM65 at {self.ip}:{self.port}"
+            )
+        if int(getattr(arm, "arm_dof", -1)) != ARM_DOF:
+            try:
+                arm.rm_delete_robot_arm()
+            finally:
+                arm.rm_destroy()
+            raise TeleopInitialPoseError(
+                f"expected {ARM_DOF}-DoF RM65, controller reports "
+                f"{getattr(arm, 'arm_dof', None)}"
+            )
+        self._arm = arm
+
+    def read_joint_deg(self) -> np.ndarray:
+        if self._arm is None:
+            raise TeleopInitialPoseError("RM65 is not connected")
+        tag, joints = self._arm.rm_get_joint_degree()
+        if int(tag) != 0:
+            raise TeleopInitialPoseError(
+                f"rm_get_joint_degree -> {tag} "
+                f"({_RM_INITIAL_STATUS_TEXT.get(tag, 'unknown')})"
+            )
+        values = np.asarray(joints, dtype=np.float64)[:ARM_DOF]
+        if values.shape != (ARM_DOF,) or not np.all(np.isfinite(values)):
+            raise TeleopInitialPoseError("RM65 returned invalid joint feedback")
+        return values
+
+    def require_controller_ready(self) -> None:
+        if self._arm is None:
+            raise TeleopInitialPoseError("RM65 is not connected")
+        tag, state = self._arm.rm_get_current_arm_state()
+        if int(tag) != 0:
+            raise TeleopInitialPoseError(
+                f"rm_get_current_arm_state -> {tag} "
+                f"({_RM_INITIAL_STATUS_TEXT.get(tag, 'unknown')})"
+            )
+        err = state.get("err") if isinstance(state, Mapping) else None
+        try:
+            codes = err.get("err", []) if isinstance(err, Mapping) else []
+            controller_error = int(codes[0]) if codes else 0
+        except (TypeError, ValueError, IndexError) as exc:
+            raise TeleopInitialPoseError(
+                "cannot parse RM65 controller error state"
+            ) from exc
+        if controller_error != 0:
+            raise TeleopInitialPoseError(
+                f"RM65 controller error is active: {controller_error}"
+            )
+
+    def validate_start_delta(self, current_deg: np.ndarray) -> np.ndarray:
+        current = np.asarray(current_deg, dtype=np.float64)
+        if current.shape != (ARM_DOF,) or not np.all(np.isfinite(current)):
+            raise TeleopInitialPoseError("RM65 current pose must be finite 6D")
+        delta = self.config.angles_deg - current
+        too_large = np.flatnonzero(
+            np.abs(delta) > self.config.max_start_delta_deg
+        )
+        if too_large.size:
+            details = "; ".join(
+                f"{INITIAL_ARM_JOINT_NAMES[index]} "
+                f"delta={delta[index]:+.3f} deg"
+                for index in too_large
+            )
+            raise TeleopInitialPoseError(
+                "RM65 startup motion exceeds max_start_delta_deg="
+                f"{self.config.max_start_delta_deg:g}: {details}"
+            )
+        return delta
+
+    def move_and_verify(self) -> tuple[np.ndarray, np.ndarray]:
+        if self._arm is None:
+            raise TeleopInitialPoseError("RM65 is not connected")
+        tag = int(
+            self._arm.rm_movej(
+                self.config.angles_deg.tolist(),
+                self.config.speed_percent,
+                0,
+                0,
+                self.config.timeout_s,
+            )
+        )
+        if tag != 0:
+            raise TeleopInitialPoseError(
+                f"rm_movej -> {tag} "
+                f"({_RM_INITIAL_STATUS_TEXT.get(tag, 'unknown')})"
+            )
+        reached = self.read_joint_deg()
+        error = reached - self.config.angles_deg
+        if np.max(np.abs(error)) > self.config.tolerance_deg:
+            raise TeleopInitialPoseError(
+                "RM65 did not reach the initial pose: max error "
+                f"{np.max(np.abs(error)):.3f} deg > "
+                f"{self.config.tolerance_deg:.3f} deg"
+            )
+        return reached, error
+
+    def slow_stop(self) -> None:
+        if self._arm is None:
+            return
+        try:
+            self._arm.rm_set_arm_slow_stop()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        arm, self._arm = self._arm, None
+        if arm is None:
+            return
+        try:
+            arm.rm_delete_robot_arm()
+        finally:
+            arm.rm_destroy()
+
+    def __enter__(self) -> "RM65InitialPoseSession":
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if exc_type is not None:
+            self.slow_stop()
+        self.close()
+
+
+def initialize_rm65_initial_pose(
+    ip: str,
+    port: int,
+    config: InitialArmPoseConfig,
+    *,
+    auto_confirm: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Confirm, execute, and verify the planned RM65 startup move."""
+
+    print(
+        "\n[WARNING] The real RM65 and all 11 SG100 joints will move. "
+        "Clear the workspace and keep an operator at the physical "
+        "emergency stop."
+    )
+    with RM65InitialPoseSession(ip, port, config) as arm:
+        arm.require_controller_ready()
+        current = arm.read_joint_deg()
+        delta = arm.validate_start_delta(current)
+        _print_initial_pose_vector(
+            "RM65 current feedback:", INITIAL_ARM_JOINT_NAMES, current
+        )
+        _print_initial_pose_vector(
+            "RM65 requested delta:", INITIAL_ARM_JOINT_NAMES, delta
+        )
+        if not auto_confirm:
+            response = input(
+                "Type INITIALIZE to run the RM65 + SG100 startup pose: "
+            ).strip()
+            if response != "INITIALIZE":
+                raise TeleopInitialPoseError(
+                    "operator confirmation did not match; no motion sent"
+                )
+        print("\n[INITIAL POSE 1/2] Moving RM65 with planned movej...")
+        reached, error = arm.move_and_verify()
+        _print_initial_pose_vector(
+            "[RM65] reached feedback:", INITIAL_ARM_JOINT_NAMES, reached
+        )
+        _print_initial_pose_vector(
+            "[RM65] final error:", INITIAL_ARM_JOINT_NAMES, error
+        )
+        return reached, error
+
+
+def initialize_sg100_initial_pose(
+    driver,
+    config: InitialHandPoseConfig,
+) -> np.ndarray:
+    """Send one bounded low-gain target, observe fresh MODE7, then passivate."""
+
+    application = driver.command_limit_contract.apply(
+        np.deg2rad(config.angles_deg)
+    )
+    if (
+        application.canonical_clamped_indices
+        or application.sdk_clamped_indices
+        or not np.allclose(
+            application.effective_canonical_rad,
+            np.deg2rad(config.angles_deg),
+            rtol=0.0,
+            atol=1e-7,
+        )
+    ):
+        raise TeleopInitialPoseError(
+            "SG100 initial target would be clamped by runtime limits"
+        )
+
+    print("\n[INITIAL POSE 2/2] Moving SG100 with low-gain MODE7...")
+    try:
+        before = driver.read_feedback()
+        before_sequence = 0 if before is None else int(before.sequence)
+        event = driver.send_positions_rad(np.deg2rad(config.angles_deg))
+        if event is None:
+            raise TeleopInitialPoseError(
+                "SG100 SetHandControl rejected the initial target"
+            )
+
+        deadline = time.monotonic() + config.command_duration_s
+        saw_fresh_mode7 = False
+        while time.monotonic() < deadline:
+            if driver.fault_active:
+                raise TeleopInitialPoseError(
+                    "SG100 reported an error frame during initialization"
+                )
+            feedback = driver.read_feedback()
+            if (
+                feedback is not None
+                and feedback.valid
+                and int(feedback.sequence) > before_sequence
+                and int(feedback.received_monotonic_ns)
+                >= event.sent_monotonic_ns
+                and feedback.joint_modes
+                == (MODE_JOINT_POSITION,) * HAND_DOF
+            ):
+                saw_fresh_mode7 = True
+            time.sleep(0.01)
+        if not saw_fresh_mode7:
+            raise TeleopInitialPoseError(
+                "SG100 target was accepted but no fresh all-MODE7 "
+                "feedback arrived"
+            )
+        effective_deg = np.rad2deg(
+            application.effective_canonical_rad
+        )
+    except BaseException:
+        try:
+            driver.hold_passive()
+        except Exception:
+            pass
+        raise
+
+    if not driver.hold_passive():
+        raise TeleopInitialPoseError(
+            "SG100 reached the end of initialization but MODE_NULL "
+            "passive hold was rejected"
+        )
+    print(
+        "[SG100] target accepted and fresh MODE7 feedback observed; "
+        "MODE_NULL restored before WAIT-C."
+    )
+    _print_initial_pose_vector(
+        "[SG100] effective commanded target:",
+        INITIAL_HAND_JOINT_NAMES,
+        effective_deg,
+    )
+    print(
+        "[SG100] canonical reached-pose verification remains unavailable "
+        "without validated F_fb; visually confirm the hand pose."
+    )
+    return effective_deg
 
 
 def _wrap_to_pi(angle: float) -> float:
@@ -721,6 +1365,35 @@ def build_arg_parser():
     )
 
     parser.add_argument(
+        "--initial-pose-config",
+        default=None,
+        metavar="YAML",
+        help=(
+            "Optional operator-defined 6+11 joint startup pose in degrees. "
+            "Requires both real backends. The pose is executed before "
+            "normal WAIT-C teleoperation."
+        ),
+    )
+
+    parser.add_argument(
+        "--initial-pose-dry-run",
+        action="store_true",
+        help=(
+            "Validate and print --initial-pose-config, then exit without "
+            "opening either robot connection"
+        ),
+    )
+
+    parser.add_argument(
+        "--initial-pose-auto-confirm",
+        action="store_true",
+        help=(
+            "Skip typing INITIALIZE before real startup motion. Requires "
+            "--initial-pose-config; intended only for supervised automation."
+        ),
+    )
+
+    parser.add_argument(
         "--arm-filter-tau",
         type=float,
         default=0.03,
@@ -1230,6 +1903,52 @@ def main():
             "--video-fps must be finite and > 0"
         )
 
+    if args.initial_pose_dry_run and args.initial_pose_config is None:
+        raise ValueError(
+            "--initial-pose-dry-run requires --initial-pose-config"
+        )
+
+    if args.initial_pose_auto_confirm and args.initial_pose_config is None:
+        raise ValueError(
+            "--initial-pose-auto-confirm requires --initial-pose-config"
+        )
+
+    if (
+        args.initial_pose_config is not None
+        and not args.initial_pose_dry_run
+        and (
+            args.arm_backend != "real"
+            or args.hand_backend != "real"
+        )
+    ):
+        raise ValueError(
+            "--initial-pose-config execution requires "
+            "--arm-backend real and --hand-backend real"
+        )
+
+    initial_pose_plan = None
+    if args.initial_pose_config is not None:
+        initial_pose_config = load_teleop_initial_pose_config(
+            args.initial_pose_config
+        )
+        initial_pose_plan = build_teleop_initial_pose_plan(
+            initial_pose_config,
+            sdk_dir=args.hand_sdk_dir,
+        )
+        print_teleop_initial_pose_plan(
+            initial_pose_plan,
+            arm_ip=args.arm_ip or "<not configured>",
+            arm_port=args.arm_port,
+            hand_port=args.hand_port,
+            hand_baudrate=args.hand_baudrate,
+        )
+        if args.initial_pose_dry_run:
+            print(
+                "\n[INITIAL POSE DRY RUN] Configuration is valid. "
+                "No device was opened and no motion was sent."
+            )
+            return
+
     # ========================================================
     # Resolve input files
     # ========================================================
@@ -1522,6 +2241,34 @@ def main():
     if args.arm_backend == "real":
         from sg100_teleop.robot.rm65_real import RM65RealBackend
 
+        if initial_pose_plan is not None:
+            reached_deg, error_deg = initialize_rm65_initial_pose(
+                args.arm_ip,
+                args.arm_port,
+                initial_pose_plan.config.arm,
+                auto_confirm=args.initial_pose_auto_confirm,
+            )
+            if real_error_recorder is not None:
+                real_error_recorder.record(
+                    severity="INFO",
+                    component="rm65_initial_pose",
+                    event="INITIAL_POSE_REACHED",
+                    message=(
+                        "RM65 planned startup pose completed before "
+                        "CANFD teleoperation backend startup"
+                    ),
+                    details={
+                        "target_deg": (
+                            initial_pose_plan.config.arm.angles_deg
+                        ),
+                        "reached_deg": reached_deg,
+                        "error_deg": error_deg,
+                        "speed_percent": (
+                            initial_pose_plan.config.arm.speed_percent
+                        ),
+                    },
+                )
+
         safety_profiles = {
             10: (0.5, 2.0),
             25: (1.25, 5.0),
@@ -1803,6 +2550,15 @@ def main():
             "Canonical neutral hand does not "
             "retarget to SG100 q=0.\n"
             f"q_hand_goal={q_hand_goal}"
+        )
+
+    # Keep the retargeter-neutral invariant above as a regression check, then
+    # seed the visual twin and command filter from the requested real startup
+    # pose. The physical SG100 command is still deferred until its driver has
+    # connected and entered realtime below.
+    if initial_pose_plan is not None:
+        q_hand_goal = np.deg2rad(
+            initial_pose_plan.config.hand.angles_deg
         )
 
 
@@ -2282,15 +3038,25 @@ def main():
         from sg100_teleop.robot.sg100_sdk_driver import SG100SDKDriver
 
         hand_hardware_map = SG100HardwareMap()
-        hand_driver = SG100SDKDriver(
-            args.hand_port,
-            baudrate=args.hand_baudrate,
-            hardware_map=hand_hardware_map,
-            sdk_dir=(
+        hand_driver_kwargs = {
+            "baudrate": args.hand_baudrate,
+            "hardware_map": hand_hardware_map,
+            "sdk_dir": (
                 Path(args.hand_sdk_dir)
                 if args.hand_sdk_dir is not None
                 else None
             ),
+        }
+        if initial_pose_plan is not None:
+            hand_driver_kwargs.update({
+                "kp": INITIAL_HAND_KP,
+                "ki": INITIAL_HAND_KI,
+                "kd": INITIAL_HAND_KD,
+                "output_limit": INITIAL_HAND_OUTPUT_LIMIT,
+            })
+        hand_driver = SG100SDKDriver(
+            args.hand_port,
+            **hand_driver_kwargs,
         )
         from sg100_teleop.robot.sg100_restricted_avp_backend import (
             SG100RestrictedAVPBackend,
@@ -2324,6 +3090,45 @@ def main():
         # BEFORE SwitchToRealtimeMode, so entering realtime cannot move the
         # hand and commands stay fail-closed until the teleop gate opens.
         hand_driver.enter_realtime()
+
+        if initial_pose_plan is not None:
+            effective_hand_deg = initialize_sg100_initial_pose(
+                hand_driver,
+                initial_pose_plan.config.hand,
+            )
+            initial_hand_q_rad = np.deg2rad(effective_hand_deg)
+            q_hand_goal = initial_hand_q_rad.copy()
+            q_hand_cmd = initial_hand_q_rad.copy()
+            hand_command_filter.reset(initial_hand_q_rad)
+            data.qpos[
+                robot_layout.hand_qpos_indices
+            ] = initial_hand_q_rad
+            data.ctrl[
+                robot_layout.hand_actuator_ids
+            ] = initial_hand_q_rad
+            mujoco.mj_forward(model, data)
+            if real_error_recorder is not None:
+                real_error_recorder.record(
+                    severity="INFO",
+                    component="sg100_initial_pose",
+                    event="INITIAL_POSE_COMMANDED",
+                    message=(
+                        "SG100 startup target accepted; fresh MODE7 "
+                        "observed and MODE_NULL restored before WAIT-C"
+                    ),
+                    details={
+                        "target_canonical_deg": (
+                            initial_pose_plan.config.hand.angles_deg
+                        ),
+                        "effective_canonical_deg": effective_hand_deg,
+                        "canonical_feedback_verified": False,
+                    },
+                )
+            print(
+                "[INITIAL POSE] RM65 + SG100 sequence complete; "
+                "normal C/A teleoperation gates remain closed."
+            )
+
         print(
             "hand backend      :",
             f"{type(hand_driver).__name__} @ "
