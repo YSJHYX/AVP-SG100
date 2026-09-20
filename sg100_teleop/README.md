@@ -20,9 +20,9 @@ VLA 数据采集。
 | SG100 real | restricted validation only | 不是 full-hand production ready |
 | SG100 J6 / `index_j3` | VALIDATED | 当前 real allowlist 唯一允许的轴 |
 | SG100 J7 | **QUARANTINED** | 不得加入 AVP real allowlist；command offset/zero equivalence 尚未解决 |
-| SG100 `F_fb` | **PENDING** | MODE7 raw feedback 还不能解释为 canonical qpos |
-| `training_ready` | **FALSE** | 当前 raw episode 继续隔离，不表示 recorder 损坏 |
-| `dataset_status` | `RAW_CAPTURE_QUARANTINED` | 必须通过后续 mapping/hardware readiness gate |
+| SG100 `F_fb` | **VALIDATED** | 11D canonical measured feedback 已完成真机与 replay 验证；episode 仍必须记录实际 mapping status |
+| `training_ready` | **PER-EPISODE DERIVED** | 只由 real arm + real hand + alive telemetry + `F_FB_VALIDATED` + production dual-RGB contract 得出 |
+| `dataset_status` | per-episode | ready 为 `RAW_REAL_VALIDATED`，其余为 `RAW_CAPTURE_QUARANTINED` |
 
 真实硬件运行必须有人在物理急停旁，清空工作区并使用最低安全 profile。J7 的准确
 结论是 active hold safety 未通过且 offset/zero equivalence unresolved，不是 sign
@@ -139,9 +139,10 @@ WAIT-C 状态，不需要第二个启动脚本。监督式自动化可显式增�
 
 RM65 使用低速、阻塞式规划运动并核对最终反馈；SG100 使用当前生产
 canonical→SDK 映射、运行时限位和低增益 MODE7，到位观察窗口结束后恢复
-`MODE_NULL`，不会绕过后续 `C/A` 遥操门控。由于独立 `F_fb` 尚未验证，程序只能
-证明 SG100 目标被 transport 接受且收到新的全 MODE7 反馈，最终手姿仍需操作者
-目视确认。任何配置截断、反馈缺失或控制错误都会阻止进入遥操。
+`MODE_NULL`，不会绕过后续 `C/A` 遥操门控。独立 `F_fb` 已完成 11D 真机与 replay
+验证；runtime 仍以 `hand_feedback_mapping_status` 和
+`hand_feedback_canonical_valid` 逐次证明 canonical measured feedback，不从 command
+或图像推断。任何配置截断、反馈缺失或控制错误都会阻止进入遥操。
 
 ### RM65 + SG100 通讯延迟测试
 
@@ -347,8 +348,10 @@ Terminal 2 的未来 π0.5 recorder：
   --hz 30
 ```
 
-即使 validation PASS，`F_fb` 未验证期间仍必须保持 `training_ready=False` 与
-`RAW_CAPTURE_QUARANTINED`。
+Validation PASS 不自动表示可训练。`training_ready` 是 episode-derived：只有
+`arm_backend_kind=real`、`hand_backend_kind=real`、publisher alive、实际 telemetry
+报告 `F_FB_VALIDATED`，并采用 head + right-wrist RGB production contract 时才为
+True；其余 episode 保持 `RAW_CAPTURE_QUARANTINED`。
 
 ## 6. Standard Teleoperation Data Collection Procedure
 
@@ -454,7 +457,8 @@ robot_qpos_semantics
 > - Validated real demonstration training action：`robot_qcmd_17d_rad`
 > - Training robot state：`robot_qpos_17d_rad`
 > - SG100 raw SDK debugging：`hand_feedback_sdk_rad`
-> - `F_fb` 验证前，**绝不能**把 raw MODE7 feedback 当作 canonical state。
+> - 只有 telemetry 同时声明 `F_FB_VALIDATED` 与该帧
+>   `hand_feedback_canonical_valid=True` 时，才可把 hand feedback 当作 canonical state。
 
 当前 π0.5 目标 contract：observation = head RGB + right wrist RGB +
 `robot_qpos_17d_rad`；action = `robot_qcmd_17d_rad`；language = episode
@@ -556,13 +560,15 @@ NATIVE EVENT RATE: NOT EXACTLY RECOVERABLE FROM CURATED DATA
 
 | Field | Meaning |
 |---|---|
-| `hardware_execution` | 当前 passive recorder 固定写 False；没有可信 backend identity 时绝不从图像/telemetry 猜成 True |
+| `arm_backend_kind` / `hand_backend_kind` | control plane CLI 明确发布并在 episode 开始时冻结的 backend identity；缺失为 `unknown`，camera-only 为 `none` |
+| `hardware_execution` | 仅当两个 backend identity 都是 `real` 时为 True；不从 command、finite feedback 或图像猜测 |
 | `robot_telemetry_present` | episode 开始时 publisher 是否 alive |
-| `training_ready` | 是否通过完整 training contract gate |
-| `dataset_status` | 当前隔离/发布状态；现为 `RAW_CAPTURE_QUARANTINED` |
+| `training_ready` | per-episode derived status；还要求 alive telemetry、`F_FB_VALIDATED`、head + right-wrist RGB production contract |
+| `dataset_status` | ready 为 `RAW_REAL_VALIDATED`；其他情况为 `RAW_CAPTURE_QUARANTINED` |
 
-Camera-only 中 robot arrays NaN 是预期。`training_ready=False` 可能只是 `F_fb`
-尚未验证，不代表 recorder broken。
+Camera-only 中 robot arrays NaN 是预期。单帧 invalid 不会改变 episode readiness
+metadata；D2/D3 继续负责 causal transition filtering。`training_ready=False` 不代表
+recorder broken。
 
 ## 13. Directory Layout and Inspection
 
@@ -663,8 +669,9 @@ desired→effective fallback。
 
 ### Hand canonical qpos invalid
 
-`F_fb` pending 时 EXPECTED。可检查 raw `hand_feedback_sdk_rad`，但不能用于
-canonical training state。
+先检查 telemetry 的 `hand_feedback_mapping_status` 是否为 `F_FB_VALIDATED`，以及该帧
+是否全 MODE7、fresh 且 `hand_feedback_canonical_valid=True`。未通过时可以检查 raw
+`hand_feedback_sdk_rad`，但不能用于 canonical training state。
 
 ### RGB-only 缺少 depth
 
@@ -692,7 +699,7 @@ component mismatch 和 sentinel；可用只读 inspector 复查。
 - `A` 是 real authority toggle；`D` 是 disarm-only。
 - `E` 是 restricted SG100 software latch，不能代替物理急停。
 - J7/full-hand real AVP control 继续阻断，不得扩大 `index_j3` allowlist。
-- `F_fb` 验证前，real SG100 canonical qpos 与完整 training dataset 不可发布。
+- 只有 episode 实际记录 `F_FB_VALIDATED` 且逐帧 canonical-valid 时，SG100 qpos 才能进入后续清洗；验证结论不能替代 runtime provenance。
 - 不创建自动 `C`、自动 `A` 或自动 real motion 的一键脚本。
 
 深入依据：
@@ -935,17 +942,18 @@ replay 专用文件等同样不进入 Curated（完整 NO SAVE 列表见
 `robot_desired_qcmd_17d_rad`——不是"H2 没有 desired"。有效 desired17 需要 v3
 recorder 重采。
 
-当前 blocker（全部 episode 均 NOT TRAINING READY 的原因）：
+历史 H1/H2 episode 的 blocker（不因当前 11D mapping 已验证而回写旧数据）：
 
-1. SG100 `F_fb = PENDING` → `hand_qpos_canonical_rad` 无法成立 →
+1. 采集时 SG100 `F_fb = PENDING` → `hand_qpos_canonical_rad` 无法成立 →
    `robot_qpos_17d_valid=0` → Curated cleaning 拒绝全部 transition；
 2. `hardware_execution=False`（无可信 backend attestation 前 conservatively）；
 3. H1/H2 episode 为 head-only、v1/v2 schema，且 effective17 无 real-backend
    cache 来源（sim path 无 effective cache 是预期行为）；
 4. D405 wrist 数据尚未采集。
 
-NPZ 能成功生成不代表可训练；上表只在对应条件真实满足后更新。Real Arm-Hand
-在 `F_fb` validated + 完整 real chain 验证前保持 NOT TRAINING READY。
+NPZ 能成功生成不代表可训练；上表只在对应条件真实满足后更新。未来 Real Arm-Hand
+episode 由 frozen backend identity、实际 `F_FB_VALIDATED` telemetry 和 production
+dual-RGB contract 独立派生 readiness，不自动继承项目级验证结论。
 
 ### Replay 导出（软嵌）
 

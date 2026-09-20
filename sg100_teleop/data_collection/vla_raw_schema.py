@@ -9,11 +9,14 @@ from pathlib import Path
 
 import numpy as np
 
+from sg100_teleop.robot.sg100_driver import FEEDBACK_MAP_STATUS_VALIDATED
+
 
 SCHEMA_NAME = "rm65_sg100_dual_realsense_vla_raw"
 SCHEMA_VERSION = 3
-DATASET_STATUS = "RAW_CAPTURE_QUARANTINED"
-TRAINING_READY = False
+DATASET_STATUS_QUARANTINED = "RAW_CAPTURE_QUARANTINED"
+DATASET_STATUS_READY = "RAW_REAL_VALIDATED"
+SUPPORTED_BACKEND_KINDS = ("real", "sim", "mock", "none", "unknown")
 ARM_JOINT_NAMES = tuple(f"rm65_joint{i}" for i in range(1, 7))
 HAND_JOINT_NAMES = (
     "thumb_j1", "thumb_j2", "thumb_j3",
@@ -28,6 +31,55 @@ SUPPORTED_CAMERA_MODALITIES = ("rgb", "depth")
 DEFAULT_CAMERA_MODALITIES = ("rgb",)
 LEGACY_CAMERA_MODALITIES = SUPPORTED_CAMERA_MODALITIES
 EPISODE_PATTERN = re.compile(r"^episode_(\d{6})\.npz$")
+
+
+@dataclass(frozen=True)
+class CaptureReadiness:
+    """Episode-level physical collection readiness derived from provenance."""
+
+    hardware_execution: bool
+    training_ready: bool
+    dataset_status: str
+
+
+def derive_capture_readiness(
+    *,
+    arm_backend_kind: str,
+    hand_backend_kind: str,
+    robot_telemetry_present: bool,
+    sg100_feedback_map_status: str,
+    required_cameras: tuple[str, ...],
+    camera_modalities: tuple[str, ...],
+) -> CaptureReadiness:
+    """Derive RAW readiness without using command or frame-value heuristics.
+
+    Per-frame/transition validity is intentionally not part of this gate.  D2/D3
+    causal cleaning remains responsible for filtering invalid transitions.
+    """
+
+    hardware_execution = bool(
+        str(arm_backend_kind) == "real"
+        and str(hand_backend_kind) == "real"
+    )
+    production_rgb_contract = bool(
+        tuple(required_cameras) == DEFAULT_REQUIRED_CAMERAS
+        and "rgb" in tuple(camera_modalities)
+    )
+    training_ready = bool(
+        hardware_execution
+        and robot_telemetry_present
+        and str(sg100_feedback_map_status) == FEEDBACK_MAP_STATUS_VALIDATED
+        and production_rgb_contract
+    )
+    return CaptureReadiness(
+        hardware_execution=hardware_execution,
+        training_ready=training_ready,
+        dataset_status=(
+            DATASET_STATUS_READY
+            if training_ready
+            else DATASET_STATUS_QUARANTINED
+        ),
+    )
 
 
 @dataclass(frozen=True)

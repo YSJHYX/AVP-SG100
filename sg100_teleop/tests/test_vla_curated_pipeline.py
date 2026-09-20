@@ -211,7 +211,9 @@ def _full_v3_arrays(
             "HOST MONOTONIC SOFTWARE ALIGNMENT" if wrist else "NOT_APPLICABLE_HEAD_ONLY"
         ),
         "camera_device_clock_domains_shared": np.asarray(False, dtype=bool),
-        "sg100_feedback_map_status": np.asarray("F_FB_PENDING"),
+        "sg100_feedback_map_status": np.asarray(
+            "F_FB_PROVIDED_NOT_VALIDATED"
+        ),
         "media_writer_max_backlog": np.asarray(0, dtype=np.int64),
         "media_writer_drop_count": np.asarray(0, dtype=np.int64),
         "media_writer_error_count": np.asarray(0, dtype=np.int64),

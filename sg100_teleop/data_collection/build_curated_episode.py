@@ -67,6 +67,7 @@ from sg100_teleop.data_collection.vla_curated_validator import (
     CuratedValidationReport,
     validate_curated_episode,
 )
+from sg100_teleop.robot.sg100_driver import FEEDBACK_MAP_STATUS_VALIDATED
 
 
 @dataclass(frozen=True)
@@ -264,8 +265,8 @@ def build_curated_episode(
         blockers.append("SOURCE_TRAINING_READY_FALSE")
     if not raw_hardware_execution:
         blockers.append("SOURCE_HARDWARE_EXECUTION_FALSE")
-    if feedback_status == "F_FB_PENDING":
-        blockers.append("SG100_F_FB_PENDING")
+    if feedback_status != FEEDBACK_MAP_STATUS_VALIDATED:
+        blockers.append("SG100_F_FB_NOT_VALIDATED")
     if m == 0:
         blockers.append("NO_ACCEPTED_TRANSITIONS")
 

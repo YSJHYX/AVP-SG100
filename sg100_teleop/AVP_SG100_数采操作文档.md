@@ -293,9 +293,16 @@ python -m sg100_teleop.data_collection.inspect_vla_episode \
 - 语言指令与实际任务一致；
 - desired、effective、measured 字段没有被混淆。
 
-当前 SG100 的精确 canonical 反馈映射 `F_fb` 尚未完成独立验证，Recorder 会诚实保留 `training_ready=False` / `RAW_CAPTURE_QUARANTINED`。这表示数据仍是待校准的 RAW 证据，不能直接宣称为可训练的真实状态—动作数据；不代表相机或 Recorder 损坏。
+SG100 11D canonical measured feedback 已完成真机验证与 replay 验证。Recorder 不会把
+该项目级结论套到所有未来 episode：`training_ready` 仍按 episode 派生，要求
+`arm_backend_kind=real`、`hand_backend_kind=real`、robot telemetry present、实际
+`hand_feedback_mapping_status=F_FB_VALIDATED`，以及 head + right-wrist RGB production
+contract。满足时 status 为 `RAW_REAL_VALIDATED`；camera-only、sim、mixed backend、
+identity 缺失或 mapping 未 validated 时仍为 `RAW_CAPTURE_QUARANTINED`。
 
-在 `training_ready`、`hardware_execution` 和 SG100 `F_fb` 条件未满足前，不要强行生成或发布为正式训练数据。
+不要用 command 变化、finite feedback、图像内容或 class name 猜测
+`hardware_execution`，也不要因单帧 invalid 改写 episode readiness；逐 transition
+有效性由 D2/D3 causal cleaning 处理。
 
 ## 7. 常见问题
 

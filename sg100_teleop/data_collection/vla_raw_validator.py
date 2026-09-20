@@ -9,11 +9,20 @@ from typing import Mapping
 import numpy as np
 
 from sg100_teleop.data_collection.vla_raw_schema import (
+    DATASET_STATUS_QUARANTINED,
+    DATASET_STATUS_READY,
     DEFAULT_REQUIRED_CAMERAS,
     LEGACY_CAMERA_MODALITIES,
     ROBOT_JOINT_NAMES,
+    SUPPORTED_BACKEND_KINDS,
+    derive_capture_readiness,
     parse_camera_modalities,
     parse_required_cameras,
+)
+from sg100_teleop.robot.sg100_driver import (
+    FEEDBACK_MAP_STATUS_NOT_PROVIDED,
+    FEEDBACK_MAP_STATUS_UNVALIDATED,
+    FEEDBACK_MAP_STATUS_VALIDATED,
 )
 
 
@@ -30,6 +39,7 @@ _EPISODE_METADATA_KEYS = {
     "max_hand_command_age_ns", "max_hand_feedback_age_ns",
     "max_camera_age_ns", "max_telemetry_age_ns",
     "required_cameras", "hardware_execution", "robot_telemetry_present",
+    "arm_backend_kind", "hand_backend_kind",
     "camera_configuration_mode", "camera_modalities", "record_depth",
     "head_depth_present", "wrist_depth_present",
     "head_color_intrinsics", "head_depth_intrinsics",
@@ -38,6 +48,7 @@ _EPISODE_METADATA_KEYS = {
     "robot_qpos_semantics", "telemetry_publish_hz_requested",
     "telemetry_publish_hz_effective",
 }
+_LEGACY_FEEDBACK_MAP_STATUS_PENDING = "F_FB_PENDING"
 
 
 @dataclass(frozen=True)
@@ -359,6 +370,76 @@ def validate_episode(
             arrays[device_key], dtype=np.float64
         ))):
             errors.append(f"disabled depth device timestamp 必须全为 NaN: {prefix}")
+
+    backend_keys_present = {
+        key for key in ("arm_backend_kind", "hand_backend_kind")
+        if key in arrays
+    }
+    if len(backend_keys_present) == 1:
+        errors.append("arm_backend_kind 与 hand_backend_kind 必须成对存在")
+    arm_backend_kind = str(
+        np.asarray(arrays.get("arm_backend_kind", "unknown")).item()
+    )
+    hand_backend_kind = str(
+        np.asarray(arrays.get("hand_backend_kind", "unknown")).item()
+    )
+    for key, value in (
+        ("arm_backend_kind", arm_backend_kind),
+        ("hand_backend_kind", hand_backend_kind),
+    ):
+        if value not in SUPPORTED_BACKEND_KINDS:
+            errors.append(f"{key} 非法: {value!r}")
+    feedback_map_status = str(
+        np.asarray(
+            arrays.get(
+                "sg100_feedback_map_status",
+                FEEDBACK_MAP_STATUS_NOT_PROVIDED,
+            )
+        ).item()
+    )
+    legacy_pending_status = bool(
+        feedback_map_status == _LEGACY_FEEDBACK_MAP_STATUS_PENDING
+        and not backend_keys_present
+    )
+    if feedback_map_status not in {
+        FEEDBACK_MAP_STATUS_NOT_PROVIDED,
+        FEEDBACK_MAP_STATUS_UNVALIDATED,
+        FEEDBACK_MAP_STATUS_VALIDATED,
+    } and not legacy_pending_status:
+        errors.append(
+            "sg100_feedback_map_status 非法: "
+            f"{feedback_map_status!r}"
+        )
+    robot_telemetry_present = bool(
+        np.asarray(arrays["robot_telemetry_present"]).item()
+    )
+    readiness = derive_capture_readiness(
+        arm_backend_kind=arm_backend_kind,
+        hand_backend_kind=hand_backend_kind,
+        robot_telemetry_present=robot_telemetry_present,
+        sg100_feedback_map_status=feedback_map_status,
+        required_cameras=tuple(enabled_camera_roles),
+        camera_modalities=tuple(enabled_camera_modalities),
+    )
+    hardware_execution = bool(
+        np.asarray(arrays["hardware_execution"]).item()
+    )
+    training_ready = bool(np.asarray(arrays["training_ready"]).item())
+    dataset_status = str(np.asarray(arrays["dataset_status"]).item())
+    if hardware_execution != readiness.hardware_execution:
+        errors.append(
+            "hardware_execution 与显式 arm/hand backend identity 不一致"
+        )
+    if training_ready != readiness.training_ready:
+        errors.append("training_ready 与 episode readiness provenance 不一致")
+    if dataset_status not in {
+        DATASET_STATUS_QUARANTINED,
+        DATASET_STATUS_READY,
+    }:
+        errors.append(f"dataset_status 非法: {dataset_status!r}")
+    elif dataset_status != readiness.dataset_status:
+        errors.append("dataset_status 与 derived training_ready 不一致")
+
     if writer_drop_count:
         errors.append(f"media writer drop={writer_drop_count}")
     if writer_error_count:
@@ -366,9 +447,6 @@ def validate_episode(
     if telemetry_sequence_gap_count:
         warnings.append(f"telemetry sequence gap={telemetry_sequence_gap_count}")
 
-    robot_telemetry_present = bool(
-        np.asarray(arrays["robot_telemetry_present"]).item()
-    )
     if not robot_telemetry_present:
         robot_value_keys = (
             "arm_q_goal_rad", "arm_qcmd_sent_rad", "arm_qpos_rad",
