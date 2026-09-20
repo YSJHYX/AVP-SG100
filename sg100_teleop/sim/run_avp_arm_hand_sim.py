@@ -1561,8 +1561,9 @@ def build_arg_parser():
 
     # ========================================================
     # Restricted SG100 hand backend. The sim default stays unchanged;
-    # real accepts the same final post-filter canonical qcmd and publishes
-    # explicit backend/F_fb provenance for the independent RAW recorder.
+    # real accepts the same final post-filter canonical qcmd but only
+    # activates the real-hardware-validated joint allowlist. F_fb/data
+    # remain blocked independently.
     # ========================================================
 
     parser.add_argument(
@@ -1573,7 +1574,7 @@ def build_arg_parser():
             "Hand execution backend: 'sim' keeps the software-only "
             "command proxy (current behaviour); 'real' sends only the "
             "allowlisted final qcmd through the restricted SG100 envelope "
-            "and reports measured-feedback provenance; 'mock' exercises the data path "
+            "and keeps F_fb/data quarantined; 'mock' exercises the data path "
             "against MockSG100Driver (no hardware)"
         ),
     )
@@ -3006,8 +3007,6 @@ def main():
             restricted_hand_backend=restricted_hand_backend,
             hand_qcmd_retargeted_rad=q_hand_cmd,
             latest_hand_command=latest_hand_telemetry,
-            arm_backend_kind=args.arm_backend,
-            hand_backend_kind=args.hand_backend,
             telemetry_publish_hz_requested=args.telemetry_publish_hz,
         )
         telemetry_publisher.publish(snapshot)
@@ -3049,6 +3048,11 @@ def main():
     # SG100 hand backend. 'real' is wrapped by the restricted command
     # envelope; 'mock' retains the software data-path regression.
     # ========================================================
+
+    if args.collect_arm_hand_data and args.hand_backend == "real":
+        raise RuntimeError(
+            "SG100 F_fb 尚未验证：real-hand dataset 必须保持 QUARANTINED"
+        )
 
     hand_driver = None
     restricted_hand_backend = None

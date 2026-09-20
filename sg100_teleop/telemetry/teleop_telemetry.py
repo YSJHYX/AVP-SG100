@@ -17,11 +17,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from sg100_teleop.robot.sg100_driver import FEEDBACK_MAP_STATUS_NOT_PROVIDED
 
-
-TELEMETRY_SCHEMA_VERSION = 2
-SUPPORTED_TELEMETRY_SCHEMA_VERSIONS = (1, TELEMETRY_SCHEMA_VERSION)
+TELEMETRY_SCHEMA_VERSION = 1
 MAX_UDP_PAYLOAD = 65_507
 
 
@@ -67,8 +64,6 @@ def build_teleop_snapshot(
     restricted_hand_backend,
     hand_qcmd_retargeted_rad,
     latest_hand_command: Mapping[str, Any] | None,
-    arm_backend_kind: str,
-    hand_backend_kind: str,
     telemetry_publish_hz_requested: float | None = None,
 ) -> dict[str, Any]:
     """只读取 backend cache，组装一个完整 telemetry schema snapshot。"""
@@ -97,18 +92,7 @@ def build_teleop_snapshot(
         and hand_feedback.canonical_valid
         and hand_feedback.valid
     )
-    hand_feedback_mapping_status = (
-        hand_feedback.feedback_mapping_status
-        if hand_feedback is not None
-        else getattr(
-            hand_driver,
-            "feedback_mapping_status",
-            FEEDBACK_MAP_STATUS_NOT_PROVIDED,
-        )
-    )
     return {
-        "arm_backend_kind": str(arm_backend_kind),
-        "hand_backend_kind": str(hand_backend_kind),
         "tracking_valid": tracking_valid,
         "avp_anchored": bool(avp_anchored),
         "motion_enabled": motion_enabled,
@@ -173,7 +157,10 @@ def build_teleop_snapshot(
             hand_feedback.q_rad if hand_canonical_valid else None
         ),
         "hand_feedback_canonical_valid": hand_canonical_valid,
-        "hand_feedback_mapping_status": hand_feedback_mapping_status,
+        "hand_feedback_mapping_status": (
+            hand_feedback.feedback_mapping_status
+            if hand_feedback is not None else "F_FB_NOT_PROVIDED"
+        ),
         "telemetry_publish_hz_requested": (
             float(telemetry_publish_hz_requested)
             if telemetry_publish_hz_requested is not None else None
@@ -282,9 +269,7 @@ class TeleopTelemetrySubscriber:
                 packet = json.loads(payload.decode("utf-8"))
                 sequence = int(packet["publish_sequence"])
                 timestamp = int(packet["publish_monotonic_ns"])
-                if int(packet.get("schema_version", -1)) not in (
-                    SUPPORTED_TELEMETRY_SCHEMA_VERSIONS
-                ):
+                if int(packet.get("schema_version", -1)) != TELEMETRY_SCHEMA_VERSION:
                     raise ValueError("unsupported telemetry schema")
                 if timestamp <= 0:
                     raise ValueError("invalid publish timestamp")

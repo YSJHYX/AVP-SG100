@@ -12,13 +12,14 @@ import numpy as np
 from sg100_teleop.data_collection.synchronized_sampler import SynchronizedSampler
 from sg100_teleop.data_collection.vla_raw_buffer import VlaRawBuffer
 from sg100_teleop.data_collection.vla_raw_schema import (
+    DATASET_STATUS,
     DEFAULT_CAMERA_MODALITIES,
     DEFAULT_REQUIRED_CAMERAS,
     ROBOT_JOINT_NAMES,
     SCHEMA_NAME,
     SCHEMA_VERSION,
+    TRAINING_READY,
     FreshnessThresholds,
-    derive_capture_readiness,
     scan_next_episode_index,
     parse_camera_modalities,
     parse_required_cameras,
@@ -33,7 +34,6 @@ from sg100_teleop.data_collection.vla_raw_writer import (
     discard_pending,
     save_episode_atomic,
 )
-from sg100_teleop.robot.sg100_driver import FEEDBACK_MAP_STATUS_NOT_PROVIDED
 
 
 class EpisodeState(str, Enum):
@@ -89,9 +89,6 @@ class EpisodeController:
         self.validation_report: ValidationReport | None = None
         self._telemetry_stats_start: dict[str, int] = {}
         self._robot_telemetry_present = False
-        self._arm_backend_kind = "none"
-        self._hand_backend_kind = "none"
-        self._sg100_feedback_map_status = FEEDBACK_MAP_STATUS_NOT_PROVIDED
 
     def turn_on(self) -> int:
         if self.state is not EpisodeState.READY:
@@ -106,32 +103,6 @@ class EpisodeController:
         self._robot_telemetry_present = bool(self.telemetry.is_alive())
         if self.telemetry_required and not self._robot_telemetry_present:
             raise RuntimeError("Robot telemetry publisher 未 READY或已 stale")
-        latest_packet = (
-            self.telemetry.latest()
-            if self._robot_telemetry_present
-            else None
-        )
-        if latest_packet is None:
-            self._arm_backend_kind = (
-                "unknown" if self._robot_telemetry_present else "none"
-            )
-            self._hand_backend_kind = (
-                "unknown" if self._robot_telemetry_present else "none"
-            )
-            self._sg100_feedback_map_status = FEEDBACK_MAP_STATUS_NOT_PROVIDED
-        else:
-            self._arm_backend_kind = str(
-                latest_packet.get("arm_backend_kind", "unknown")
-            )
-            self._hand_backend_kind = str(
-                latest_packet.get("hand_backend_kind", "unknown")
-            )
-            self._sg100_feedback_map_status = str(
-                latest_packet.get(
-                    "hand_feedback_mapping_status",
-                    FEEDBACK_MAP_STATUS_NOT_PROVIDED,
-                )
-            )
         self.frozen_instruction = str(self.language_instruction)
         self.buffer = VlaRawBuffer()
         self.pending_dir = self.output_dir / f".pending_{uuid.uuid4().hex}"
@@ -254,14 +225,6 @@ class EpisodeController:
         self.sampler.stop()
         self.media_writer.close()
         arrays = self.buffer.arrays()
-        readiness = derive_capture_readiness(
-            arm_backend_kind=self._arm_backend_kind,
-            hand_backend_kind=self._hand_backend_kind,
-            robot_telemetry_present=self._robot_telemetry_present,
-            sg100_feedback_map_status=self._sg100_feedback_map_status,
-            required_cameras=self.required_cameras,
-            camera_modalities=self.camera_modalities,
-        )
         arrays.update({
             "schema_name": np.asarray(SCHEMA_NAME),
             "schema_version": np.asarray(SCHEMA_VERSION, dtype=np.int32),
@@ -286,13 +249,9 @@ class EpisodeController:
                 "measured robot joint state feedback; never inferred from "
                 "desired command"
             ),
-            "dataset_status": np.asarray(readiness.dataset_status),
-            "training_ready": np.asarray(readiness.training_ready, dtype=bool),
-            "hardware_execution": np.asarray(
-                readiness.hardware_execution, dtype=bool
-            ),
-            "arm_backend_kind": np.asarray(self._arm_backend_kind),
-            "hand_backend_kind": np.asarray(self._hand_backend_kind),
+            "dataset_status": np.asarray(DATASET_STATUS),
+            "training_ready": np.asarray(TRAINING_READY, dtype=bool),
+            "hardware_execution": np.asarray(False, dtype=bool),
             "robot_telemetry_present": np.asarray(
                 self._robot_telemetry_present, dtype=bool
             ),
@@ -312,9 +271,7 @@ class EpisodeController:
                 else "NOT_APPLICABLE_HEAD_ONLY"
             ),
             "camera_device_clock_domains_shared": np.asarray(False, dtype=bool),
-            "sg100_feedback_map_status": np.asarray(
-                self._sg100_feedback_map_status
-            ),
+            "sg100_feedback_map_status": np.asarray("F_FB_PENDING"),
             "media_writer_max_backlog": np.asarray(
                 self.media_writer.max_backlog, dtype=np.int64
             ),
@@ -444,6 +401,3 @@ class EpisodeController:
         self.validation_report = None
         self._telemetry_stats_start = {}
         self._robot_telemetry_present = False
-        self._arm_backend_kind = "none"
-        self._hand_backend_kind = "none"
-        self._sg100_feedback_map_status = FEEDBACK_MAP_STATUS_NOT_PROVIDED

@@ -303,14 +303,13 @@ desired 等于 effective，因为 safety limiter/allowlist 本来允许两者不
 effective17 与 effective component fields、measured17 与 measured component fields
 严格一致。
 
-关闭 depth 本身不会阻止 readiness；正式训练仍只要求 head + right-wrist RGB。
-`training_ready` 不再是全局常量，而由每个 episode 的 backend、telemetry、mapping
-status 与 camera contract 派生。
+关闭 depth 不改变 `training_ready=False` 或
+`dataset_status=RAW_CAPTURE_QUARANTINED`；当前 blocker 是 SG100 `F_fb` 与真实
+hardware chain readiness，而不是 depth。
 
-Control plane 在 telemetry v2 中明确发布 `arm_backend_kind` 与
-`hand_backend_kind`，Recorder 在 episode 开始时冻结它们。只有二者都为 `real` 时
-`hardware_execution=True`；sim、mock、camera-only、mixed backend 或 identity 缺失
-均 fail closed。禁止根据图像、command 变化、finite feedback 或 class name 推断。
+当前 recorder 无可信的 backend-identity attestation，因此 `hardware_execution`
+保守固定为 False；即使 telemetry 来自后续 real runner，也不能仅凭数据值推断为
+True。正式发布 real dataset 前需另行建立可审计的 hardware execution provenance。
 
 ## D455 depth diagnostic probe
 
@@ -348,23 +347,16 @@ drop/error 均明确 FAIL。
   recording/vla_raw/episode_000001.npz
 ```
 
-SG100 11D canonical measured feedback 已完成真机验证与 replay 验证；仍禁止
-`F_fb = inverse(F_cmd)`。Recorder 必须使用 telemetry 的实际
-`hand_feedback_mapping_status`，并按 episode 保存：
+SG100 `F_fb` 当前仍 pending；禁止 `F_fb = inverse(F_cmd)`。因此所有 episode
+强制保存：
 
 ```text
-real + real + telemetry present + F_FB_VALIDATED + head/right_wrist RGB
-    -> dataset_status = RAW_REAL_VALIDATED
-    -> training_ready = True
-
-其他组合
-    -> dataset_status = RAW_CAPTURE_QUARANTINED
-    -> training_ready = False
+dataset_status = RAW_CAPTURE_QUARANTINED
+training_ready = False
 ```
 
-mapping 未 validated 或单帧 canonical invalid 时，该帧 hand canonical qpos 为 NaN，
-`hand_feedback_canonical_valid=False`、`robot_qpos_17d_valid=False`。Episode readiness
-不要求每帧 valid；D2/D3 负责 transition filtering。本 recorder 只负责 raw capture，不包含 OpenPI、
+未验证时 hand canonical qpos 为 NaN，`hand_feedback_canonical_valid=False`，
+`robot_qpos_17d_valid=False`。本 recorder 只负责 raw capture，不包含 OpenPI、
 LeRobot、π0.5 normalization、action chunking、image resize、tokenization 或 prompt
 encoding。
 

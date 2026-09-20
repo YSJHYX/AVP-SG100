@@ -23,10 +23,9 @@ from sg100_teleop.data_collection.episode_controller import (
 from sg100_teleop.data_collection.synchronized_sampler import SynchronizedSampler
 from sg100_teleop.data_collection.vla_raw_buffer import VlaRawBuffer
 from sg100_teleop.data_collection.vla_raw_schema import (
-    DATASET_STATUS_QUARANTINED,
-    DATASET_STATUS_READY,
     DEFAULT_CAMERA_MODALITIES,
     DEFAULT_REQUIRED_CAMERAS,
+    DATASET_STATUS,
     FixedRateTimeline,
     FreshnessThresholds,
     SCHEMA_VERSION,
@@ -45,31 +44,17 @@ from sg100_teleop.data_collection.vla_raw_validator import (
     validate_episode,
 )
 from sg100_teleop.telemetry.teleop_telemetry import (
-    TELEMETRY_SCHEMA_VERSION,
     TeleopTelemetryPublisher,
     TeleopTelemetrySubscriber,
     build_teleop_snapshot,
 )
-from sg100_teleop.robot.sg100_driver import (
-    FEEDBACK_MAP_STATUS_UNVALIDATED,
-    FEEDBACK_MAP_STATUS_VALIDATED,
-)
 
 
-def _packet(
-    timestamp_ns: int,
-    sequence: int = 1,
-    *,
-    arm_backend_kind: str = "sim",
-    hand_backend_kind: str = "sim",
-    feedback_mapping_status: str = FEEDBACK_MAP_STATUS_UNVALIDATED,
-) -> dict:
+def _packet(timestamp_ns: int, sequence: int = 1) -> dict:
     return {
-        "schema_version": TELEMETRY_SCHEMA_VERSION,
+        "schema_version": 1,
         "publish_sequence": sequence,
         "publish_monotonic_ns": timestamp_ns,
-        "arm_backend_kind": arm_backend_kind,
-        "hand_backend_kind": hand_backend_kind,
         "telemetry_publish_hz_requested": 100.0,
         "tracking_valid": True,
         "avp_anchored": True,
@@ -101,7 +86,6 @@ def _packet(
         "hand_feedback_valid": True,
         "hand_qpos_canonical_rad": None,
         "hand_feedback_canonical_valid": False,
-        "hand_feedback_mapping_status": feedback_mapping_status,
     }
 
 
@@ -207,8 +191,6 @@ def test_sim_snapshot_exposes_desired_and_requested_rate_without_effective() -> 
         restricted_hand_backend=None,
         hand_qcmd_retargeted_rad=hand_goal,
         latest_hand_command=None,
-        arm_backend_kind="sim",
-        hand_backend_kind="sim",
         telemetry_publish_hz_requested=100.0,
     )
     np.testing.assert_array_equal(snapshot["arm_q_goal_rad"], arm_goal)
@@ -217,8 +199,6 @@ def test_sim_snapshot_exposes_desired_and_requested_rate_without_effective() -> 
     )
     assert snapshot["arm_qcmd_sent_rad"] is None
     assert snapshot["hand_qcmd_effective_canonical_rad"] is None
-    assert snapshot["arm_backend_kind"] == "sim"
-    assert snapshot["hand_backend_kind"] == "sim"
     assert snapshot["telemetry_publish_hz_requested"] == 100.0
 
 
@@ -237,9 +217,6 @@ class FakeTelemetry:
     def latest_before(self, timestamp_ns: int):
         eligible = [p for p in self.packets if p["publish_monotonic_ns"] <= timestamp_ns]
         return dict(eligible[-1]) if eligible else None
-
-    def latest(self):
-        return dict(self.packets[-1]) if self.packets else None
 
     def is_alive(self):
         return bool(self.packets)
@@ -365,9 +342,9 @@ def test_causal_alignment_staleness_17d_and_equal_n() -> None:
     assert not stale_buffer.arrays()["head_camera_valid"][0]
 
 
-def _controller(tmp_path: Path, packet: dict | None = None):
+def _controller(tmp_path: Path):
     timestamp = time.monotonic_ns() - 1_000_000
-    telemetry = FakeTelemetry([packet or _packet(timestamp)])
+    telemetry = FakeTelemetry([_packet(timestamp)])
     head = FakeCamera("head", [_frame("head", timestamp, 1)])
     wrist = FakeCamera("right_wrist", [_frame("right_wrist", timestamp, 2)])
     return EpisodeController(
@@ -428,128 +405,13 @@ def test_y_saves_npz_media_and_increments_index(tmp_path: Path) -> None:
     assert saved[1] == tmp_path / "episode_000000_media"
     assert controller.next_episode_index == 1
     with np.load(saved[0], allow_pickle=False) as archive:
-        assert archive["dataset_status"].item() == DATASET_STATUS_QUARANTINED
+        assert archive["dataset_status"].item() == DATASET_STATUS
         assert archive["training_ready"].item() is False
         assert archive["timestamp_ns"].shape[0] == archive["arm_qpos_rad"].shape[0]
         assert archive["hand_feedback_canonical_valid"].sum() == 0
         assert np.isnan(archive["hand_qpos_canonical_rad"]).all()
         assert archive["robot_joint_names"].shape == (17,)
-    assert not (saved[1] / "head" / "depth").exists()
-
-
-@pytest.mark.parametrize(
-    (
-        "case_name",
-        "arm_backend_kind",
-        "hand_backend_kind",
-        "feedback_mapping_status",
-        "expected_hardware",
-        "expected_ready",
-        "expected_status",
-    ),
-    (
-        (
-            "real_real_validated",
-            "real",
-            "real",
-            FEEDBACK_MAP_STATUS_VALIDATED,
-            True,
-            True,
-            DATASET_STATUS_READY,
-        ),
-        (
-            "sim_sim",
-            "sim",
-            "sim",
-            FEEDBACK_MAP_STATUS_VALIDATED,
-            False,
-            False,
-            DATASET_STATUS_QUARANTINED,
-        ),
-        (
-            "real_real_unvalidated",
-            "real",
-            "real",
-            FEEDBACK_MAP_STATUS_UNVALIDATED,
-            True,
-            False,
-            DATASET_STATUS_QUARANTINED,
-        ),
-    ),
-)
-def test_episode_readiness_is_derived_from_frozen_control_plane_provenance(
-    tmp_path: Path,
-    case_name: str,
-    arm_backend_kind: str,
-    hand_backend_kind: str,
-    feedback_mapping_status: str,
-    expected_hardware: bool,
-    expected_ready: bool,
-    expected_status: str,
-) -> None:
-    timestamp = time.monotonic_ns() - 1_000_000
-    packet = _packet(
-        timestamp,
-        arm_backend_kind=arm_backend_kind,
-        hand_backend_kind=hand_backend_kind,
-        feedback_mapping_status=feedback_mapping_status,
-    )
-    controller, _, _, _ = _controller(tmp_path / case_name, packet)
-    controller.handle_input("On")
-    report = controller.handle_input("Off")
-    assert report.quality == "PASS", report.errors
-    arrays = controller.candidate_arrays
-    assert arrays["arm_backend_kind"].item() == arm_backend_kind
-    assert arrays["hand_backend_kind"].item() == hand_backend_kind
-    assert arrays["hardware_execution"].item() is expected_hardware
-    assert arrays["training_ready"].item() is expected_ready
-    assert arrays["dataset_status"].item() == expected_status
-    assert arrays["sg100_feedback_map_status"].item() == feedback_mapping_status
-    controller.handle_input("N")
-
-
-def test_missing_backend_identity_fails_closed(tmp_path: Path) -> None:
-    timestamp = time.monotonic_ns() - 1_000_000
-    packet = _packet(
-        timestamp,
-        arm_backend_kind="real",
-        hand_backend_kind="real",
-        feedback_mapping_status=FEEDBACK_MAP_STATUS_VALIDATED,
-    )
-    packet.pop("arm_backend_kind")
-    packet.pop("hand_backend_kind")
-    controller, _, _, _ = _controller(tmp_path, packet)
-    controller.handle_input("On")
-    report = controller.handle_input("Off")
-    assert report.quality == "PASS", report.errors
-    arrays = controller.candidate_arrays
-    assert arrays["arm_backend_kind"].item() == "unknown"
-    assert arrays["hand_backend_kind"].item() == "unknown"
-    assert arrays["hardware_execution"].item() is False
-    assert arrays["training_ready"].item() is False
-    assert arrays["dataset_status"].item() == DATASET_STATUS_QUARANTINED
-    controller.handle_input("N")
-
-
-def test_legacy_v3_pending_status_without_backend_identity_remains_readable(
-    tmp_path: Path,
-) -> None:
-    controller, _, _, _ = _controller(tmp_path)
-    controller.handle_input("On")
-    controller.handle_input("Off")
-    legacy = dict(controller.candidate_arrays)
-    legacy.pop("arm_backend_kind")
-    legacy.pop("hand_backend_kind")
-    legacy["sg100_feedback_map_status"] = np.asarray("F_FB_PENDING")
-    report = validate_episode(
-        legacy,
-        media_root=controller.pending_dir,
-        writer_drop_count=0,
-        writer_error_count=0,
-        telemetry_sequence_gap_count=0,
-    )
-    assert report.quality == "PASS", report.errors
-    controller.handle_input("N")
+    assert len(tuple((saved[1] / "head" / "depth").glob("*.png"))) >= 1
 
 
 def test_index_scan_uses_max_not_file_count(tmp_path: Path) -> None:
@@ -654,15 +516,11 @@ def test_head_only_camera_only_ready_has_no_fake_wrist_or_robot_data(
     assert arrays["wrist_camera_present"].item() is False
     assert arrays["hardware_execution"].item() is False
     assert arrays["robot_telemetry_present"].item() is False
-    assert arrays["arm_backend_kind"].item() == "none"
-    assert arrays["hand_backend_kind"].item() == "none"
-    assert arrays["training_ready"].item() is False
-    assert arrays["dataset_status"].item() == DATASET_STATUS_QUARANTINED
     n = arrays["timestamp_ns"].shape[0]
     assert n >= 1
     pending = controller.pending_dir
     assert len(tuple((pending / "head" / "rgb").glob("*.jpg"))) == n
-    assert not (pending / "head" / "depth").exists()
+    assert len(tuple((pending / "head" / "depth").glob("*.png"))) == n
     assert not (pending / "right_wrist").exists()
     assert not arrays["wrist_camera_valid"].any()
     for key in (
