@@ -36,6 +36,7 @@ class FakeSdkArm:
         self.initial = list(initial_deg)
         self.last_cmd_deg: list[float] | None = None
         self.canfd_calls: list[tuple] = []
+        self.movej_calls: list[tuple] = []
         self.slow_stop_count = 0
         self.stop_count = 0
         self.deleted = False
@@ -56,6 +57,13 @@ class FakeSdkArm:
     def rm_movej_canfd(self, joint, follow, expand=0.0, trajectory_mode=0, radio=0):
         self.last_cmd_deg = list(joint)
         self.canfd_calls.append((list(joint), follow, trajectory_mode))
+        return 0
+
+    def rm_movej(self, joint, speed, radius, connect, block):
+        self.last_cmd_deg = list(joint)
+        self.movej_calls.append(
+            (list(joint), speed, radius, connect, block)
+        )
         return 0
 
     def rm_set_arm_slow_stop(self):
@@ -104,6 +112,54 @@ def test_deg_bridge_command_and_feedback():
 
     # Round trip is exact to float precision.
     assert abs(float(np.rad2deg(np.deg2rad(0.123456789))) - 0.123456789) < 1e-9
+
+
+def test_blocking_planned_move_uses_realman_movej_and_refreshes_state():
+    fake = FakeSdkArm(initial_deg=[0.0] * 6)
+    backend = RM65RealBackend(
+        "fake",
+        sdk=fake,
+        on_event=lambda name, detail: None,
+    )
+    backend.connect()
+
+    target_rad = np.deg2rad(np.full(6, 15.0))
+    measured_rad = backend.movej_blocking(
+        target_rad,
+        speed_percent=10,
+    )
+
+    assert len(fake.movej_calls) == 1
+    movej_joint_deg, speed, radius, connect, block = fake.movej_calls[0]
+    np.testing.assert_allclose(movej_joint_deg, [15.0] * 6, atol=1e-12)
+    assert (speed, radius, connect, block) == (10, 0, 0, 1)
+    np.testing.assert_allclose(measured_rad, target_rad, atol=1e-12)
+    np.testing.assert_allclose(
+        backend.joint_state().q_rad,
+        target_rad,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        backend._limiter.last_command,
+        target_rad,
+        atol=1e-12,
+    )
+
+
+def test_real_startup_hand_target_sets_only_thumb_j2_to_minus_31_deg():
+    from sg100_teleop.sim.run_avp_arm_hand_sim import (
+        REAL_STARTUP_HAND_Q_RAD,
+        SG100_JOINT_ORDER,
+    )
+
+    expected_deg = np.zeros(len(SG100_JOINT_ORDER), dtype=np.float64)
+    expected_deg[SG100_JOINT_ORDER.index("thumb_j2")] = -31.0
+    np.testing.assert_allclose(
+        np.degrees(REAL_STARTUP_HAND_Q_RAD),
+        expected_deg,
+        atol=1e-12,
+        rtol=0.0,
+    )
 
 
 # ---------------------------------------------------------

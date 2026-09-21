@@ -79,10 +79,10 @@ def test_boundary_conversion_with_gain_offset():
         path = f.name
 
     hardware_map = SG100HardwareMap(map_path=path)
-    q = np.zeros(HAND_DOF)
+    q = hardware_map.clamp_canonical(np.zeros(HAND_DOF))
     actual = hardware_map.canonical_to_actual(q)
     assert actual[0] == 0.0
-    assert actual[1] == pytest.approx(0.1)
+    assert actual[1] == pytest.approx(q[1] + 0.1)
     recovered = hardware_map.actual_to_canonical(actual)
     np.testing.assert_allclose(recovered, q, atol=1e-12)
 

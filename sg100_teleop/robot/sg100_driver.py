@@ -291,12 +291,13 @@ class SG100LimitApplication:
 
 
 class SG100CommandLimitContract:
-    """Limits derived once from runtime SDK ranges and the validated F_cmd.
+    """Limits derived from SDK ranges, semantic limits and validated F_cmd.
 
-    The retargeting/morphology limits remain untouched.  Command-safe
-    canonical limits are the exact inverse image of the production SDK's
-    current ``joint_angle_map_v3.0.json`` / R user-degree ranges, so there is no second
-    hand-maintained table to drift.
+    Command-safe canonical limits are the intersection of the morphology
+    limits in ``sg100_joint_semantics.yaml`` and the inverse image of the
+    production SDK's current ``joint_angle_map_v3.0.json`` / R user-degree
+    ranges.  This ensures direct calls to ``send_positions_rad`` cannot
+    bypass a narrower semantic safety limit.
     """
 
     def __init__(
@@ -323,8 +324,25 @@ class SG100CommandLimitContract:
         sdk_max_rad = np.deg2rad(sdk_max)
         inverse_a = (sdk_min_rad - hardware_map.offset_rad) / hardware_map.gain
         inverse_b = (sdk_max_rad - hardware_map.offset_rad) / hardware_map.gain
-        self.canonical_min_rad = np.minimum(inverse_a, inverse_b)
-        self.canonical_max_rad = np.maximum(inverse_a, inverse_b)
+        vendor_canonical_min = np.minimum(inverse_a, inverse_b)
+        vendor_canonical_max = np.maximum(inverse_a, inverse_b)
+        self.canonical_min_rad = np.maximum(
+            vendor_canonical_min, hardware_map.lower_rad
+        )
+        self.canonical_max_rad = np.minimum(
+            vendor_canonical_max, hardware_map.upper_rad
+        )
+        if np.any(self.canonical_min_rad > self.canonical_max_rad):
+            invalid = np.flatnonzero(
+                self.canonical_min_rad > self.canonical_max_rad
+            )
+            names = [
+                hardware_map.software_joint_order[int(i)] for i in invalid
+            ]
+            raise ValueError(
+                "semantic and SDK command ranges do not overlap for "
+                f"joints {names}"
+            )
 
         self.rows = tuple(
             SG100JointLimit(

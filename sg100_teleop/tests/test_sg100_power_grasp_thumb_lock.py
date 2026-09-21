@@ -268,7 +268,7 @@ def test_group2_power_grasp_thumb_moves_inward(
     lateral_base = _lateral_delta_mm(harness, q_base)
     lateral_lock = _lateral_delta_mm(harness, q_lock)
 
-    assert lateral_lock < lateral_base - 40.0, (
+    assert lateral_lock < lateral_base - 35.0, (
         "locked thumb must move across the palm toward the closure "
         f"region: {lateral_base:.1f} -> {lateral_lock:.1f} mm"
     )

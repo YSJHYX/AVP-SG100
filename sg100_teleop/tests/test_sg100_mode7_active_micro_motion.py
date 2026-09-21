@@ -68,7 +68,9 @@ def test_j7_alias_and_canonical_sign_flip_are_applied_exactly_once():
     assert active.parse_joint_selector("J7") == 7
     hardware_map = SG100HardwareMap()
     assert hardware_map.gain[6] == -1.0
-    canonical = np.zeros(HAND_DOF)
+    canonical = np.rad2deg(
+        hardware_map.clamp_canonical(np.zeros(HAND_DOF))
+    )
     canonical[6] = -20.0
     sdk = active.apply_f_cmd_once_deg(hardware_map, canonical)
     assert sdk[6] == pytest.approx(20.0)

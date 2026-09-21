@@ -17,7 +17,7 @@ class GraspMode(str, Enum):
 
 # thumb_j1 canonical domain is [0, ~125 deg]; claw parks at +90 deg.
 CLAW_THUMB_J1_RAD = float(np.deg2rad(90.0))
-CLAW_THUMB_J2_RAD = float(np.deg2rad(-150.0))
+CLAW_THUMB_J2_RAD = float(np.deg2rad(-149.0))
 CLAW_LITTLE_J1_RAD = float(-np.pi)
 CLAW_INDEX_J1_RAD = 0.0
 

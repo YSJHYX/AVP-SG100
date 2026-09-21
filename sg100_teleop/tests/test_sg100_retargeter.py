@@ -20,7 +20,10 @@ def main():
     print(q)
 
     assert q.shape == (11,)
-    assert np.allclose(q, 0.0)
+    expected_neutral = np.asarray([
+        r.joint_zero[name] for name in r.joint_order
+    ])
+    assert np.allclose(q, expected_neutral)
 
     print("\n===== MAX POSITIVE / FLEXION =====")
 
@@ -48,7 +51,7 @@ def main():
 
     # Thumb root joints interpolate onto their TELEOP semantic ranges
     # (not the full mechanical ROM): thumb_j1 0 -> +90 deg through the
-    # gamma=1.5 response curve, thumb_j2 0 -> -60 deg.  All other
+    # gamma=1.5 response curve, thumb_j2 -30 -> -114.6 deg.  All other
     # joints keep the mechanical limits until a teleop_range is
     # configured for them.
     #
@@ -58,7 +61,7 @@ def main():
     # zero (0.0 == q_min, the adducted extreme saturates at zero).
     expected = np.array([
          1.5708,
-        -1.0472,
+        -2.0,
          1.570,
 
          0.0,
@@ -98,7 +101,7 @@ def main():
     assert np.isclose(q[3], 1.570)
     assert np.allclose(
         np.delete(q, 3),
-        np.zeros(10),
+        np.delete(expected_neutral, 3),
     )
 
     print("\n===== DISTAL: THUMB EXTENSION / FINGER FLEXION =====")

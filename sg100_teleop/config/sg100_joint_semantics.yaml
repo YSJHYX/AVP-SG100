@@ -23,7 +23,7 @@ joints:
     # audit requires the full 90 deg (index pinch FK optimum ~79 deg;
     # the 60 deg cap cut pinch reach by 17-91 mm).
     teleop_range: [0.0, 1.5708]
-    # Nonlinear response curve: q = zero + (c ** gamma) * (max - zero).
+    # Nonlinear response curve q = zero + (c ** gamma) * (max - zero).
     # gamma 1.5 keeps the 90 deg pinch reach (c=0.9126 -> ~78.5 deg,
     # matching the FK index-pinch optimum) while softening the low/mid
     # canonical gain that over-folded the MCP during normal grasp
@@ -31,16 +31,18 @@ joints:
     gamma: 1.5
 
   thumb_j2:
-    range: [-2.61, 0.0]
+    # Hard canonical limit: exactly [-149 deg, -30 deg].
+    range: [-2.600540585471551, -0.5235987755982988]
     semantic: thumb_abduction
-    zero: 0.0
+    # Canonical thumb_abduction=0 starts at the least-negative endpoint.
+    zero: -0.5235987755982988
     negative_direction: rotate_outward_and_downward
-    # Teleop semantic range: FK basis: -60 deg fully extends the thumb
-    # outward from the palm plane (d_center 0.144 m, the sweep maximum);
-    # the full -149.5 deg over-rotates far beyond natural human thumb
-    # abduction and amplified small root motions.
+    # Keep normal AVP retargeting inside the conservative [-114.6, -30]
+    # subset.  The hard range above still protects all normal SDK commands;
+    # set this lower endpoint to -2.600540585471551 only if AVP full-scale should
+    # intentionally reach -149 deg.
     #teleop_range: [-1.0472, 0.0]
-    teleop_range: [-2.0, 0.0]
+    teleop_range: [-2.0, -0.5235987755982988]
 
   thumb_j3:
     range: [-1.048, 1.57]
@@ -114,19 +116,18 @@ joints:
 # Real AVP operating points:
 #   NORMAL_GRASP  opp=.709 abd=.973 dst=.918 -> score .057 -> gate 0
 #     (grasp branch preserved EXACTLY: 90*0.709^1.5 = 53.7 deg,
-#      -60*0.973 = -58.4 deg)
+#      -30 + .973*(-114.6 + 30) = -112.3 deg)
 #   INDEX_PINCH   opp=.540 abd=1.000 dst=.134 -> score .468 -> gate .75
 #   MIDDLE_PINCH  opp=.773 abd=1.000 dst=.113 -> score .686 -> gate 1
 #   LITTLE_PINCH  opp=.910 abd=1.000 dst=.134 -> score .788 -> gate 1
 #
 # Blending: q = (1-gate)*q_base + gate*q_pinch.
 #   thumb_j1 pinch branch: monotonic interpolation over opposition
-#     canonical between the anchors below (interim FK values at q2=0;
-#     INDEX/MIDDLE to be re-validated with the live probe diagnostic,
-#     LITTLE provisional).
-#   thumb_j2 pinch branch: constant pinch target 0 deg (real q2 sweep:
-#     q2 -60 -> 0 improves surface distance by 26.9/41.6/38.7 mm for
-#     index/middle/little).
+#     canonical between the anchors below (legacy interim FK values were
+#     obtained at q2=0; re-validation at the new q2=-30 deg pinch target is
+#     required with the live probe diagnostic).
+#   thumb_j2 pinch branch: constant pinch target -30 deg, the least-negative
+#     position permitted by the thumb_j2 hard range.
 # Without this section the retargeter keeps the previous behaviour.
 pinch_coordination:
   gate:
@@ -156,7 +157,7 @@ pinch_coordination:
         - [0.910, 120.0]
         - [1.000, 125.0]
     thumb_j2:
-      pinch_target_deg: 0.0
+      pinch_target_deg: -30.0
 
 # Grasp-conditioned thumb lock (generic, config-driven).
 #
@@ -171,12 +172,9 @@ pinch_coordination:
 # itself is correct (thumb_j1 q+ IS opposition toward the palm); the
 # human canonical scale simply under-reaches the robot morphology.
 #
-# FK grid over the same grasp pose (thumb_j3 held at the raw mapping):
-#   j1= 59.6 j2=-51.7 -> d_lock 62.3 mm, lateral delta +59 mm
-#   j1= 99.6 j2=-51.7 -> d_lock ~30 mm, lateral delta  +4 mm
-# thumb_j2 needs NO bias: -51.7 deg already aligns the thumb with the
-# closure-region height (normal delta +2 mm); j2=0 would lift it
-# ~45 mm above the closure region.  thumb_j3 stays raw as well.
+# thumb_j2 needs no additive grasp-lock bias: it remains on its base
+# abduction mapping, now constrained to [-149, -30] deg.  thumb_j3 stays
+# raw as well.
 #
 # Blend (CONTINUOUS, never a fixed lock pose):
 #   grasp_w     = smoothstep(grasp_score, start, full)

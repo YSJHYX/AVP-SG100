@@ -139,6 +139,22 @@ IK_ACCEPT_JUMP_LOG_RAD = 0.2
 # out-slew the resume catch-up.
 IK_FALLBACK_MAX_STEP_RAD = 0.05
 
+# When both physical backends are selected, startup is deterministic: the
+# SG100 receives thumb_j2=-31 deg and 0 deg on the other ten joints through
+# its vendor SDK, then the RM65 executes one planned, blocking move to
+# 15 degrees on J1-J6.
+# The conservative RealMan speed matches the existing PROFILE_10 bring-up
+# convention; teleoperation streaming remains disabled until the operator's
+# normal C/A gate.
+REAL_STARTUP_HAND_Q_RAD = np.zeros(HAND_DOF, dtype=np.float64)
+REAL_STARTUP_HAND_Q_RAD[
+    SG100_JOINT_ORDER.index("thumb_j2")
+] = np.deg2rad(-31.0)
+REAL_STARTUP_ARM_Q_RAD = np.deg2rad(
+    np.full(ARM_DOF, 15.0, dtype=np.float64)
+)
+REAL_STARTUP_ARM_SPEED_PERCENT = 10
+
 # ============================================================
 # Wrist-roll (position + forearm roll) teleoperation mode
 #
@@ -1194,6 +1210,11 @@ def main():
             "simulated qpos is not RM65 measured feedback"
         )
 
+    if args.collect_arm_hand_data and args.hand_backend == "real":
+        raise ValueError(
+            "SG100 F_fb 尚未验证：real-hand dataset 必须保持 QUARANTINED"
+        )
+
     if args.arm_joint_compare and args.arm_backend != "real":
         raise ValueError("--arm-joint-compare requires --arm-backend real")
 
@@ -1523,12 +1544,15 @@ def main():
     #
     # Created before the startup pose so real mode anchors every
     # downstream initial value (q_arm_goal, posture anchor, command
-    # filters, twin state) to the actual arm configuration.  The
-    # bottle pre-grasp startup IK is skipped: on the real arm the
-    # robot starts wherever it physically is.
+    # filters, twin state) to measured arm feedback.  When both physical
+    # backends are selected, the SG100 and RM65 startup targets are applied
+    # before that state is captured.
     # ========================================================
 
     real_arm_backend = None
+    hand_driver = None
+    restricted_hand_backend = None
+    hand_hardware_map = None
 
     if args.arm_backend == "real":
         from sg100_teleop.robot.rm65_real import RM65RealBackend
@@ -1582,6 +1606,168 @@ def main():
             on_event=real_arm_event,
         )
         real_arm_backend.connect()
+
+    # Connect the real SG100 before starting the RM65 sender threads.  This
+    # gives the dual-hardware startup sequence one unambiguous point at which
+    # both SDK connections have succeeded and no teleoperation sender is
+    # active yet.
+    try:
+        if args.hand_backend == "real":
+            from sg100_teleop.robot.sg100_sdk_driver import SG100SDKDriver
+            from sg100_teleop.robot.sg100_restricted_avp_backend import (
+                SG100RestrictedAVPBackend,
+            )
+
+            hand_hardware_map = SG100HardwareMap()
+            hand_driver = SG100SDKDriver(
+                args.hand_port,
+                baudrate=args.hand_baudrate,
+                hardware_map=hand_hardware_map,
+                sdk_dir=(
+                    Path(args.hand_sdk_dir)
+                    if args.hand_sdk_dir is not None
+                    else None
+                ),
+            )
+            restricted_hand_backend = SG100RestrictedAVPBackend(
+                hand_driver,
+                joint_allowlist=args.sg100_real_joints,
+                stale_tracking_s=0.50,
+                # AVP targets are already smoothed by hand_command_filter.
+                # Let this independent limiter ramp from the C anchor.
+                max_velocity_rad_s=4.0,
+                max_cycle_delta_rad=0.20,
+                tracking_spike_rad=1.00,
+            )
+            hand_driver.connect()
+            hand_driver.start()
+            # Seed MODE_NULL before switching, so connection and realtime
+            # entry themselves cannot move the hand.
+            hand_driver.enter_realtime()
+            print(
+                "hand backend      :",
+                f"{type(hand_driver).__name__} @ "
+                f"{getattr(hand_driver, 'port', 'mock')}",
+                "(realtime, MODE_NULL hold)",
+            )
+            print(
+                "hand allowlist    :",
+                tuple(args.sg100_real_joints),
+                "(C anchor + A enable required after startup)",
+            )
+            print(
+                "hand cycle-delta  :",
+                (
+                    "disabled"
+                    if restricted_hand_backend.max_cycle_delta_rad is None
+                    else (
+                        f"{restricted_hand_backend.max_cycle_delta_rad} rad"
+                    )
+                ),
+                "(tracking-spike + velocity limits retained)",
+            )
+            if real_error_recorder is not None:
+                real_error_recorder.record(
+                    severity="INFO",
+                    component="sg100_real_hand",
+                    event="BACKEND_READY",
+                    message=(
+                        "SG100 real backend connected and entered realtime"
+                    ),
+                    details={
+                        "port": getattr(hand_driver, "port", None),
+                        "baudrate": args.hand_baudrate,
+                        "allowlist": tuple(args.sg100_real_joints),
+                        "backend_limits": {
+                            "max_cycle_delta_rad": (
+                                restricted_hand_backend.max_cycle_delta_rad
+                            ),
+                            "max_velocity_rad_s": (
+                                restricted_hand_backend.max_velocity_rad_s
+                            ),
+                            "tracking_spike_rad": (
+                                restricted_hand_backend.tracking_spike_rad
+                            ),
+                            "stale_tracking_s": (
+                                restricted_hand_backend.stale_tracking_ns
+                                * 1e-9
+                            ),
+                            "feedback_stall_s": (
+                                restricted_hand_backend.feedback_stall_ns
+                                * 1e-9
+                            ),
+                        },
+                        "driver_diagnostics": hand_driver.diagnostics,
+                    },
+                )
+
+        if real_arm_backend is not None and args.hand_backend == "real":
+            assert hand_driver is not None
+            print(
+                "[STARTUP] both real SDK connections are ready; "
+                "commanding SG100 thumb_j2 to -31 deg and all other "
+                "hand joints to 0 deg"
+            )
+            hand_startup_command = hand_driver.send_positions_rad(
+                REAL_STARTUP_HAND_Q_RAD.copy()
+            )
+            if hand_startup_command is None:
+                raise RuntimeError(
+                    "SG100 SDK rejected the startup hand target "
+                    "(thumb_j2=-31 deg, other joints=0 deg)"
+                )
+            print(
+                "[STARTUP] SG100 startup target accepted; "
+                "commanding RM65 J1-J6 to 15 deg at "
+                f"{REAL_STARTUP_ARM_SPEED_PERCENT}%"
+            )
+            startup_arm_measured_q = real_arm_backend.movej_blocking(
+                REAL_STARTUP_ARM_Q_RAD.copy(),
+                speed_percent=REAL_STARTUP_ARM_SPEED_PERCENT,
+            )
+            print(
+                "[STARTUP] RM65 planned move complete; actual q(deg) =",
+                np.round(np.degrees(startup_arm_measured_q), 3).tolist(),
+            )
+            if real_error_recorder is not None:
+                real_error_recorder.record(
+                    severity="INFO",
+                    component="real_hardware_startup",
+                    event="INITIAL_POSE_COMPLETE",
+                    message=(
+                        "SG100 startup target (thumb_j2=-31 degrees, all "
+                        "other joints=0 degrees) accepted and RM65 J1-J6 "
+                        "planned move to 15 degrees completed"
+                    ),
+                    details={
+                        "hand_target_rad": REAL_STARTUP_HAND_Q_RAD,
+                        "hand_command": hand_startup_command,
+                        "arm_target_rad": REAL_STARTUP_ARM_Q_RAD,
+                        "arm_measured_rad": startup_arm_measured_q,
+                        "arm_speed_percent": (
+                            REAL_STARTUP_ARM_SPEED_PERCENT
+                        ),
+                    },
+                )
+    except BaseException:
+        # Startup happens before the main runtime try/finally.  If either SDK
+        # setup or initial motion fails, explicitly leave both devices in a
+        # stopped/disconnected state before propagating the error.
+        try:
+            if hand_driver is not None:
+                try:
+                    hand_driver.stop()
+                finally:
+                    hand_driver.disconnect()
+        finally:
+            if real_arm_backend is not None:
+                try:
+                    real_arm_backend.stop_smooth()
+                finally:
+                    real_arm_backend.disconnect()
+        raise
+
+    if real_arm_backend is not None:
         real_arm_backend.start()
 
         print(
@@ -1802,17 +1988,23 @@ def main():
             "non-finite values."
         )
 
+    expected_neutral_q = np.asarray(
+        [
+            retargeter.joint_zero[name]
+            for name in retargeter.joint_order
+        ],
+        dtype=np.float64,
+    )
+
     if not np.allclose(
         q_hand_goal,
-        np.zeros(
-            HAND_DOF,
-            dtype=np.float64,
-        ),
+        expected_neutral_q,
         atol=1e-12,
     ):
         raise RuntimeError(
             "Canonical neutral hand does not "
-            "retarget to SG100 q=0.\n"
+            "retarget to the configured SG100 semantic zero pose.\n"
+            f"expected={expected_neutral_q}\n"
             f"q_hand_goal={q_hand_goal}"
         )
 
@@ -2293,44 +2485,7 @@ def main():
     # envelope; 'mock' retains the software data-path regression.
     # ========================================================
 
-    if args.collect_arm_hand_data and args.hand_backend == "real":
-        raise RuntimeError(
-            "SG100 F_fb 尚未验证：real-hand dataset 必须保持 QUARANTINED"
-        )
-
-    hand_driver = None
-    restricted_hand_backend = None
-    hand_hardware_map = None
-    if args.hand_backend == "real":
-        from sg100_teleop.robot.sg100_sdk_driver import SG100SDKDriver
-
-        hand_hardware_map = SG100HardwareMap()
-        hand_driver = SG100SDKDriver(
-            args.hand_port,
-            baudrate=args.hand_baudrate,
-            hardware_map=hand_hardware_map,
-            sdk_dir=(
-                Path(args.hand_sdk_dir)
-                if args.hand_sdk_dir is not None
-                else None
-            ),
-        )
-        from sg100_teleop.robot.sg100_restricted_avp_backend import (
-            SG100RestrictedAVPBackend,
-        )
-        restricted_hand_backend = SG100RestrictedAVPBackend(
-            hand_driver,
-            joint_allowlist=args.sg100_real_joints,
-            stale_tracking_s=0.50,
-            # AVP targets are already smoothed by hand_command_filter.  Let
-            # the restricted backend's independent velocity limiter ramp
-            # from the C anchor instead of rejecting the first target solely
-            # because it is more than 0.05 rad away.
-            max_velocity_rad_s=4.0,
-            max_cycle_delta_rad=0.20,
-            tracking_spike_rad=1.00,
-        )
-    elif args.hand_backend == "mock":
+    if args.hand_backend == "mock":
         hand_hardware_map = SG100HardwareMap()
         hand_driver = MockSG100Driver(hand_hardware_map)
 
@@ -2340,12 +2495,10 @@ def main():
     latest_hand_telemetry = None
     hand_telemetry_sequence = 0
 
-    if hand_driver is not None:
+    if args.hand_backend == "mock":
+        assert hand_driver is not None
         hand_driver.connect()
         hand_driver.start()
-        # Vendor-native realtime entry: MODE_NULL no-drive hold is seeded
-        # BEFORE SwitchToRealtimeMode, so entering realtime cannot move the
-        # hand and commands stay fail-closed until the teleop gate opens.
         hand_driver.enter_realtime()
         print(
             "hand backend      :",
@@ -2353,53 +2506,6 @@ def main():
             f"{getattr(hand_driver, 'port', 'mock')}",
             "(realtime, MODE_NULL hold)",
         )
-        if restricted_hand_backend is not None:
-            print(
-                "hand allowlist    :",
-                tuple(args.sg100_real_joints),
-                "(C anchor + A enable required)",
-            )
-            print(
-                "hand cycle-delta  :",
-                (
-                    "disabled"
-                    if restricted_hand_backend.max_cycle_delta_rad is None
-                    else (
-                        f"{restricted_hand_backend.max_cycle_delta_rad} rad"
-                    )
-                ),
-                "(tracking-spike + velocity limits retained)",
-            )
-            if real_error_recorder is not None:
-                real_error_recorder.record(
-                    severity="INFO",
-                    component="sg100_real_hand",
-                    event="BACKEND_READY",
-                    message="SG100 real backend connected and entered realtime",
-                    details={
-                        "port": getattr(hand_driver, "port", None),
-                        "baudrate": args.hand_baudrate,
-                        "allowlist": tuple(args.sg100_real_joints),
-                        "backend_limits": {
-                            "max_cycle_delta_rad": (
-                                restricted_hand_backend.max_cycle_delta_rad
-                            ),
-                            "max_velocity_rad_s": (
-                                restricted_hand_backend.max_velocity_rad_s
-                            ),
-                            "tracking_spike_rad": (
-                                restricted_hand_backend.tracking_spike_rad
-                            ),
-                            "stale_tracking_s": (
-                                restricted_hand_backend.stale_tracking_ns * 1e-9
-                            ),
-                            "feedback_stall_s": (
-                                restricted_hand_backend.feedback_stall_ns * 1e-9
-                            ),
-                        },
-                        "driver_diagnostics": hand_driver.diagnostics,
-                    },
-                )
 
     arm_hand_collector = None
     if args.collect_arm_hand_data:
@@ -2663,7 +2769,7 @@ def main():
             print(
                 "[HAND] grasp mode:",
                 mode.value,
-                "| CLAW: little_j1=-180deg, thumb_j2 init -150deg then follow, "
+                "| CLAW: little_j1=-180deg, thumb_j2 init -149deg then follow, "
                 f"thumb_j1=+{np.rad2deg(CLAW_THUMB_J1_RAD):.0f}deg hold",
             )
 

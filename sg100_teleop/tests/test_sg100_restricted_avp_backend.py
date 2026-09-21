@@ -110,17 +110,38 @@ def test_thumb_j3_minus_61_and_float_boundary_clamp_not_reject(
         assert applied.sdk_sent_deg[thumb_j3] == pytest.approx(-60.0)
 
 
+def test_thumb_j2_semantic_limit_is_enforced_by_sdk_command_contract(
+    command_limit_contract,
+):
+    thumb_j2 = SG100HardwareMap().software_index_of["thumb_j2"]
+    for requested_deg, expected_deg in (
+        (-170.0, -149.0),
+        (-149.0, -149.0),
+        (-31.0, -31.0),
+        (-30.0, -30.0),
+        (0.0, -30.0),
+    ):
+        desired = np.zeros(HAND_DOF)
+        desired[thumb_j2] = np.deg2rad(requested_deg)
+        applied = command_limit_contract.apply(desired)
+        assert np.rad2deg(
+            applied.effective_canonical_rad[thumb_j2]
+        ) == pytest.approx(expected_deg, abs=1e-5)
+
+
 def test_middle_j1_is_only_middle_sign_flip(command_limit_contract):
     rows = {row.joint_name: row for row in command_limit_contract.rows}
     assert rows["middle_j1"].command_gain == -1.0
     assert rows["middle_j2"].command_gain == 1.0
 
-    middle = SG100HardwareMap().software_index_of["middle_j1"]
+    hardware_map = SG100HardwareMap()
+    middle = hardware_map.software_index_of["middle_j1"]
+    semantic_sdk_max_deg = -np.rad2deg(hardware_map.lower_rad[middle])
     for canonical_deg, expected_sdk_deg in (
         (-50.0, 50.0),
-        (-125.0, 125.0),
+        (-125.0, semantic_sdk_max_deg),
         (1.0, 0.0),
-        (-126.0, 125.0),
+        (-126.0, semantic_sdk_max_deg),
     ):
         desired = np.zeros(HAND_DOF)
         desired[middle] = np.deg2rad(canonical_deg)

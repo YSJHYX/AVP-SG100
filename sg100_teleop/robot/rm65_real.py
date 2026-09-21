@@ -309,6 +309,91 @@ class RM65RealBackend(ArmBackend):
         with self._feedback_lock:
             return self._feedback
 
+    def movej_blocking(
+        self,
+        q_rad: np.ndarray,
+        *,
+        speed_percent: int = 10,
+    ) -> np.ndarray:
+        """Run one planned RealMan ``rm_movej`` before streaming starts.
+
+        This startup-only path deliberately uses the controller's trajectory
+        planner instead of CANFD follow mode.  The call blocks until the arm
+        reaches the target, then refreshes feedback and re-seeds the CANFD
+        limiter from the measured position.
+        """
+
+        if not self._connected:
+            raise RuntimeError("connect() before movej_blocking()")
+        if self._sender_thread is not None or self._feedback_thread is not None:
+            raise RuntimeError(
+                "movej_blocking() is only allowed before start()"
+            )
+
+        target = np.asarray(q_rad, dtype=np.float64)
+        if target.shape != (ARM_DOF,):
+            raise ValueError(
+                f"q_rad must have shape ({ARM_DOF},), got {target.shape}"
+            )
+        if not np.all(np.isfinite(target)):
+            raise ValueError("q_rad contains non-finite values")
+        if np.any(target < self._limiter.soft_lower) or np.any(
+            target > self._limiter.soft_upper
+        ):
+            raise ValueError("planned target exceeds the arm soft limits")
+
+        if (
+            isinstance(speed_percent, bool)
+            or int(speed_percent) != speed_percent
+            or not 1 <= int(speed_percent) <= 100
+        ):
+            raise ValueError("speed_percent must be an integer in [1, 100]")
+
+        movej = getattr(self._sdk, "rm_movej", None)
+        if not callable(movej):
+            raise RuntimeError("RealMan SDK does not provide rm_movej")
+
+        target_deg = np.degrees(target).tolist()
+        with self._sdk_lock:
+            # RM_DUAL_MODE_E: block=1 waits for arrival.  r=0 and connect=0
+            # request one independent, immediately executed trajectory.
+            tag = int(
+                movej(
+                    target_deg,
+                    int(speed_percent),
+                    0,
+                    0,
+                    1,
+                )
+            )
+        if tag != 0:
+            raise RuntimeError(f"rm_movej -> {tag}")
+
+        measured = self._read_joints_rad()
+        self._limiter.reset(measured)
+        now_ns = time.monotonic_ns()
+        with self._feedback_lock:
+            self._feedback_prev_q = measured.copy()
+            self._feedback_prev_ns = now_ns
+            self._feedback_sequence += 1
+            self._feedback = ArmState(
+                q_rad=measured.copy(),
+                qd_rad_s=None,
+                received_monotonic_ns=now_ns,
+                sequence=self._feedback_sequence,
+                controller_error=0,
+                arm_status=None,
+                valid=True,
+            )
+        self._on_event(
+            "planned_move",
+            "rm_movej target_deg="
+            f"{np.round(target_deg, 3).tolist()} "
+            f"actual_deg={np.round(np.degrees(measured), 3).tolist()} "
+            f"speed={int(speed_percent)}%",
+        )
+        return measured.copy()
+
     def stop_smooth(self) -> int:
         call = getattr(self._sdk, "rm_set_arm_slow_stop", None)
         if not callable(call):

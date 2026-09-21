@@ -293,7 +293,11 @@ def direct_joint_results(harness: PhysicalSemanticHarness):
 def canonical_physical_results(harness: PhysicalSemanticHarness):
     results = {}
     neutral_q = harness.retargeter.retarget(CanonicalHandState.neutral())
-    np.testing.assert_allclose(neutral_q, TEST_KINEMATIC_REFERENCE)
+    expected_neutral = np.asarray([
+        harness.retargeter.joint_zero[name]
+        for name in harness.retargeter.joint_order
+    ])
+    np.testing.assert_allclose(neutral_q, expected_neutral)
 
     for spec in SPECS:
         joint_index = SG100_JOINT_ORDER.index(spec.joint)

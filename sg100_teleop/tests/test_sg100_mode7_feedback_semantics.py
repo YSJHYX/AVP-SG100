@@ -382,8 +382,10 @@ def test_d_feedback_map_supports_permutation_sign_and_zero_independently():
 
 def test_d_outbound_map_is_never_implicitly_reused_for_feedback():
     hardware_map = SG100HardwareMap()
-    hardware_map.gain[:] = -3.0
-    hardware_map.offset_rad[:] = 1.25
+    # Keep this deliberately non-identity while retaining overlap between
+    # every semantic range and the SDK command ranges.
+    hardware_map.gain[0] = 3.0
+    hardware_map.offset_rad[0] = 1.25
     callback_deg = np.arange(1.0, HAND_DOF + 1.0)
     driver = _driver_with_modes(
         [MODE_JOINT_POSITION] * HAND_DOF,

@@ -138,7 +138,7 @@
                     <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_thumb_link1" name="thumb_link1_visual" group="1" contype="0" conaffinity="0" />
                     <body name="thumb_link2" pos="0.024 0.0155 0.0176" quat="0.707105 0.707108 0 0">
                       <inertial pos="0.0216506 0.0124999 0.0140779" quat="0.353533 0.353574 0.612361 0.612384" mass="0.0389603" diaginertia="5.64004e-06 4.9655e-06 2.66961e-06" />
-                      <joint name="thumb_j2" pos="0 0 0" axis="0 0 1" range="-2.61 0" damping="0.002" armature="0.001" />
+                      <joint name="thumb_j2" pos="0 0 0" axis="0 0 1" range="-2.600540585471551 -0.5235987755982988" damping="0.002" armature="0.001" />
                       <geom type="mesh" rgba="0.55 0.58 0.62 1" mesh="sg100_thumb_link2" name="thumb_link2_visual" group="1" contype="0" conaffinity="0" />
                       <!-- proximal-phalanx collision (mirrors the distal capsule) -->
                       <geom

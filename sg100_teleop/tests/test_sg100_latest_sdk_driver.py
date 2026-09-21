@@ -214,7 +214,7 @@ def test_g_out_of_range_targets_are_rejected(tmp_path) -> None:
     sdk_dir = tmp_path / "sdk"
     sdk_dir.mkdir()
     entries = [
-        {"a": 1.0, "b": 0.0, "min_angle": 0.0, "max_angle": 90.0}
+        {"a": 1.0, "b": 0.0, "min_angle": -180.0, "max_angle": 180.0}
         for _ in range(HAND_DOF)
     ]
     (sdk_dir / "joint_angle_map_v3.0.json").write_text(json.dumps({
@@ -224,9 +224,9 @@ def test_g_out_of_range_targets_are_rejected(tmp_path) -> None:
         "/dev/null", hardware_map=SG100HardwareMap(), sdk_dir=sdk_dir
     )
     assert driver.vendor_user_ranges is not None
-    # In-range user degrees pass, negative (out-of-range) are rejected.
+    # In-range user degrees pass; values outside the JSON range are rejected.
     assert driver._user_deg_within_vendor_range(np.full(HAND_DOF, 45.0))
-    assert not driver._user_deg_within_vendor_range(np.full(HAND_DOF, -5.0))
+    assert not driver._user_deg_within_vendor_range(np.full(HAND_DOF, -181.0))
 
 
 # -- G/H/N. mock mirrors the real contract -----------------------------------
@@ -474,6 +474,12 @@ def test_v3_mirrored_command_ranges_are_j4_j7_j9() -> None:
         )
         if joint in (3, 6, 8):  # index_j1, middle_j1, little_j1
             assert mirrored and not equal
+        elif joint == 1:  # thumb_j2 has an intentionally narrower hard limit
+            assert canonical_deg[0] == pytest.approx(-149.0, abs=0.01)
+            assert canonical_deg[1] == pytest.approx(-30.0, abs=0.01)
+            assert canonical_deg[0] >= sdk_range[0] - 0.5
+            assert canonical_deg[1] <= sdk_range[1] + 0.5
+            assert not equal and not mirrored
         else:
             assert equal and not mirrored, f"joint {joint} changed shape"
 

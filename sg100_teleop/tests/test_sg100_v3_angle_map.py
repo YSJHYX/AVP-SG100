@@ -207,10 +207,18 @@ def test_sides_survive_restricted_backend_driver_and_sdk_mapping(
         max_velocity_rad_s=100, tracking_spike_rad=100,
     )
     assert backend.hardware_map is driver.hardware_map
-    assert backend.anchor(np.zeros(HAND_DOF)).accepted
+    canonical_neutral = driver.hardware_map.clamp_canonical(
+        np.zeros(HAND_DOF)
+    )
+    assert backend.anchor(canonical_neutral).accepted
     backend.set_enabled(True)
-    canonical = np.zeros(HAND_DOF)
-    canonical[[3, 8]] = np.deg2rad([index_deg, little_deg])
+    canonical = canonical_neutral.copy()
+    requested = np.deg2rad([index_deg, little_deg])
+    canonical[[3, 8]] = np.clip(
+        requested,
+        driver.hardware_map.lower_rad[[3, 8]],
+        driver.hardware_map.upper_rad[[3, 8]],
+    )
     original = canonical.copy()
     result = backend.submit(
         canonical, tracking_received_ns=1_000_000_000,
@@ -219,10 +227,17 @@ def test_sides_survive_restricted_backend_driver_and_sdk_mapping(
     assert result.accepted
     np.testing.assert_array_equal(canonical, original)
     np.testing.assert_allclose(result.effective_canonical_qcmd_rad, canonical)
-    np.testing.assert_allclose(result.sdk_target_deg[[3, 8]], [-index_deg, -little_deg])
+    np.testing.assert_allclose(
+        result.sdk_target_deg[[3, 8]],
+        -np.rad2deg(canonical[[3, 8]]),
+    )
     assert not backend.drain_safety_events()
 
     parameters = load_vendor_angle_map(DEFAULT_SDK_DIR)
+    expected_sdk_deg = np.rad2deg(
+        driver.hardware_map.gain * canonical
+        + driver.hardware_map.offset_rad
+    )
     for j in range(HAND_DOF):
         joint_id, mode, user_deg, p, i, d, limit = struct.unpack_from(
             "<BBfHHHH", frames[-1], j * 16
@@ -237,7 +252,8 @@ def test_sides_survive_restricted_backend_driver_and_sdk_mapping(
             wire_rad = np.deg2rad(a * np.clip(user_deg, lo, hi) + b)
             assert wire_rad == pytest.approx(canonical[j], abs=1e-6)
         else:
-            assert (user_deg, p, i, d, limit) == (0, 0, 0, 0, 0)
+            assert user_deg == pytest.approx(expected_sdk_deg[j], abs=1e-6)
+            assert (p, i, d, limit) == (0, 0, 0, 0)
 
 
 def test_real_feedback_mapping_is_not_implicitly_validated():

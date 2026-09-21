@@ -209,7 +209,7 @@ def plan_j7_sign_flip(
     vendor_ranges: list[tuple[float, float]],
     canonical_delta_deg: float,
 ) -> dict:
-    """从已知 canonical=0 / SDK=0 command seed 规划 J7，一次 F_cmd。"""
+    """从已知 J7 canonical=0 / SDK=0 command seed 规划，一次 F_cmd。"""
 
     index = hardware_map.software_index_of["middle_j1"]
     if hardware_map.hardware_joint_ids[index] != 7:
@@ -226,8 +226,13 @@ def plan_j7_sign_flip(
     if not canonical_low <= canonical_final <= canonical_high:
         raise ActiveMicroMotionAbort("J7 canonical target 越界；拒绝且不 clamp")
     # F_cmd exactly once.  不调用会 silent clip 的 canonical_to_actual。
-    seed_vector = np.zeros(HAND_DOF)
-    final_vector = np.zeros(HAND_DOF)
+    # Canonical zero is outside thumb_j2's narrowed hard range.  Keep J7 at
+    # its known canonical-zero seed while placing every inactive axis at the
+    # nearest valid canonical value (thumb_j2=-30 deg).
+    seed_vector = np.rad2deg(
+        hardware_map.clamp_canonical(np.zeros(HAND_DOF))
+    )
+    final_vector = seed_vector.copy()
     final_vector[index] = canonical_final
     sdk_current = float(apply_f_cmd_once_deg(hardware_map, seed_vector)[index])
     sdk_final = float(apply_f_cmd_once_deg(hardware_map, final_vector)[index])

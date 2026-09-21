@@ -46,7 +46,7 @@ BOTTLE_DR = 0.15
 BOTTLE_Z = 0.11000
 HAND_DX, HAND_DY, HAND_DZ = -0.08, -0.13, 0.0     # hand offset from bottle center (world)
 HAND_ROLL = 0.0                                     # wrist roll [deg]
-THUMB_J2_OPEN = -0.6                                # initial (open) thumb_j2 [rad]; 0=neutral, range [-2.61,0]
+THUMB_J2_OPEN = -0.6                  # thumb_j2 [rad]; neutral=-30deg, range [-149,-30]deg
 PALM_POS = (0.0, -0.03, 0.05)                       # palm backstop in palm-local
 PALM_SIZE = (0.045, 0.035, 0.010)
 PALM_QUAT = (0.5, 0.5, 0.5, -0.5)                   # 90 about X, then 90 about Y

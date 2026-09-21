@@ -581,7 +581,7 @@ def test_thumb_root_motion_does_not_modify_thumb_j3_mapping():
 #
 # gate = smoothstep(score), score = opp * abd * (1 - clamp(dst, 0, 1))
 # q1 = (1-g)*q1_base(gamma curve)  + g*q1_pinch(monotonic anchors)
-# q2 = (1-g)*q2_base               + g*q2_pinch (configured 0 deg)
+# q2 = (1-g)*q2_base               + g*q2_pinch (configured -30 deg)
 # gate == 0 must reproduce the base branch EXACTLY.
 # ----------------------------------------------------------------------
 
@@ -629,7 +629,8 @@ def test_pinch_gate_preserves_neutral_and_grasp():
     g_neutral = r.pinch_gate(MEASURED_POINTS["NEUTRAL"])
     assert g_neutral == 0.0
     q = _thumb_q(h, MEASURED_POINTS["NEUTRAL"])
-    assert np.isclose(q[i1], 0.0) and np.isclose(q[i2], 0.0)
+    assert np.isclose(q[i1], h.zero["thumb_j1"])
+    assert np.isclose(q[i2], h.zero["thumb_j2"])
 
     grasp = MEASURED_POINTS["NORMAL_GRASP"]
     ctx = r.global_grasp_context(grasp)
@@ -640,10 +641,15 @@ def test_pinch_gate_preserves_neutral_and_grasp():
     assert sig < 0.02, f"grasp pinch_signal {sig:.4f}"
     assert g == 0.0 or g < 1e-12
 
-    # Exact base-branch values: 90 * 0.7595^1.5 and -60 * 0.861.
+    # Exact base-branch values from the configured response curve/range.
     q = _thumb_q(h, grasp)
     assert np.isclose(np.degrees(q[i1]), 59.58, atol=0.05)
-    assert np.isclose(np.degrees(q[i2]), -51.66, atol=0.05)
+    q2_zero = r.joint_zero["thumb_j2"]
+    q2_lower = r.joint_teleop_range["thumb_j2"][0]
+    expected_q2 = q2_zero + grasp["thumb_abduction"] * (
+        q2_lower - q2_zero
+    )
+    assert np.isclose(q[i2], expected_q2, atol=1e-12)
 
     # Production config: gate still 0, lock weight 1, command = base
     # branch + configured thumb_j1 opposition bias (40 deg).
@@ -694,14 +700,22 @@ def test_pinch_gate_activates_on_pinch_points():
         expected_q1 = (1.0 - g) * q1_base + g * q1_pinch
         assert np.isclose(q[i1], expected_q1, atol=1e-12), name
 
-        # q2 blends toward the configured pinch target (0 deg).
-        q2_base = np.deg2rad(-60.0) * point["thumb_abduction"]
-        expected_q2 = (1.0 - g) * q2_base
+        # q2 blends from the configured base mapping toward its configured
+        # pinch target (-30 deg).
+        q2_zero = r.joint_zero["thumb_j2"]
+        q2_lower = r.joint_teleop_range["thumb_j2"][0]
+        q2_base = q2_zero + point["thumb_abduction"] * (
+            q2_lower - q2_zero
+        )
+        q2_pinch = r.pinch_coordination["joints"]["thumb_j2"][
+            "pinch_target_deg"
+        ]
+        expected_q2 = (1.0 - g) * q2_base + g * q2_pinch
         assert np.isclose(q[i2], expected_q2, atol=1e-12), name
 
     # Middle pinch: gate saturates -> q1 lands exactly on the pinch
     # anchor (frozen anchors: interp at opp=0.742 -> 100.7 deg) and
-    # q2 exactly on the configured pinch target 0.
+    # q2 exactly on the configured pinch target (-30 deg).
     q = _thumb_q(h, MEASURED_POINTS["MIDDLE_PINCH"])
     anchors = r.pinch_coordination["joints"]["thumb_j1"]["anchors"]
     expected_middle = float(np.interp(
@@ -711,7 +725,7 @@ def test_pinch_gate_activates_on_pinch_points():
     ))
     assert np.isclose(q[i1], expected_middle, atol=1e-12)
     assert np.isclose(np.degrees(q[i1]), 100.7, atol=0.1)
-    assert np.isclose(q[i2], 0.0, atol=1e-12)
+    assert np.isclose(q[i2], np.deg2rad(-30.0), atol=1e-12)
     assert np.degrees(q[i1]) > 79.0  # exceeds index despite larger reach need
 
     # Index pinch: q1 must exceed the grasp value even though the
