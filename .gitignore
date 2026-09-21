@@ -8,3 +8,4 @@ avp_stream/datasets/eckey.pem
 *.pem
 downloads/
 recording/
+sg100_teleop/config/teleop_initial_pose.local.yaml
