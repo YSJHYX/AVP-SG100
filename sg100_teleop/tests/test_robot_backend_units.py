@@ -162,6 +162,19 @@ def test_real_startup_hand_target_sets_only_thumb_j2_to_minus_31_deg():
     )
 
 
+def test_real_startup_arm_target_matches_configured_joint_pose():
+    from sg100_teleop.sim.run_avp_arm_hand_sim import (
+        REAL_STARTUP_ARM_Q_RAD,
+    )
+
+    np.testing.assert_allclose(
+        np.degrees(REAL_STARTUP_ARM_Q_RAD),
+        [2.867, -105.170, 123.329, -10.844, -95.298, -128.508],
+        atol=1e-12,
+        rtol=0.0,
+    )
+
+
 # ---------------------------------------------------------
 # 2. latest-target buffer semantics
 # ---------------------------------------------------------

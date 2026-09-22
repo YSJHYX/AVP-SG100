@@ -141,8 +141,8 @@ IK_FALLBACK_MAX_STEP_RAD = 0.05
 
 # When both physical backends are selected, startup is deterministic: the
 # SG100 receives thumb_j2=-31 deg and 0 deg on the other ten joints through
-# its vendor SDK, then the RM65 executes one planned, blocking move to
-# 15 degrees on J1-J6.
+# its vendor SDK, then the RM65 executes one planned, blocking move to the
+# calibrated J1-J6 startup pose below.
 # The conservative RealMan speed matches the existing PROFILE_10 bring-up
 # convention; teleoperation streaming remains disabled until the operator's
 # normal C/A gate.
@@ -151,7 +151,10 @@ REAL_STARTUP_HAND_Q_RAD[
     SG100_JOINT_ORDER.index("thumb_j2")
 ] = np.deg2rad(-31.0)
 REAL_STARTUP_ARM_Q_RAD = np.deg2rad(
-    np.full(ARM_DOF, 15.0, dtype=np.float64)
+    np.array(
+        [2.867, -105.170, 123.329, -10.844, -95.298, -73.636],
+        dtype=np.float64,
+    )
 )
 REAL_STARTUP_ARM_SPEED_PERCENT = 10
 
@@ -764,7 +767,7 @@ def build_arg_parser():
     parser.add_argument(
         "--tracking-timeout",
         type=float,
-        default=2.0,
+        default=5.0,
         help=(
             "Seconds without valid right-hand trackiing "
             "before reporting tracking loss"
@@ -1632,7 +1635,7 @@ def main():
             restricted_hand_backend = SG100RestrictedAVPBackend(
                 hand_driver,
                 joint_allowlist=args.sg100_real_joints,
-                stale_tracking_s=0.50,
+                stale_tracking_s=5.00,
                 # AVP targets are already smoothed by hand_command_filter.
                 # Let this independent limiter ramp from the C anchor.
                 max_velocity_rad_s=4.0,
@@ -1718,7 +1721,9 @@ def main():
                 )
             print(
                 "[STARTUP] SG100 startup target accepted; "
-                "commanding RM65 J1-J6 to 15 deg at "
+                "commanding RM65 J1-J6 to "
+                f"{np.round(np.degrees(REAL_STARTUP_ARM_Q_RAD), 3).tolist()} "
+                "deg at "
                 f"{REAL_STARTUP_ARM_SPEED_PERCENT}%"
             )
             startup_arm_measured_q = real_arm_backend.movej_blocking(
@@ -1737,7 +1742,8 @@ def main():
                     message=(
                         "SG100 startup target (thumb_j2=-31 degrees, all "
                         "other joints=0 degrees) accepted and RM65 J1-J6 "
-                        "planned move to 15 degrees completed"
+                        "planned move to the configured initial joint pose "
+                        "completed"
                     ),
                     details={
                         "hand_target_rad": REAL_STARTUP_HAND_Q_RAD,
