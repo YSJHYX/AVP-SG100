@@ -12,9 +12,10 @@ import numpy as np
 
 
 _FIXED_COLOR_CONTROLS: dict[str, tuple[float, float]] = {
-    "D405": (7000.0, 16.0),
-    "D455": (39.0, 5.0),
+    "D405": (30000.0, 62.0),
+    "D455": (300.0, 40.0),
 }
+"""D405曝光不能高于30000,D455曝光不能高于300,否则曝光时间过长达不到30帧"""
 
 
 @dataclass(frozen=True)
@@ -263,7 +264,7 @@ class RealSenseCamera:
             daemon=True,
         )
         self._thread.start()
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 5.0
         while not self.ready and time.monotonic() < deadline:
             time.sleep(0.01)
         if not self.ready:
