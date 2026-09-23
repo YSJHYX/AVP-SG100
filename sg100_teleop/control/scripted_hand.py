@@ -30,7 +30,7 @@ class ScriptMotion(str, Enum):
 
 
 DEFAULT_SLEW_RAD_S = float(np.deg2rad(120.0))
-CLAW_LOCK_NAMES = ("thumb_j1", "index_j1", "middle_j1", "little_j1")
+CLAW_LOCK_NAMES = ("thumb_j1", "index_j1", "little_j1")
 CLAW_SHAPE_NAMES = ("thumb_j1", "thumb_j2", "thumb_j3", "index_j1", "index_j2", "index_j3", "middle_j1", "middle_j2", "little_j1", "little_j2", "little_j3")
 FLEXION_CLOSE_DEG = {
     "thumb_j2": 0.0,

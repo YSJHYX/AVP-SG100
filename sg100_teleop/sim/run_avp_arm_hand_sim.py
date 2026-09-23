@@ -20,7 +20,6 @@ from sg100_teleop.hand.canonical_hand import CanonicalHandState
 from sg100_teleop.control.joint_command_filter import JointCommandFilter
 
 from sg100_teleop.control.grasp_mode import (
-    CLAW_THUMB_J1_RAD,
     GraspMode,
     GraspModeController,
 )
@@ -2775,9 +2774,8 @@ def main():
             print(
                 "[HAND] grasp mode:",
                 mode.value,
-                "| CLAW: hold all 11 joints to claw init "
-                f"(thumb_j1=+{np.rad2deg(CLAW_THUMB_J1_RAD):.0f}deg, "
-                "little_j1=-180deg, others per CLAW_* constants)",
+                "| CLAW: lock thumb_j1/index_j1/little_j1; "
+                "other joints slew to claw init then follow AVP",
             )
 
         elif keycode == ord("4"):

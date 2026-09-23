@@ -28,16 +28,21 @@ CLAW_LITTLE_J1_RAD = float(-np.pi)
 CLAW_LITTLE_J2_RAD = 0.0
 CLAW_LITTLE_J3_RAD = 0.0
 
-CLAW_HOLD_RAD = (
+# Always held while CLAW is active.
+CLAW_LOCK_RAD = (
     ("thumb_j1", CLAW_THUMB_J1_RAD),
+    ("index_j1", CLAW_INDEX_J1_RAD),
+    ("little_j1", CLAW_LITTLE_J1_RAD),
+)
+
+# Slew to these once on CLAW entry, then release back to AVP.
+CLAW_INIT_RAD = (
     ("thumb_j2", CLAW_THUMB_J2_RAD),
     ("thumb_j3", CLAW_THUMB_J3_RAD),
-    ("index_j1", CLAW_INDEX_J1_RAD),
     ("index_j2", CLAW_INDEX_J2_RAD),
     ("index_j3", CLAW_INDEX_J3_RAD),
     ("middle_j1", CLAW_MIDDLE_J1_RAD),
     ("middle_j2", CLAW_MIDDLE_J2_RAD),
-    ("little_j1", CLAW_LITTLE_J1_RAD),
     ("little_j2", CLAW_LITTLE_J2_RAD),
     ("little_j3", CLAW_LITTLE_J3_RAD),
 )
@@ -46,6 +51,7 @@ HAND_INDEX_J1_RAD = 0.0
 HAND_LITTLE_J1_RAD = 0.0
 
 DEFAULT_HOLD_SLEW_RAD_S = 3.0
+_INIT_DONE_TOL_RAD = 1e-3
 
 
 class GraspModeController:
@@ -67,7 +73,12 @@ class GraspModeController:
             raise ValueError(f"joint_order must have length {HAND_DOF}")
         self.joint_order = tuple(order)
         self.index_of = {name: i for i, name in enumerate(self.joint_order)}
-        required = ("index_j1", "little_j1", *(name for name, _ in CLAW_HOLD_RAD))
+        required = (
+            *(name for name, _ in CLAW_LOCK_RAD),
+            *(name for name, _ in CLAW_INIT_RAD),
+            "index_j1",
+            "little_j1",
+        )
         for name in required:
             if name not in self.index_of:
                 raise ValueError(f"missing joint {name}")
@@ -76,9 +87,11 @@ class GraspModeController:
         self.hold_slew_rad_s = float(hold_slew_rad_s)
         self.mode = GraspMode(initial_mode)
         self._hold_state: np.ndarray | None = None
+        self._claw_init_pending = False
 
     def set_mode(self, mode: GraspMode | str) -> GraspMode:
         self.mode = GraspMode(mode)
+        self._claw_init_pending = self.mode == GraspMode.CLAW
         return self.mode
 
     def _hold_targets(self) -> dict[int, float]:
@@ -90,7 +103,11 @@ class GraspModeController:
                 i["index_j1"]: HAND_INDEX_J1_RAD,
                 i["little_j1"]: HAND_LITTLE_J1_RAD,
             }
-        return {i[name]: float(target) for name, target in CLAW_HOLD_RAD}
+        holds = {i[name]: float(target) for name, target in CLAW_LOCK_RAD}
+        if self._claw_init_pending:
+            for name, target in CLAW_INIT_RAD:
+                holds[i[name]] = float(target)
+        return holds
 
     def apply(
         self,
@@ -118,6 +135,15 @@ class GraspModeController:
                 next_v = current + float(np.clip(delta, -step, step))
             self._hold_state[index] = next_v
             out[index] = next_v
+        if self.mode == GraspMode.CLAW and self._claw_init_pending:
+            done = True
+            for name, target in CLAW_INIT_RAD:
+                index = self.index_of[name]
+                if abs(float(self._hold_state[index]) - float(target)) > _INIT_DONE_TOL_RAD:
+                    done = False
+                    break
+            if done:
+                self._claw_init_pending = False
         for index in range(HAND_DOF):
             if index not in holds:
                 self._hold_state[index] = float(out[index])
