@@ -8,9 +8,16 @@ import numpy as np
 
 from sg100_teleop.control.grasp_mode import (
     CLAW_INDEX_J1_RAD,
+    CLAW_INDEX_J2_RAD,
+    CLAW_INDEX_J3_RAD,
     CLAW_LITTLE_J1_RAD,
+    CLAW_LITTLE_J2_RAD,
+    CLAW_LITTLE_J3_RAD,
+    CLAW_MIDDLE_J1_RAD,
+    CLAW_MIDDLE_J2_RAD,
     CLAW_THUMB_J1_RAD,
     CLAW_THUMB_J2_RAD,
+    CLAW_THUMB_J3_RAD,
 )
 from sg100_teleop.robot.sg100_driver import HAND_DOF, SG100HardwareMap
 
@@ -22,7 +29,7 @@ class ScriptMotion(str, Enum):
     OPENING = "opening"
 
 
-DEFAULT_SLEW_RAD_S = float(np.deg2rad(30.0))
+DEFAULT_SLEW_RAD_S = float(np.deg2rad(120.0))
 CLAW_LOCK_NAMES = ("thumb_j1", "index_j1", "middle_j1", "little_j1")
 CLAW_SHAPE_NAMES = ("thumb_j1", "thumb_j2", "thumb_j3", "index_j1", "index_j2", "index_j3", "middle_j1", "middle_j2", "little_j1", "little_j2", "little_j3")
 FLEXION_CLOSE_DEG = {

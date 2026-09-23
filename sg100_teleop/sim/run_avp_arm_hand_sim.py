@@ -2775,8 +2775,9 @@ def main():
             print(
                 "[HAND] grasp mode:",
                 mode.value,
-                "| CLAW: little_j1=-180deg, thumb_j2 init -149deg then follow, "
-                f"thumb_j1=+{np.rad2deg(CLAW_THUMB_J1_RAD):.0f}deg hold",
+                "| CLAW: hold all 11 joints to claw init "
+                f"(thumb_j1=+{np.rad2deg(CLAW_THUMB_J1_RAD):.0f}deg, "
+                "little_j1=-180deg, others per CLAW_* constants)",
             )
 
         elif keycode == ord("4"):
