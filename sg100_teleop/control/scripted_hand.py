@@ -23,8 +23,8 @@ class ScriptMotion(str, Enum):
 
 
 DEFAULT_SLEW_RAD_S = float(np.deg2rad(30.0))
-CLAW_LOCK_NAMES = ("thumb_j1", "index_j1", "little_j1")
-CLAW_SHAPE_NAMES = ("thumb_j1", "thumb_j2", "index_j1", "little_j1")
+CLAW_LOCK_NAMES = ("thumb_j1", "index_j1", "middle_j1", "little_j1")
+CLAW_SHAPE_NAMES = ("thumb_j1", "thumb_j2", "thumb_j3", "index_j1", "index_j2", "index_j3", "middle_j1", "middle_j2", "little_j1", "little_j2", "little_j3")
 FLEXION_CLOSE_DEG = {
     "thumb_j2": 0.0,
     "thumb_j3": 45.0,
@@ -62,8 +62,15 @@ class ScriptHandController:
         self.q_claw = np.zeros(HAND_DOF, dtype=np.float64)
         self.q_claw[self.index_of["thumb_j1"]] = CLAW_THUMB_J1_RAD
         self.q_claw[self.index_of["thumb_j2"]] = CLAW_THUMB_J2_RAD
+        self.q_claw[self.index_of["thumb_j3"]] = CLAW_THUMB_J3_RAD
         self.q_claw[self.index_of["index_j1"]] = CLAW_INDEX_J1_RAD
+        self.q_claw[self.index_of["index_j2"]] = CLAW_INDEX_J2_RAD
+        self.q_claw[self.index_of["index_j3"]] = CLAW_INDEX_J3_RAD
+        self.q_claw[self.index_of["middle_j1"]] = CLAW_MIDDLE_J1_RAD
+        self.q_claw[self.index_of["middle_j2"]] = CLAW_MIDDLE_J2_RAD
         self.q_claw[self.index_of["little_j1"]] = CLAW_LITTLE_J1_RAD
+        self.q_claw[self.index_of["little_j2"]] = CLAW_LITTLE_J2_RAD
+        self.q_claw[self.index_of["little_j3"]] = CLAW_LITTLE_J3_RAD
         self.q_open = self.q_claw.copy()
         self.q_close_max = self.q_claw.copy()
         for name, deg in FLEXION_CLOSE_DEG.items():
