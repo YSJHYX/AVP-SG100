@@ -50,7 +50,7 @@ from sg100_teleop.retargeting.thumb_debug import (
     hand_tip_geometry_mm,
 )
 
-from sg100_teleop.robot.sg100_driver import SG100HardwareMap
+from sg100_teleop.robot.sg100_driver import MODE_JOINT_POSITION, SG100HardwareMap
 
 from sg100_teleop.robot.sg100_mock_driver import MockSG100Driver
 
@@ -2039,6 +2039,24 @@ def main():
         joint_order=tuple(retargeter.joint_order),
     )
 
+    def measured_hand_canonical():
+        # F_fb is unvalidated; this uses the F_cmd inverse as an approximation
+        # and falls back to the filtered command when feedback is unusable.
+        if hand_driver is None or hand_hardware_map is None:
+            return hand_command_filter.value
+        fb = hand_driver.read_feedback()
+        raw = None if fb is None else fb.raw_positions
+        if (
+            raw is None
+            or not fb.valid
+            or fb.joint_modes != (MODE_JOINT_POSITION,) * HAND_DOF
+        ):
+            return hand_command_filter.value
+        raw = np.asarray(raw, dtype=np.float64)
+        if raw.shape != (HAND_DOF,) or not np.all(np.isfinite(raw)):
+            return hand_command_filter.value
+        return hand_hardware_map.actual_to_canonical(raw)
+
     q_hand_cmd = (
         q_hand_goal.copy()
     )
@@ -2790,6 +2808,7 @@ def main():
             if not script_hand_controller.enabled:
                 print("[HAND] J ignored; press 4 for script source")
             else:
+                script_hand_controller.sync_flex(measured_hand_canonical())
                 motion = script_hand_controller.set_motion(ScriptMotion.CLOSING)
                 print("[HAND] script:", motion.value)
 
@@ -2797,6 +2816,7 @@ def main():
             if not script_hand_controller.enabled:
                 print("[HAND] K ignored; press 4 for script source")
             else:
+                script_hand_controller.sync_flex(measured_hand_canonical())
                 motion = script_hand_controller.set_motion(ScriptMotion.HOLD)
                 print("[HAND] script:", motion.value)
 
@@ -2804,6 +2824,7 @@ def main():
             if not script_hand_controller.enabled:
                 print("[HAND] L ignored; press 4 for script source")
             else:
+                script_hand_controller.sync_flex(measured_hand_canonical())
                 motion = script_hand_controller.set_motion(ScriptMotion.OPENING)
                 print("[HAND] script:", motion.value)
 

@@ -118,6 +118,12 @@ class ScriptHandController:
         self.enabled = False
         self.motion = ScriptMotion.HOLD
 
+    def sync_flex(self, q_measured: np.ndarray) -> None:
+        if not self.enabled or self._q is None:
+            return
+        q = self._as_hand(q_measured)
+        self._q[self._flex] = q[self._flex]
+
     def set_motion(self, motion: ScriptMotion | str) -> ScriptMotion:
         if not self.enabled or self._q is None:
             raise RuntimeError("script hand is not active")
