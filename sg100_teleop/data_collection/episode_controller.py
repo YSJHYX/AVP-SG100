@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+import json
 from pathlib import Path
 import time
 import uuid
@@ -87,6 +88,9 @@ class EpisodeController:
         self.sampler: SynchronizedSampler | None = None
         self.candidate_arrays: dict[str, np.ndarray] | None = None
         self.validation_report: ValidationReport | None = None
+        self.intervention_active = False
+        self.current_intervention_start: int | None = None
+        self.operator_interventions: list[dict[str, int | None]] = []
         self._telemetry_stats_start: dict[str, int] = {}
         self._robot_telemetry_present = False
 
@@ -111,6 +115,9 @@ class EpisodeController:
         self.episode_stop_request_monotonic_ns = 0
         self.candidate_arrays = None
         self.validation_report = None
+        self.intervention_active = False
+        self.current_intervention_start = None
+        self.operator_interventions = []
         self._telemetry_stats_start = dict(self.telemetry.stats)
         try:
             self.media_writer = BoundedMediaWriter(
@@ -150,6 +157,29 @@ class EpisodeController:
             raise
         self.state = EpisodeState.RECORDING
         return self.next_episode_index
+
+    @property
+    def operator_intervention(self) -> bool:
+        return bool(self.operator_interventions)
+
+    def toggle_intervention(
+        self, timestamp_ns: int | None = None
+    ) -> tuple[str, int]:
+        if self.state is not EpisodeState.RECORDING:
+            raise RuntimeError("I 仅在 RECORDING 可用")
+        timestamp = int(time.monotonic_ns() if timestamp_ns is None else timestamp_ns)
+        if self.intervention_active:
+            self.operator_interventions[-1]["end_timestamp_ns"] = timestamp
+            self.intervention_active = False
+            self.current_intervention_start = None
+            return "END", timestamp
+        self.operator_interventions.append({
+            "start_timestamp_ns": timestamp,
+            "end_timestamp_ns": None,
+        })
+        self.intervention_active = True
+        self.current_intervention_start = timestamp
+        return "START", timestamp
 
     @staticmethod
     def _camera_metadata(
@@ -333,6 +363,9 @@ class EpisodeController:
         self.candidate_arrays = arrays
         self.validation_report = report
         self.state = EpisodeState.PENDING_CONFIRMATION
+        if self.intervention_active:
+            print("WARNING: Episode ended while operator intervention was still active.")
+            print("The final intervention interval has no end timestamp.")
         return report
 
     def confirm(self, decision: str) -> tuple[Path, Path] | None:
@@ -341,6 +374,13 @@ class EpisodeController:
         choice = str(decision).strip().lower()
         if choice == "y":
             assert self.candidate_arrays is not None and self.pending_dir is not None
+            # NPZ readers use allow_pickle=False; JSON preserves open intervals.
+            with (self.pending_dir / "metadata.json").open("w", encoding="utf-8") as handle:
+                json.dump({
+                    "operator_intervention": self.operator_intervention,
+                    "operator_interventions": self.operator_interventions,
+                }, handle)
+                handle.write("\n")
             saved = save_episode_atomic(
                 self.output_dir,
                 self.next_episode_index,
@@ -399,5 +439,8 @@ class EpisodeController:
         self.sampler = None
         self.candidate_arrays = None
         self.validation_report = None
+        self.intervention_active = False
+        self.current_intervention_start = None
+        self.operator_interventions = []
         self._telemetry_stats_start = {}
         self._robot_telemetry_present = False

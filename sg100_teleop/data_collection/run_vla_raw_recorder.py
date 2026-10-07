@@ -6,7 +6,12 @@ Production 默认仍为 D455 + D405；head-only 仅用于正式 bring-up。
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+import select
+import sys
+import termios
+import tty
 
 from sg100_teleop.camera.realsense_camera import RealSenseCamera
 from sg100_teleop.data_collection.episode_controller import (
@@ -141,6 +146,38 @@ def create_runtime_sources(
     return telemetry, head, wrist, roles, telemetry_required
 
 
+def _read_recording_command(controller: EpisodeController, prompt: str) -> str:
+    """Read Off as a line while recognizing I/i immediately on the recorder TTY."""
+    fd = sys.stdin.fileno()
+    saved_tty = termios.tcgetattr(fd) if sys.stdin.isatty() else None
+    command = bytearray()
+    print(prompt, end="", flush=True)
+    try:
+        if saved_tty is not None:
+            tty.setcbreak(fd)
+        while True:
+            readable, _, _ = select.select([fd], [], [], 0.05)
+            if not readable:
+                continue
+            key = os.read(fd, 1)
+            if not key or key == b"\x04":
+                raise EOFError("recorder input closed")
+            if key in (b"I", b"i"):
+                event, timestamp_ns = controller.toggle_intervention()
+                print(f"\n[INTERVENTION {event}] timestamp_ns={timestamp_ns}")
+                continue
+            if key in (b"\x7f", b"\x08"):
+                if command:
+                    command.pop()
+                continue
+            if key in (b"\r", b"\n"):
+                return command.decode("utf-8", errors="replace").strip()
+            command.extend(key)
+    finally:
+        if saved_tty is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved_tty)
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
     (
@@ -192,7 +229,11 @@ def main() -> None:
                 prompt = "RECORDING (输入 Off): "
             else:
                 prompt = "READY (输入 On): "
-            command = input(prompt).strip()
+            command = (
+                _read_recording_command(controller, prompt)
+                if controller.state is EpisodeState.RECORDING
+                else input(prompt).strip()
+            )
             try:
                 result = controller.handle_input(command)
                 if command.lower() == "on" and controller.state is EpisodeState.RECORDING:

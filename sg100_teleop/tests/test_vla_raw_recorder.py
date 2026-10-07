@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import pty
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -32,9 +36,11 @@ from sg100_teleop.data_collection.vla_raw_schema import (
     scan_next_episode_index,
 )
 from sg100_teleop.data_collection.run_vla_raw_recorder import (
+    _read_recording_command,
     build_arg_parser as build_recorder_arg_parser,
     create_runtime_sources,
 )
+import sg100_teleop.data_collection.run_vla_raw_recorder as recorder_cli
 from sg100_teleop.data_collection.vla_raw_writer import (
     BoundedMediaWriter,
     save_episode_atomic,
@@ -412,6 +418,233 @@ def test_y_saves_npz_media_and_increments_index(tmp_path: Path) -> None:
         assert np.isnan(archive["hand_qpos_canonical_rad"]).all()
         assert archive["robot_joint_names"].shape == (17,)
     assert len(tuple((saved[1] / "head" / "depth").glob("*.png"))) >= 1
+
+
+def test_clean_episode_saves_empty_intervals_and_preserves_raw_contract(
+    tmp_path: Path,
+) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    assert controller.operator_intervention is False
+    assert controller.operator_interventions == []
+    controller.handle_input("Off")
+    original = controller.candidate_arrays
+    saved = controller.handle_input("Y")
+    assert json.loads((saved[1] / "metadata.json").read_text()) == {
+        "operator_intervention": False,
+        "operator_interventions": [],
+    }
+    with np.load(saved[0], allow_pickle=False) as archive:
+        assert set(archive.files) == set(original)
+        n = archive["timestamp_ns"].shape[0]
+        assert archive["robot_qpos_17d_rad"].shape == (n, 17)
+        assert archive["robot_qcmd_17d_rad"].shape == (n, 17)
+        for key in (
+            "timestamp_ns", "head_camera_present", "wrist_camera_present",
+            "head_camera_model", "wrist_camera_model", "required_cameras",
+            "language_instruction",
+        ):
+            np.testing.assert_array_equal(archive[key], original[key])
+
+
+def test_complete_intervention_interval_and_recording_continues(tmp_path: Path) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    frames_before = len(controller.buffer)
+    assert controller.toggle_intervention(100) == ("START", 100)
+    assert controller.toggle_intervention(200) == ("END", 200)
+    assert controller.intervention_active is False
+    assert controller.operator_intervention is True
+    assert controller.operator_interventions == [
+        {"start_timestamp_ns": 100, "end_timestamp_ns": 200}
+    ]
+    time.sleep(0.07)
+    assert controller.state is EpisodeState.RECORDING
+    assert len(controller.buffer) > frames_before
+    controller.handle_input("Off")
+    saved = controller.handle_input("Y")
+    assert json.loads((saved[1] / "metadata.json").read_text()) == {
+        "operator_intervention": True,
+        "operator_interventions": [
+            {"start_timestamp_ns": 100, "end_timestamp_ns": 200}
+        ],
+    }
+
+
+def test_multiple_intervention_intervals_keep_order(tmp_path: Path) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    for timestamp in (100, 150, 300, 350):
+        controller.toggle_intervention(timestamp)
+    assert controller.operator_interventions == [
+        {"start_timestamp_ns": 100, "end_timestamp_ns": 150},
+        {"start_timestamp_ns": 300, "end_timestamp_ns": 350},
+    ]
+    controller.handle_input("Off")
+    saved = controller.handle_input("Y")
+    assert len(json.loads((saved[1] / "metadata.json").read_text())["operator_interventions"]) == 2
+
+
+def test_incomplete_intervention_has_null_end_and_warning(
+    tmp_path: Path, capsys,
+) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    controller.toggle_intervention(100)
+    controller.handle_input("Off")
+    assert "WARNING: Episode ended while operator intervention was still active." in capsys.readouterr().out
+    saved = controller.handle_input("Y")
+    assert json.loads((saved[1] / "metadata.json").read_text()) == {
+        "operator_intervention": True,
+        "operator_interventions": [
+            {"start_timestamp_ns": 100, "end_timestamp_ns": None}
+        ],
+    }
+
+
+def test_intervention_state_resets_on_next_episode(tmp_path: Path) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    controller.toggle_intervention(100)
+    controller.handle_input("Off")
+    controller.handle_input("N")
+    assert controller.next_episode_index == 0
+    controller.handle_input("On")
+    assert controller.operator_intervention is False
+    assert controller.operator_interventions == []
+    assert controller.intervention_active is False
+    assert controller.current_intervention_start is None
+    controller.handle_input("Off")
+    controller.handle_input("N")
+
+
+def test_interval_timestamp_uses_master_monotonic_clock(tmp_path: Path) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    before = time.monotonic_ns()
+    assert controller.toggle_intervention()[0] == "START"
+    after = time.monotonic_ns()
+    start = controller.current_intervention_start
+    assert before <= start <= after
+    controller.handle_input("Off")
+    assert controller.candidate_arrays["timestamp_ns"][0] <= start
+    assert start <= controller.episode_stop_request_monotonic_ns
+    controller.handle_input("N")
+
+
+@pytest.mark.parametrize("key", [b"I", b"i"])
+def test_recording_tty_toggles_without_enter_and_accepts_off(
+    monkeypatch, key: bytes,
+) -> None:
+    master, slave = pty.openpty()
+    ready = threading.Event()
+    started = threading.Event()
+    ended = threading.Event()
+    events = []
+    real_setcbreak = recorder_cli.tty.setcbreak
+
+    def setcbreak(fd):
+        real_setcbreak(fd)
+        ready.set()
+
+    class Controller:
+        def toggle_intervention(self):
+            events.append("START" if not events else "END")
+            if len(events) == 1:
+                started.set()
+                return "START", 100
+            ended.set()
+            return "END", 200
+
+    result = []
+    monkeypatch.setattr(recorder_cli.tty, "setcbreak", setcbreak)
+    try:
+        with os.fdopen(slave, "r", encoding="utf-8") as stream:
+            monkeypatch.setattr(recorder_cli.sys, "stdin", stream)
+            worker = threading.Thread(
+                target=lambda: result.append(
+                    _read_recording_command(Controller(), "RECORDING (输入 Off): ")
+                ),
+                daemon=True,
+            )
+            worker.start()
+            assert ready.wait(1.0)
+            os.write(master, key)
+            assert started.wait(1.0)  # No Enter was sent.
+            os.write(master, key)
+            assert ended.wait(1.0)
+            assert events == ["START", "END"]
+            assert worker.is_alive()
+            os.write(master, b"Off\n")
+            worker.join(timeout=1.0)
+            assert not worker.is_alive()
+            assert result == ["Off"]
+    finally:
+        os.close(master)
+
+
+def test_cli_preserves_original_end_prompt(monkeypatch) -> None:
+    class Source:
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    class Controller:
+        def __init__(self, **kwargs):
+            self.state = EpisodeState.READY
+            self.frozen_instruction = "Pick the object"
+            self.next_episode_index = 0
+
+        def handle_input(self, command):
+            if command.lower() == "on":
+                self.state = EpisodeState.RECORDING
+                return 0
+            if command.lower() == "off":
+                self.state = EpisodeState.PENDING_CONFIRMATION
+                return object()
+            if command.lower() == "y":
+                self.state = EpisodeState.READY
+                self.next_episode_index += 1
+                return Path("episode_000000.npz"), Path("episode_000000_media")
+            raise AssertionError(command)
+
+    args = SimpleNamespace(
+        output_dir="unused", hz=30, camera_modalities=("rgb",),
+        writer_queue_size=180,
+    )
+    monkeypatch.setattr(
+        recorder_cli, "build_arg_parser", lambda: SimpleNamespace(parse_args=lambda: args)
+    )
+    monkeypatch.setattr(
+        recorder_cli, "create_runtime_sources",
+        lambda args: (Source(), Source(), None, ("head",), False),
+    )
+    monkeypatch.setattr(recorder_cli, "_instruction", lambda args: "Pick the object")
+    monkeypatch.setattr(recorder_cli, "_thresholds", lambda args: None)
+    monkeypatch.setattr(recorder_cli, "EpisodeController", Controller)
+    monkeypatch.setattr(recorder_cli, "format_report", lambda report: "report")
+    monkeypatch.setattr(
+        recorder_cli, "_read_recording_command", lambda controller, prompt: "Off"
+    )
+    prompts = []
+    answers = iter(("On", "Y"))
+
+    def input_answer(prompt):
+        prompts.append(prompt)
+        try:
+            return next(answers)
+        except StopIteration:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", input_answer)
+    recorder_cli.main()
+    assert prompts == [
+        "READY (输入 On): ",
+        "Keep this episode? [Y/N/Reset]: ",
+        "READY (输入 On): ",
+    ]
 
 
 def test_index_scan_uses_max_not_file_count(tmp_path: Path) -> None:
