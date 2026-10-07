@@ -9,25 +9,27 @@
 
 ## 1. 标准操作顺序
 
-正式 episode 固定采用：
+正式 Stage-1 episode 推荐在控制链和任务初始状态准备完成后再开始录制：
 
 ```text
-C → 等待稳定 → On → A → 执行任务 → D → 等待稳定 → Off → Y
+设备与遥测 READY → C → 等待稳定 → A → 确认任务初始状态 → On → 执行任务 → D → 等待稳定 → Off → Y/N/Reset
 ```
 
 各步骤含义：
 
 1. `C`：在 MuJoCo 窗口建立 AVP 相对锚点；
 2. 等待稳定：保持手腕和手势不动 1～2 秒；
-3. `On`：在 Recorder 终端开始采集；
-4. `A`：在 MuJoCo 窗口授权真机运动；
-5. 执行任务：完成一次完整、连续的操作；
-6. `D`：撤销真机运动授权；
-7. 等待稳定：保留任务结束后的静止状态 0.5～1 秒；
-8. `Off`：在 Recorder 终端停止并验证本条数据；
-9. `Y`：确认保存；验证异常时输入 `N` 丢弃。
+3. `A`：再次确认现场安全后，在 MuJoCo 窗口授权真机运动；
+4. 确认任务初始状态：控制链、机器人和任务物体均已准备好；
+5. `On`：在 Recorder 终端开始本条 episode；
+6. 执行任务：完成一次完整操作，必要时用 `I` 标记人工物理干预区间；
+7. `D`：撤销真机运动授权；
+8. 等待稳定：保留任务结束后的静止状态 0.5～1 秒；
+9. `Off`：在 Recorder 终端停止并验证本条数据；
+10. `Y/N/Reset`：根据报告保存、丢弃或丢弃并清空采集缓存。
 
 正式录制期间不要再次按 `C`，避免把坐标重建过程写入任务轨迹。
+若曾在 `C/A` 等准备操作前就输入 `On`，D2 会基于 action / telemetry validity 正确裁除缺少完整 17D action 证据的 preparation 数据。调整顺序是为了减少无效 RAW pre-roll，让 episode 边界更贴近真实任务边界。
 
 ## 2. 设备与网络
 
@@ -174,7 +176,9 @@ python -m sg100_teleop.sim.run_avp_arm_hand_sim \
 
 `C` 只是相对遥操作锚点，不是机械零位，也不会让真机回零。
 
-### 4.2 开始录制
+### 4.2 授权并开始录制
+
+人工再次确认工作区安全后，在 MuJoCo 窗口按 `A`。确认机械臂、手和任务物体处于正式任务初始状态，再开始本条 episode。`A` 只负责真机运动授权，不会启动 Recorder。
 
 在 Recorder 终端输入：
 
@@ -192,9 +196,9 @@ language (frozen): ...
 
 `On` 会冻结本条 episode 的语言指令。一个 episode 只执行该指令描述的一次完整任务，不要中途改变任务定义。
 
-### 4.3 授权并执行任务
+### 4.3 执行任务
 
-人工再次确认工作区安全后，在 MuJoCo 窗口按 `A`。看到机械臂和手均进入 enabled 状态后，平缓执行任务。
+看到机械臂和手均进入 enabled 状态后，平缓执行任务。
 
 执行期间：
 
@@ -204,7 +208,44 @@ language (frozen): ...
 - 不要移动相机、机器人底座或任务台；
 - 发现跟踪丢失、异常噪声、碰撞趋势或姿态异常时，立即按 `D`，必要时使用物理急停。
 
-### 4.4 正常结束
+### 4.4 人工干预标记：I 键
+
+录制中，在 **Recorder 终端**按 `I` 或 `i`（无需回车）标记 operator intervention：人的手、工具或其他外部动作直接进入工作环境，物理改变任务物体、机械臂、灵巧手或场景的状态。例如扶正掉落物体、重摆目标物、解除异常接触，或将场景恢复到可继续操作的状态。
+
+**正常 AVP 遥操作修正不属于人工干预。**若只是继续通过 AVP 控制 RM65/SG100 重新对准或修正抓取，不需要按 `I`。
+
+`I` 不是运动停止或安全授权键。人工进入工作区前，仍须先按现场安全流程用 `D` 撤销真机运动授权并确认机器人停止；必要时使用物理急停。每次人工物理修正按以下顺序操作：
+
+1. 发现需要人工物理修正时，先执行上述安全停止，再在手或工具进入工作区及 head/wrist 相机视野**之前**按第一次 `I`；
+2. 确认 Recorder 打印 `[INTERVENTION START] timestamp_ns=<start>`；
+3. 进行人工修正；
+4. 人手和工具完全离开工作区及 head/wrist 相机视野，等待场景重新稳定；
+5. 再按第二次 `I`，确认打印 `[INTERVENTION END] timestamp_ns=<end>`；
+6. 再次确认现场安全并按 `A` 授权后，继续正常 AVP 遥操作。同一 episode 可重复 START/END，记录多个区间。
+
+第一次 `I` 必须早于人工进入场景，第二次必须晚于人工退出且场景稳定，才能覆盖完整的视觉污染区间。按 `I` 只改变当前 episode 的 metadata：Recorder、RM65、SG100、相机和 episode 均不暂停或停止，时间轴连续，也不会自动丢弃数据。
+
+若已按 `I` 开始干预，却在第二次 `I` 前输入 `Off`，Recorder 会打印 warning，并把最后一区间保存为 `{"start_timestamp_ns": <start>, "end_timestamp_ns": null}`。这表示从 START 到 episode 结束之间的数据不能证明已经退出人工干预状态；现场应尽量完成 `I START → 人工修正 → 人工完全退出并稳定 → I END` 后再继续或结束。
+
+操作示例：
+
+```text
+C → A → 确认初始状态 → On → RECORDING
+正常 AVP 操作，抓取出现异常
+D，确认机器人停止
+I
+[INTERVENTION START] timestamp_ns=<start>
+人工扶正物体，完全退出相机视野，等待场景稳定
+I
+[INTERVENTION END] timestamp_ns=<end>
+A，确认安全后继续 AVP 操作，完成任务
+D → 等待稳定 → Off
+Keep this episode? [Y/N/Reset]: Y
+```
+
+该 episode 仍可由 `Y` 保存。`I` 与结束后的确认不同：`I` 只标记人工干预区间；`Y` 保存，`N` 丢弃，`Reset` 按原逻辑丢弃并清空采集缓存。
+
+### 4.5 正常结束
 
 1. 任务完成后，在 MuJoCo 窗口按 `D`；
 2. 确认机械臂和手已退出使能；
@@ -234,6 +275,7 @@ Keep this episode? [Y/N/Reset]:
 | `D` | MuJoCo 窗口 | 只撤销真机授权，不会重新使能 |
 | `E` | MuJoCo 窗口 | SG100 软件急停锁存；需要重启程序才能恢复 |
 | `On` | Recorder 终端 | 开始 episode，不控制机器人 |
+| `I` / `i` | Recorder 终端，仅录制中 | 切换人工物理干预 START/END，无需回车；只标记 metadata |
 | `Off` | Recorder 终端 | 停止、flush 并验证 episode |
 | `Y` | Recorder 终端 | 保存当前 pending episode |
 | `N` | Recorder 终端 | 丢弃当前 episode，编号不增加 |
@@ -252,6 +294,7 @@ Keep this episode? [Y/N/Reset]:
 recording/vla_raw/
   episode_000000.npz
   episode_000000_media/
+    metadata.json
     head/rgb/000000.jpg
     right_wrist/rgb/000000.jpg
 ```
@@ -259,6 +302,21 @@ recording/vla_raw/
 RGB-D 模式还会在各相机目录中生成 `depth/*.png`。
 
 RAW episode 使用 30 Hz 主时间线，但相机、机械臂、手和遥测保留各自时间戳、序号、数据年龄和有效性；不能仅凭数组非空判断数据有效。
+
+`episode_XXXXXX_media/metadata.json` 保存 episode 级人工干预标记。无人工干预时为 `"operator_intervention": false`、`"operator_interventions": []`；一次完整干预示例：
+
+```json
+{
+  "operator_intervention": true,
+  "operator_interventions": [
+    {"start_timestamp_ns": 1780000100000000, "end_timestamp_ns": 1780000104500000}
+  ]
+}
+```
+
+多次干预会按时间顺序增加区间；未闭合的最后一区间使用 JSON `null`，不会伪造结束时间。当前 RAW 只记录这些 annotation；后续 Data Engineering 才会将干预区间视为污染区间剔除。前后的 robot-only clean trajectory 不跨区间直接拼接，而是分别作为候选 Clean Run 接受 D2/D3 检查；干预后的有效 clean suffix 仍可能保留。
+
+这些字段属于 RAW / Data Engineering curation metadata，不进入 π0.5 或 LingBot-VLA 模型特征。训练合同仍为 `observation.state = float32[17]`、`action = float32[17]`、head RGB、wrist RGB、task 和原有 `timestamp_ns`：`state[0:6]` 为 RM65 measured qpos，`state[6:17]` 为 SG100 measured feedback；`action[0:6]` 为 RM65 actual command，`action[6:17]` 为 SG100 effective canonical absolute command。RAW 字段仍须通过各自 validity 检查，人工干预标记不会把无效反馈变成有效训练数据。
 
 ### 6.2 控制程序诊断日志
 
@@ -344,7 +402,7 @@ target_pose rotation must have determinant +1
 target_pose rotation must be orthonormal
 ```
 
-这通常表示手部骨架暂时无效或姿态矩阵异常。把手重新放回可见区域并保持稳定。如果正在录制，先执行 `D → Off → N` 丢弃异常 episode；恢复有效跟踪后，从 `C → 稳定 → On → A` 重新开始。
+这通常表示手部骨架暂时无效或姿态矩阵异常。把手重新放回可见区域并保持稳定。如果正在录制，先执行 `D → Off → N` 丢弃异常 episode；恢复有效跟踪后，从 `C → 稳定 → A → 确认初始状态 → On` 重新开始。
 
 ### 7.5 MuJoCo 手不动但真机手在动
 
@@ -358,7 +416,7 @@ target_pose rotation must be orthonormal
 
 1. 先完成一次不保存的短流程，验证机器人、相机和遥测；
 2. 固定任务指令、相机位置、机器人初始姿态和物体初始位置；
-3. 每条 episode 只执行一次完整任务；
+3. 完成 `C/A` 准备并确认任务初始状态后，再为每条 episode 输入 `On`，只执行一次完整任务；
 4. 每条结束后检查报告，再决定 `Y` 或 `N`；
 5. 下一条开始前恢复相同初始状态；
 6. 不要在同一批数据中临时改变滤波、安全参数、相机模态或坐标映射；
@@ -382,9 +440,10 @@ target_pose rotation must be orthonormal
 每条 episode：
 
 - [ ] `C` 后跟踪稳定；
+- [ ] 确认安全后按 `A`，控制链与任务初始状态均已准备好；
 - [ ] Recorder 输入 `On`；
-- [ ] 确认安全后按 `A`；
 - [ ] 完整执行一次任务；
+- [ ] 如发生人工物理干预，先按 `D` 确认停止，进入工作区前按 `I START`，完全退出并稳定后按 `I END`，确认安全后再按 `A`；
 - [ ] 按 `D` 撤销授权；
 - [ ] 保留最终稳定状态；
 - [ ] Recorder 输入 `Off`；
