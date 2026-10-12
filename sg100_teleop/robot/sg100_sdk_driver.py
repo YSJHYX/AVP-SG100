@@ -192,8 +192,9 @@ class SG100Mode7AllowlistSubmission:
     d: tuple[int, ...]
     output_limit: tuple[int, ...]
 
-# Whole-hand control gains, matching teaching_mode_example.cpp.
-DEFAULT_KP = 0.5
+# Whole-hand control gains. Kp is configured at the requested maximum of the
+# SG100_Quant PID range; the remaining gains retain the teaching example values.
+DEFAULT_KP = 10.0
 DEFAULT_KI = 0.0
 DEFAULT_KD = 0.05
 DEFAULT_OUTPUT_LIMIT = 1.0
@@ -1003,7 +1004,7 @@ class SG100SDKDriver(SG100Driver):
 
     def send_mode7_active_allowlist(
         self, active_joint_indices: tuple[int, ...] | list[int],
-        positions_deg: np.ndarray, *, kp: float = 0.1,
+        positions_deg: np.ndarray, *, kp: float = DEFAULT_KP,
         ki: float = 0.0, kd: float = 0.0, output_limit: float = 0.5,
     ) -> SG100Mode7AllowlistSubmission | None:
         """发送 whole-hand MODE7 frame，仅 allowlist 关节产生输出。"""
@@ -1020,8 +1021,11 @@ class SG100SDKDriver(SG100Driver):
         gains = (float(kp), float(ki), float(kd), float(output_limit))
         if not all(np.isfinite(value) for value in gains):
             raise ValueError("PID/output_limit values must be finite")
-        if gains != (0.1, 0.0, 0.0, 0.5):
-            raise ValueError("restricted MODE7 permits only p/i/d/limit=0.1/0/0/0.5")
+        if gains != (DEFAULT_KP, 0.0, 0.0, 0.5):
+            raise ValueError(
+                "restricted MODE7 permits only "
+                f"p/i/d/limit={DEFAULT_KP}/0/0/0.5"
+            )
         payload = np.ascontiguousarray(positions, dtype=np.float32)
         modes = np.full(HAND_DOF, MODE_JOINT_POSITION, dtype=np.uint8)
         ps = np.zeros(HAND_DOF, dtype=np.uint16)

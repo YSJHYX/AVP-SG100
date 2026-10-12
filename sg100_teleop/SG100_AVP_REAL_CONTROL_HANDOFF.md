@@ -468,7 +468,7 @@ active hold → micro → cleanup。工具 contract 断言
 
 ## 14. J6 active controller 参数（仅限已验证范围）
 
-当前真机验证过的参数：
+历史真机验证过的参数：
 
 ```
 p = 0.1,  i = 0,  d = 0,  output_limit = 0.5
@@ -479,9 +479,10 @@ p = 0.1,  i = 0,  d = 0,  output_limit = 0.5
 （量化值 328/0/0/1638 ↔ 0.1/0/0/0.5，`SG100_Quant` range 10）。
 
 注意：只证明了**该参数在 J6 小幅（±0.5°）测试中受控**。不要自动推断
-所有关节 production 都用同参数。全手默认（driver
-`send_positions_rad` 用的 teaching example 值）是 Kp 0.5 / Ki 0 /
-Kd 0.05 / output_limit 1.0，同样未被逐轴真机验证。
+所有关节 production 都用同参数。当前 AVP restricted allowlist 路径已配置为
+Kp 10.0 / Ki 0 / Kd 0 / output_limit 0.5；直接 `send_positions_rad`
+路径配置为 Kp 10.0 / Ki 0 / Kd 0.05 / output_limit 1.0。两条路径的
+Kp 10.0 均未被逐轴真机验证。
 
 ---
 

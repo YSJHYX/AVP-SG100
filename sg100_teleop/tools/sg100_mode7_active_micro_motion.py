@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RECORDING_ROOT = ROOT / "recording"
 
 # 唯一有当前 SDK example + vendor production log 双重证据的低增益组。
-ACTIVE_KP = 0.1
+ACTIVE_KP = 10
 ACTIVE_KI = 0.0
 ACTIVE_KD = 0.0
 ACTIVE_OUTPUT_LIMIT = 0.5

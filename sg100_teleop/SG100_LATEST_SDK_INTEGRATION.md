@@ -80,9 +80,10 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
   documented, Realtime_Performance_Analysis §2.2; re-confirmed in the new
   binary: the cache at Impl+0x79 stores the caller struct verbatim and the
   scheduler's encode lambda applies `clamp(min,max) -> *a+b -> *pi/180`).
-- Default control mode `MODE_JOINT_POSITION` (7), gains from the vendor
-  teaching example (Kp 0.5, Ki 0, Kd 0.05, output_limit 1.0, quantized with
-  `SG100_Quant` semantics range 10).
+- Default control mode `MODE_JOINT_POSITION` (7), with configured whole-hand
+  gains Kp 10.0, Ki 0, Kd 0.05, output_limit 1.0, quantized with
+  `SG100_Quant` semantics range 10. Ki/Kd/output_limit retain the vendor
+  teaching-example values.
 - `SetJointPositions` is NOT used by the production path (its forced
   `MODE_POSITION` + inherit-cache-PID behavior and the non-round-trip clamp
   make it unsuitable as the authoritative mapping; the migration removed

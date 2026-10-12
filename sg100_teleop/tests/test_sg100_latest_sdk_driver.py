@@ -325,13 +325,13 @@ def test_i_zero_assessment_reports_without_commanding() -> None:
 # -- driver construction defaults --------------------------------------------
 
 
-def test_driver_defaults_use_vendor_teaching_gains() -> None:
+def test_driver_defaults_use_configured_whole_hand_gains() -> None:
     driver = SG100SDKDriver(
         "/dev/null", hardware_map=SG100HardwareMap(),
         sdk_dir=Path(DEFAULT_SDK_DIR),
     )
     assert driver.control_mode == MODE_JOINT_POSITION
-    assert driver._pid_p == int(round(0.5 * 32767 / 10.0))
+    assert driver._pid_p == quantize_gain(10.0)
     assert driver._output_limit == int(round(1.0 * 32767 / 10.0))
 
 

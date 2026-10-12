@@ -400,7 +400,7 @@ def serialize_null_frame(lib) -> np.ndarray:
         payload,
         HAND_DOF,
         MODE_NULL,
-        quantize_gain(0.5),
+        quantize_gain(10),
         quantize_gain(0.0),
         quantize_gain(0.05),
         quantize_gain(1.0),

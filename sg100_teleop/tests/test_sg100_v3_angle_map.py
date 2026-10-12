@@ -246,7 +246,9 @@ def test_sides_survive_restricted_backend_driver_and_sdk_mapping(
         a, b, lo, hi = parameters[j]
         assert lo <= user_deg <= hi
         if j in (3, 8):
-            assert (p, i, d, limit) == (quantize_gain(0.1), 0, 0, quantize_gain(0.5))
+            assert (p, i, d, limit) == (
+                quantize_gain(10.0), 0, 0, quantize_gain(0.5)
+            )
             # Vendor formula after its own user-domain clamp. Previously both
             # sides became zero here despite nonzero serialized targets.
             wire_rad = np.deg2rad(a * np.clip(user_deg, lo, hi) + b)
