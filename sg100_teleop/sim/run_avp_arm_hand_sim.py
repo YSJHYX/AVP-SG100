@@ -142,9 +142,9 @@ IK_FALLBACK_MAX_STEP_RAD = 0.05
 # SG100 receives thumb_j2=-31 deg and 0 deg on the other ten joints through
 # its vendor SDK, then the RM65 executes one planned, blocking move to the
 # calibrated J1-J6 startup pose below.
-# The conservative RealMan speed matches the existing PROFILE_10 bring-up
-# convention; teleoperation streaming remains disabled until the operator's
-# normal C/A gate.
+# Use 25% RealMan planned-motion speed to shorten the return to the startup
+# pose; teleoperation streaming remains disabled until the operator's normal
+# C/A gate.
 REAL_STARTUP_HAND_Q_RAD = np.zeros(HAND_DOF, dtype=np.float64)
 REAL_STARTUP_HAND_Q_RAD[
     SG100_JOINT_ORDER.index("thumb_j2")
@@ -155,7 +155,7 @@ REAL_STARTUP_ARM_Q_RAD = np.deg2rad(
         dtype=np.float64,
     )
 )
-REAL_STARTUP_ARM_SPEED_PERCENT = 10
+REAL_STARTUP_ARM_SPEED_PERCENT = 25
 
 # ============================================================
 # Wrist-roll (position + forearm roll) teleoperation mode
