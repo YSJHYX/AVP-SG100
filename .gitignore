@@ -7,4 +7,4 @@ build/
 avp_stream/datasets/eckey.pem
 *.pem
 downloads/
-recording/
+/recording/
