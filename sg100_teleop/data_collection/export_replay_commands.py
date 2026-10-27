@@ -82,7 +82,25 @@ def load_replay_commands(
                 + ("（desired 需 RAW v3+ 或 curated --include-desired）"
                    if source == "desired" else "")
             )
-        commands = np.asarray(archive[key], dtype=np.float64)
+        commands = np.asarray(archive[key], dtype=np.float64).copy()
+        hand_domain = (
+            str(archive["robot_qcmd_hand_domain"].item())
+            if "robot_qcmd_hand_domain" in archive.files else "canonical_rad"
+        )
+    if kind == "curated":
+        metadata_path = path.with_name("metadata.json")
+        if metadata_path.exists():
+            hand_domain = json.loads(metadata_path.read_text()).get(
+                "action_hand_domain", "canonical_rad"
+            )
+    if source == "effective" and hand_domain == "sdk_user_rad":
+        # Replay still feeds the canonical backend; undo only the data-domain map.
+        from sg100_teleop.robot.sg100_driver import SG100HardwareMap
+
+        hardware_map = SG100HardwareMap()
+        commands[:, 6:] = (
+            commands[:, 6:] - hardware_map.offset_rad
+        ) / hardware_map.gain
 
     selected = np.ascontiguousarray(commands[:, target_slice(target)])
     total = int(selected.shape[0])
@@ -110,6 +128,8 @@ def load_replay_commands(
             int(target_slice(target).stop),
         ],
         "unit": "rad",
+        "hand_command_domain": "canonical_rad",
+        "recorded_hand_domain": hand_domain if source == "effective" else "canonical_rad",
         "rows_total": total,
         "rows_dropped_nan": dropped if drop_nan else 0,
         "shape": list(selected.shape),

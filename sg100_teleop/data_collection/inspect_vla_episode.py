@@ -68,7 +68,8 @@ def _native_hz(archive) -> dict[str, object]:
     return result
 
 
-def _desired_effective(archive_like, desired_key: str = "robot_desired_qcmd_17d_rad") -> dict | None:
+def _desired_effective(archive_like, desired_key: str = "robot_desired_qcmd_17d_rad",
+                       hand_domain: str | None = None) -> dict | None:
     files = (
         set(archive_like.files)
         if hasattr(archive_like, "files")
@@ -76,9 +77,18 @@ def _desired_effective(archive_like, desired_key: str = "robot_desired_qcmd_17d_
     )
     if not {"robot_qcmd_17d_rad", desired_key}.issubset(files):
         return None
-    return desired_effective_summary(
-        archive_like[desired_key], archive_like["robot_qcmd_17d_rad"]
-    )
+    effective = np.asarray(archive_like["robot_qcmd_17d_rad"], dtype=np.float64).copy()
+    if hand_domain is None:
+        hand_domain = (
+            str(np.asarray(archive_like["robot_qcmd_hand_domain"]).item())
+            if "robot_qcmd_hand_domain" in files else "canonical_rad"
+        )
+    if hand_domain == "sdk_user_rad":
+        from sg100_teleop.robot.sg100_driver import SG100HardwareMap
+
+        hardware_map = SG100HardwareMap()
+        effective[:, 6:] = (effective[:, 6:] - hardware_map.offset_rad) / hardware_map.gain
+    return desired_effective_summary(archive_like[desired_key], effective)
 
 
 def inspect_vla_episode(path: str | Path) -> dict[str, object]:
@@ -246,7 +256,9 @@ def inspect_curated_episode(path: str | Path) -> dict[str, object]:
         summary["action_next_state_dt"] = summary_stats_ns(
             action_next_state_dt_ns(action_ts, next_ts)
         )
-        derived = _desired_effective(trajectory)
+        derived = _desired_effective(
+            trajectory, hand_domain=metadata.get("action_hand_domain", "canonical_rad")
+        )
         if derived is not None:
             summary["desired_effective"] = derived
         summary["replay_slices"] = {

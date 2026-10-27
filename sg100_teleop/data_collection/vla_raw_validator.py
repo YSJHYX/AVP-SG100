@@ -35,7 +35,7 @@ _EPISODE_METADATA_KEYS = {
     "head_color_intrinsics", "head_depth_intrinsics",
     "wrist_color_intrinsics", "wrist_depth_intrinsics",
     "robot_desired_qcmd_semantics", "robot_effective_qcmd_semantics",
-    "robot_qpos_semantics", "telemetry_publish_hz_requested",
+    "robot_qpos_semantics", "robot_qcmd_hand_domain", "telemetry_publish_hz_requested",
     "telemetry_publish_hz_effective",
 }
 
@@ -138,6 +138,11 @@ def validate_episode(
     n = int(timestamp.size)
     errors: list[str] = []
     warnings: list[str] = []
+    hand_domain = str(np.asarray(arrays.get("robot_qcmd_hand_domain", "canonical_rad")).item())
+    if hand_domain not in ("canonical_rad", "sdk_user_rad"):
+        errors.append("unknown robot_qcmd_hand_domain")
+    if schema_version >= 4 and hand_domain != "sdk_user_rad":
+        errors.append("RAW v4 requires robot_qcmd_hand_domain=sdk_user_rad")
     for key, value in arrays.items():
         array = np.asarray(value)
         camera_metadata = (
@@ -249,6 +254,8 @@ def validate_episode(
         combined = np.asarray(arrays[combined_key], dtype=np.float64)
         first = np.asarray(arrays[first_key], dtype=np.float64).copy()
         second = np.asarray(arrays[second_key], dtype=np.float64).copy()
+        if combined_key == "robot_qcmd_17d_rad" and hand_domain == "sdk_user_rad":
+            second[:, [3, 6, 8]] *= -1.0
         if schema_version >= 3:
             first[~np.asarray(arrays[first_valid_key], dtype=bool)] = np.nan
             second[~np.asarray(arrays[second_valid_key], dtype=bool)] = np.nan

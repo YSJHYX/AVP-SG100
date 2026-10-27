@@ -17,6 +17,7 @@ from sg100_teleop.data_collection.vla_raw_schema import (
     DEFAULT_CAMERA_MODALITIES,
     DEFAULT_REQUIRED_CAMERAS,
     ROBOT_JOINT_NAMES,
+    HAND_ACTION_DOMAIN,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     TRAINING_READY,
@@ -272,9 +273,10 @@ class EpisodeController:
                 "backend safety limiting"
             ),
             "robot_effective_qcmd_semantics": np.asarray(
-                "final effective backend command after "
-                "safety/limiting/allowlist"
+                "final accepted backend command after safety/limiting/allowlist; "
+                "SG100 hand uses SDK user-angle radians"
             ),
+            "robot_qcmd_hand_domain": np.asarray(HAND_ACTION_DOMAIN),
             "robot_qpos_semantics": np.asarray(
                 "measured robot joint state feedback; never inferred from "
                 "desired command"

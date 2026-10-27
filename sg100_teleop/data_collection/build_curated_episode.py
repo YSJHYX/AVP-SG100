@@ -395,6 +395,7 @@ def build_curated_episode(
         ),
         "action_representation": ACTION_REPRESENTATION,
         "action_unit": ACTION_UNIT,
+        "action_hand_domain": str(_scalar(arrays, "robot_qcmd_hand_domain", "canonical_rad")),
         "state_representation": STATE_REPRESENTATION,
         "state_unit": STATE_UNIT,
         "segment_offsets": offsets,

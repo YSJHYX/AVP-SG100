@@ -177,6 +177,9 @@ class SynchronizedSampler:
             packet, "hand_qcmd_effective_canonical_rad", 11
         )
         hand_sdk = self._packet_value(packet, "hand_qcmd_sdk_deg", 11)
+        # Keep the original accepted-effective source; align signs once for RAW action.
+        hand_action = hand_effective.copy()
+        hand_action[[3, 6, 8]] *= -1.0
         hand_feedback_sdk = self._packet_value(packet, "hand_feedback_sdk_rad", 11)
         raw_modes = None if packet is None else packet.get("hand_feedback_modes")
         mode_array = np.asarray(raw_modes) if raw_modes is not None else np.empty(0)
@@ -216,7 +219,7 @@ class SynchronizedSampler:
         robot_qcmd_valid = bool(
             arm_cmd_valid and hand_cmd_valid
             and np.all(np.isfinite(arm_qcmd))
-            and np.all(np.isfinite(hand_effective))
+            and np.all(np.isfinite(hand_action))
         )
         robot_qpos_valid = bool(
             arm_fb_valid and hand_canonical_valid
@@ -225,7 +228,7 @@ class SynchronizedSampler:
         )
         robot_qcmd = np.concatenate((
             arm_qcmd if arm_cmd_valid else np.full(6, np.nan),
-            hand_effective if hand_cmd_valid else np.full(11, np.nan),
+            hand_action if hand_cmd_valid else np.full(11, np.nan),
         ))
         robot_qpos = np.concatenate((
             arm_qpos if arm_fb_valid else np.full(6, np.nan),

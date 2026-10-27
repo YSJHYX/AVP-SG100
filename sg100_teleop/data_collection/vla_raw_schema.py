@@ -11,7 +11,8 @@ import numpy as np
 
 
 SCHEMA_NAME = "rm65_sg100_dual_realsense_vla_raw"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+HAND_ACTION_DOMAIN = "sdk_user_rad"
 DATASET_STATUS = "RAW_CAPTURE_QUARANTINED"
 TRAINING_READY = False
 ARM_JOINT_NAMES = tuple(f"rm65_joint{i}" for i in range(1, 7))
