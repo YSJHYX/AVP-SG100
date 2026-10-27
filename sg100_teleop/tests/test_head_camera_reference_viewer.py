@@ -98,21 +98,24 @@ class FakeCamera:
 
 
 class FakeWindow:
+    COLOR_BGR2RGB = cv2.COLOR_BGR2RGB
     COLOR_RGB2BGR = cv2.COLOR_RGB2BGR
+    IMREAD_COLOR = cv2.IMREAD_COLOR
     WINDOW_NORMAL = cv2.WINDOW_NORMAL
     WND_PROP_VISIBLE = cv2.WND_PROP_VISIBLE
     cvtColor = staticmethod(cv2.cvtColor)
+    imread = staticmethod(cv2.imread)
     imwrite = staticmethod(cv2.imwrite)
 
-    def __init__(self, output_dir):
+    def __init__(self, output_dir, expected_png_count=2):
         self.output_dir = output_dir
+        self.expected_png_count = expected_png_count
         self.frames = []
         self.keys = iter([ord("b"), ord("l"), ord("o"), ord("q")])
         self.destroyed = False
 
     def namedWindow(self, *args):
-        # Both the photo and inverted background exist before preview opens.
-        assert len(list(self.output_dir.glob("*.png"))) == 2
+        assert len(list(self.output_dir.glob("*.png"))) == self.expected_png_count
 
     def resizeWindow(self, *args):
         pass
@@ -187,6 +190,37 @@ def test_preview_uses_fixed_reference_and_switches_modes_then_cleans_up(tmp_path
         np.testing.assert_array_equal(actual_bgr, expected_rgb[..., ::-1])
     assert len(window.frames) == 4
     assert camera.stopped and window.destroyed
+
+
+def test_preview_can_load_existing_inverted_image_without_new_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":fake-display")
+    existing_rgb = np.full((2, 2, 3), [210, 160, 110], dtype=np.uint8)
+    existing_path = tmp_path / "existing_inverted.png"
+    assert cv2.imwrite(str(existing_path), existing_rgb[..., ::-1])
+    args, cameras, factory = run_fake(tmp_path, reference_image=existing_path)
+    window = FakeWindow(tmp_path, expected_png_count=1)
+
+    paths = viewer.run_viewer(
+        args, rs_module=fake_rs([("head", "Intel RealSense D455")]),
+        cv2_module=window, camera_factory=factory,
+    )
+
+    camera = cameras[0]
+    assert paths == (existing_path.resolve(),)
+    assert len(list(tmp_path.glob("*.png"))) == 1
+    expected_first = viewer.compose_preview(camera.reference, existing_rgb, 0.5)
+    expected_last = viewer.compose_preview(camera.live, existing_rgb, 0.5)
+    expected = (expected_first, existing_rgb, camera.live, expected_last)
+    for actual_bgr, expected_rgb in zip(window.frames, expected):
+        np.testing.assert_array_equal(actual_bgr, expected_rgb[..., ::-1])
+    assert camera.stopped and window.destroyed
+
+
+def test_existing_reference_must_match_live_resolution(tmp_path):
+    path = tmp_path / "wrong_size.png"
+    assert cv2.imwrite(str(path), np.zeros((3, 2, 3), dtype=np.uint8))
+    with pytest.raises(ValueError, match="实时画面配置为 2x2"):
+        viewer.load_reference_image(path, width=2, height=2, cv2=cv2)
 
 
 def test_failed_snapshot_stops_camera_without_opening_window(tmp_path):

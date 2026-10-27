@@ -98,18 +98,15 @@ ping -c 2 192.168.2.190
 将 `<D455_SERIAL>`、`<D405_SERIAL>` 和任务指令替换为本次实际值：
 
 ```bash
-cd /home/khan/AVP-SG100
+
 conda activate avp_sg100
 
-python -m sg100_teleop.data_collection.run_vla_raw_recorder \
-  --telemetry 127.0.0.1:5560 \
-  --required-cameras head,right_wrist \
-  --camera-modalities rgb \
-  --head-serial <D455_SERIAL> \
-  --wrist-serial <D405_SERIAL> \
-  --instruction "Pick up the object and place it in the target area" \
-  --output-dir recording/vla_raw \
-  --hz 30
+# 空气炸锅任务
+python -m   sg100_teleop.data_collection.run_vla_raw_recorder   --telemetry 127.0.0.1:5560   --required-cameras head,right_wrist   --camera-modalities rgb   --head-serial 333422300281   --wrist-serial 262622274076   --instruction "Pull the inner basket out of the air fryer and place it on the table."   --output-dir recording/vla_raw   --hz 30
+
+
+# 电机支撑件任务
+python -m   sg100_teleop.data_collection.run_vla_raw_recorder   --telemetry 127.0.0.1:5560   --required-cameras head,right_wrist   --camera-modalities rgb   --head-serial 333422300281   --wrist-serial 262622274076   --instruction "Place the motor support bracket into the fixture."   --output-dir recording/vla_raw   --hz 30
 ```
 
 启动成功后应看到：
@@ -133,25 +130,10 @@ READY (输入 On):
 ### 3.2 终端 2：AVP 真机控制与遥测
 
 ```bash
-cd /home/khan/AVP-SG100
+
 conda activate avp_sg100
 
-python -m sg100_teleop.sim.run_avp_arm_hand_sim \
-  --ip 192.168.2.190 \
-  --arm-backend real \
-  --arm-ip 192.168.1.18 \
-  --arm-safety-profile 10 \
-  --arm-tool-profile sg100_attached \
-  --arm-follow low \
-  --hand-backend real \
-  --hand-port /dev/ttyUSB0 \
-  --calibration sg100_teleop/config/avp_right_calibration.yaml \
-  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v8_compat.usdz \
-  --wrist-roll-ik \
-  --telemetry-publish 127.0.0.1:5560 \
-  --telemetry-publish-hz 100 \
-  --arm-joint-compare \
-  --sg100-command-debug
+python -m sg100_teleop.sim.run_avp_arm_hand_sim     --calibration sg100_teleop/config/avp_right_calibration.yaml   --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_realworld_teleop_compat.usdz --wrist-roll-ik   --arm-backend real   --arm-ip 192.168.1.18   --arm-safety-profile 10   --arm-tool-profile sg100_attached   --hand-backend real   --hand-port /dev/ttyUSB0 --telemetry-publish 127.0.0.1:5560   --telemetry-publish-hz 100   --verbose  --ip 192.168.2.106
 ```
 
 说明：
@@ -450,3 +432,18 @@ target_pose rotation must be orthonormal
 - [ ] 检查报告后选择 `Y` 或 `N`；
 - [ ] 保存后运行 inspector；
 - [ ] 恢复下一条数据的初始状态。
+
+
+## 10. 任务初始参考图
+```bash
+python -m sg100_teleop.camera.view_head_camera_reference
+```
+查看参考图
+```bash
+cd /home/c/AVP-SG100
+
+/home/c/miniconda3/envs/avp_sg100/bin/python -m \
+  sg100_teleop.camera.view_head_camera_reference \
+  --reference-image recording/head_camera_reference/head_20261021_105921_505646_inverted.png\
+  --alpha 0.5
+  ```

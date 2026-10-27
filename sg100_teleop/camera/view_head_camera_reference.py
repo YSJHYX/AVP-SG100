@@ -1,4 +1,4 @@
-"""D455 拍照、反色，并在独立实时预览窗口中叠加固定参考图。
+"""D455 实时预览叠加新拍摄或已有的反色参考图。
 
 运行：python -m sg100_teleop.camera.view_head_camera_reference
 也支持：python sg100_teleop/camera/view_head_camera_reference.py
@@ -61,6 +61,25 @@ def _validate_rgb(rgb: np.ndarray) -> None:
 def invert_rgb(rgb: np.ndarray) -> np.ndarray:
     _validate_rgb(rgb)
     return np.subtract(255, rgb, dtype=np.uint8)
+
+
+def load_reference_image(path: Path, *, width: int, height: int, cv2) -> np.ndarray:
+    """读取已经反色的参考图；保持像素和尺寸不变。"""
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"反色参考图不存在：{path}")
+    bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise ValueError(f"无法读取反色参考图：{path}")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    _validate_rgb(rgb)
+    expected_shape = (height, width, 3)
+    if rgb.shape != expected_shape:
+        raise ValueError(
+            f"反色参考图尺寸为 {rgb.shape[1]}x{rgb.shape[0]}，"
+            f"实时画面配置为 {width}x{height}；请使用相同分辨率"
+        )
+    return rgb
 
 
 def compose_preview(
@@ -132,6 +151,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path, default=Path("recording/head_camera_reference"),
         help="保存原图、反色图和相机信息的目录",
     )
+    parser.add_argument(
+        "--reference-image", type=Path,
+        help="已有的反色 PNG/JPEG；提供后跳过重新拍照，直接作为实时叠加背景",
+    )
     parser.add_argument("--capture-only", action="store_true", help="仅拍照保存，不打开窗口")
     return parser
 
@@ -143,11 +166,23 @@ def run_viewer(args, *, rs_module=None, cv2_module=None, camera_factory=RealSens
         raise ValueError("warmup-seconds 必须是有限非负数")
     if not math.isfinite(args.alpha) or not 0.0 <= args.alpha <= 1.0:
         raise ValueError("alpha 必须在 [0, 1] 内")
+    if args.reference_image is not None and args.capture_only:
+        raise ValueError("--reference-image 不能与 --capture-only 同时使用")
     if rs_module is None:
         import pyrealsense2 as rs_module
     if cv2_module is None:
         import cv2 as cv2_module
     cv2 = cv2_module
+    reference_path = (
+        args.reference_image.expanduser().resolve()
+        if args.reference_image is not None else None
+    )
+    loaded_background = (
+        load_reference_image(
+            reference_path, width=args.width, height=args.height, cv2=cv2,
+        )
+        if reference_path is not None else None
+    )
     serial, model = select_d455(rs_module, args.serial)
     camera = camera_factory(
         role="head", serial=serial, expected_model=model,
@@ -158,22 +193,31 @@ def run_viewer(args, *, rs_module=None, cv2_module=None, camera_factory=RealSens
     try:
         print(f"[HEAD] {model} serial={serial}", flush=True)
         camera.start()
-        reference = wait_for_reference(camera, args.warmup_seconds)
-        background_rgb = invert_rgb(reference.color_rgb)
-        paths = save_reference(
-            args.output_dir, reference, background_rgb, camera.metadata(), cv2,
-        )
-        print(f"[HEAD] 原图：{paths[0].resolve()}", flush=True)
-        print(f"[HEAD] 反色图：{paths[1].resolve()}", flush=True)
-        if args.capture_only:
-            return paths
+        if loaded_background is None:
+            reference = wait_for_reference(camera, args.warmup_seconds)
+            background_rgb = invert_rgb(reference.color_rgb)
+            paths = save_reference(
+                args.output_dir, reference, background_rgb, camera.metadata(), cv2,
+            )
+            print(f"[HEAD] 原图：{paths[0].resolve()}", flush=True)
+            print(f"[HEAD] 反色图：{paths[1].resolve()}", flush=True)
+            if args.capture_only:
+                return paths
+        else:
+            background_rgb = loaded_background
+            paths = (reference_path,)
+            print(f"[HEAD] 已加载反色图：{reference_path}", flush=True)
 
         if sys.platform.startswith("linux") and not (
             os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
         ):
+            if loaded_background is None:
+                raise RuntimeError(
+                    "原图和反色图已保存，但当前没有桌面显示；"
+                    "请在桌面终端运行，或使用 --capture-only"
+                )
             raise RuntimeError(
-                "原图和反色图已保存，但当前没有桌面显示；"
-                "请在桌面终端运行，或使用 --capture-only"
+                "已有反色图已加载，但当前没有桌面显示；请在桌面终端运行"
             )
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
         window_created = True
