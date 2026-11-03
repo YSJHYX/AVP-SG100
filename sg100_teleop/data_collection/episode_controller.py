@@ -1,9 +1,8 @@
-"""显式 On/Off/Y/N/Reset raw episode state machine。"""
+"""显式 On/I/Off/Y/N/Reset raw episode state machine。"""
 
 from __future__ import annotations
 
 from enum import Enum
-import json
 from pathlib import Path
 import time
 import uuid
@@ -88,13 +87,15 @@ class EpisodeController:
         self.sampler: SynchronizedSampler | None = None
         self.candidate_arrays: dict[str, np.ndarray] | None = None
         self.validation_report: ValidationReport | None = None
-        self.intervention_active = False
-        self.current_intervention_start: int | None = None
-        self.operator_interventions: list[dict[str, int | None]] = []
         self._telemetry_stats_start: dict[str, int] = {}
         self._robot_telemetry_present = False
 
     def turn_on(self) -> int:
+        return self._start_recording(instruction=self.language_instruction)
+
+    def _start_recording(
+        self, *, instruction: str, discard_before_monotonic_ns: int = 0
+    ) -> int:
         if self.state is not EpisodeState.READY:
             raise RuntimeError(f"On 仅在 READY 可用，当前 {self.state.value}")
         if not self.head_camera.ready:
@@ -107,7 +108,7 @@ class EpisodeController:
         self._robot_telemetry_present = bool(self.telemetry.is_alive())
         if self.telemetry_required and not self._robot_telemetry_present:
             raise RuntimeError("Robot telemetry publisher 未 READY或已 stale")
-        self.frozen_instruction = str(self.language_instruction)
+        self.frozen_instruction = str(instruction)
         self.buffer = VlaRawBuffer()
         self.pending_dir = self.output_dir / f".pending_{uuid.uuid4().hex}"
         self.episode_start_monotonic_ns = time.monotonic_ns()
@@ -115,9 +116,6 @@ class EpisodeController:
         self.episode_stop_request_monotonic_ns = 0
         self.candidate_arrays = None
         self.validation_report = None
-        self.intervention_active = False
-        self.current_intervention_start = None
-        self.operator_interventions = []
         self._telemetry_stats_start = dict(self.telemetry.stats)
         try:
             self.media_writer = BoundedMediaWriter(
@@ -137,6 +135,7 @@ class EpisodeController:
                 buffer=self.buffer,
                 media_writer=self.media_writer,
                 thresholds=self.thresholds,
+                discard_before_monotonic_ns=discard_before_monotonic_ns,
             )
             # Materialize tick 0 before returning RECORDING so even an
             # immediate operator Off has one row. On 边界语义下 tick 0 的
@@ -152,34 +151,76 @@ class EpisodeController:
             if self.media_writer is not None:
                 self.media_writer.close()
             if self.pending_dir is not None:
-                discard_pending(self.pending_dir)
+                self._discard_current_pending()
             self._clear_candidate_state()
             raise
         self.state = EpisodeState.RECORDING
         return self.next_episode_index
 
-    @property
-    def operator_intervention(self) -> bool:
-        return bool(self.operator_interventions)
+    def restart_recording(self) -> int:
+        """Discard only this unsaved attempt, then reuse the On recording path.
 
-    def toggle_intervention(
-        self, timestamp_ns: int | None = None
-    ) -> tuple[str, int]:
+        Stop the sampler and drain/close its writer before deleting its private
+        staging directory. Sources stay warm; stale source frames must not be
+        copied into the new recording. A failed restart never restores the
+        discarded attempt or silently enables robot motion.
+        """
         if self.state is not EpisodeState.RECORDING:
             raise RuntimeError("I 仅在 RECORDING 可用")
-        timestamp = int(time.monotonic_ns() if timestamp_ns is None else timestamp_ns)
-        if self.intervention_active:
-            self.operator_interventions[-1]["end_timestamp_ns"] = timestamp
-            self.intervention_active = False
-            self.current_intervention_start = None
-            return "END", timestamp
-        self.operator_interventions.append({
-            "start_timestamp_ns": timestamp,
-            "end_timestamp_ns": None,
-        })
-        self.intervention_active = True
-        self.current_intervention_start = timestamp
-        return "START", timestamp
+        self._check_pending_directory()
+        assert self.frozen_instruction is not None
+        instruction = self.frozen_instruction
+        requested_ns = time.monotonic_ns()
+        self.abort_pending()
+        self._wait_for_restart_frames(requested_ns)
+        return self._start_recording(
+            instruction=instruction, discard_before_monotonic_ns=requested_ns
+        )
+
+    def _wait_for_restart_frames(self, requested_ns: int) -> None:
+        """Wait at most 2 s for post-I frames, without restarting live sources.
+
+        On creates tick 0 immediately and requires one media set per row. Wait
+        before starting its new timeline rather than copying pre-I frames,
+        fabricating placeholder images, or saving an incomplete media timeline.
+        """
+        cameras = [("HEAD D455", self.head_camera)]
+        if "right_wrist" in self.required_cameras:
+            cameras.append(("WRIST D405", self.wrist_camera))
+        deadline_ns = time.monotonic_ns() + 2_000_000_000
+        while True:
+            now_ns = time.monotonic_ns()
+            fresh = True
+            for name, camera in cameras:
+                if camera is None or not camera.ready:
+                    raise RuntimeError(f"{name} stream 未 READY，无法重录")
+                frame = camera.latest_before(now_ns)
+                if frame is None or frame.host_receive_monotonic_ns < requested_ns:
+                    fresh = False
+                elif "depth" in self.camera_modalities and (
+                    frame.depth_uint16 is None
+                    or SynchronizedSampler._depth_source(frame)[0] < requested_ns
+                ):
+                    fresh = False
+            if fresh:
+                return
+            if now_ns >= deadline_ns:
+                raise RuntimeError("重录等待按 I 之后的新相机帧超时（2 秒）")
+            time.sleep(0.005)
+
+    def _check_pending_directory(self) -> Path:
+        pending = self.pending_dir
+        if (
+            pending is None
+            or pending.parent.resolve() != self.output_dir.resolve()
+            or not pending.name.startswith(".pending_")
+            or pending.is_symlink()
+        ):
+            raise RuntimeError("拒绝删除：当前路径不是 Recorder 自己的暂存目录")
+        return pending
+
+    def _discard_current_pending(self) -> None:
+        discard_pending(self._check_pending_directory())
 
     @staticmethod
     def _camera_metadata(
@@ -363,9 +404,6 @@ class EpisodeController:
         self.candidate_arrays = arrays
         self.validation_report = report
         self.state = EpisodeState.PENDING_CONFIRMATION
-        if self.intervention_active:
-            print("WARNING: Episode ended while operator intervention was still active.")
-            print("The final intervention interval has no end timestamp.")
         return report
 
     def confirm(self, decision: str) -> tuple[Path, Path] | None:
@@ -374,13 +412,6 @@ class EpisodeController:
         choice = str(decision).strip().lower()
         if choice == "y":
             assert self.candidate_arrays is not None and self.pending_dir is not None
-            # NPZ readers use allow_pickle=False; JSON preserves open intervals.
-            with (self.pending_dir / "metadata.json").open("w", encoding="utf-8") as handle:
-                json.dump({
-                    "operator_intervention": self.operator_intervention,
-                    "operator_interventions": self.operator_interventions,
-                }, handle)
-                handle.write("\n")
             saved = save_episode_atomic(
                 self.output_dir,
                 self.next_episode_index,
@@ -393,7 +424,7 @@ class EpisodeController:
             return saved
         if choice in ("n", "reset"):
             assert self.pending_dir is not None
-            discard_pending(self.pending_dir)
+            self._discard_current_pending()
             if choice == "reset":
                 self.telemetry.clear()
                 self.head_camera.clear()
@@ -413,6 +444,8 @@ class EpisodeController:
         if self.state is EpisodeState.RECORDING:
             if value == "off":
                 return self.turn_off()
+            if value == "i":
+                return self.restart_recording()
             return None
         if value in ("y", "n", "reset"):
             return self.confirm(value)
@@ -424,7 +457,7 @@ class EpisodeController:
         if self.media_writer is not None:
             self.media_writer.close()
         if self.pending_dir is not None:
-            discard_pending(self.pending_dir)
+            self._discard_current_pending()
         self._clear_candidate_state()
         self.state = EpisodeState.READY
 
@@ -439,8 +472,5 @@ class EpisodeController:
         self.sampler = None
         self.candidate_arrays = None
         self.validation_report = None
-        self.intervention_active = False
-        self.current_intervention_start = None
-        self.operator_interventions = []
         self._telemetry_stats_start = {}
         self._robot_telemetry_present = False

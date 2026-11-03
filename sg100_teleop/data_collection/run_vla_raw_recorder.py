@@ -147,7 +147,9 @@ def create_runtime_sources(
 
 
 def _read_recording_command(controller: EpisodeController, prompt: str) -> str:
-    """Read Off as a line while recognizing I/i immediately on the recorder TTY."""
+    """Read Off as a line; I/i discards and restarts only an active recording."""
+    if controller.state is not EpisodeState.RECORDING:
+        raise RuntimeError("I 仅在输入 On、进入 RECORDING 后可用")
     fd = sys.stdin.fileno()
     saved_tty = termios.tcgetattr(fd) if sys.stdin.isatty() else None
     command = bytearray()
@@ -163,8 +165,18 @@ def _read_recording_command(controller: EpisodeController, prompt: str) -> str:
             if not key or key == b"\x04":
                 raise EOFError("recorder input closed")
             if key in (b"I", b"i"):
-                event, timestamp_ns = controller.toggle_intervention()
-                print(f"\n[INTERVENTION {event}] timestamp_ns={timestamp_ns}")
+                try:
+                    index = controller.restart_recording()
+                except Exception:
+                    print("\n[RECORDING RESTART FAILED] 重录失败，停止 Recorder；请检查错误。")
+                    raise
+                command.clear()
+                print(
+                    "\n[RECORDING RESTARTED] 已丢弃本次旧片段；"
+                    f"candidate episode index: {index}; "
+                    f"start_timestamp_ns={controller.episode_start_monotonic_ns}"
+                )
+                print(prompt, end="", flush=True)
                 continue
             if key in (b"\x7f", b"\x08"):
                 if command:
@@ -222,6 +234,7 @@ def main() -> None:
         if wrist is not None:
             print("DUAL CAMERA SYNCHRONIZATION: HOST MONOTONIC SOFTWARE ALIGNMENT")
         print("STATE: READY")
+        print("录制中短按 I/i：直接丢弃当前未保存片段并重录（无需回车）；Off：结束录制。")
         while True:
             if controller.state is EpisodeState.PENDING_CONFIRMATION:
                 prompt = "Keep this episode? [Y/N/Reset]: "

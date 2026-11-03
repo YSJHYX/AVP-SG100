@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pty
 import socket
+import termios
 import threading
 import time
 from types import SimpleNamespace
@@ -348,7 +349,7 @@ def test_causal_alignment_staleness_17d_and_equal_n() -> None:
     assert not stale_buffer.arrays()["head_camera_valid"][0]
 
 
-def _controller(tmp_path: Path):
+def _controller(tmp_path: Path, **kwargs):
     timestamp = time.monotonic_ns() - 1_000_000
     telemetry = FakeTelemetry([_packet(timestamp)])
     head = FakeCamera("head", [_frame("head", timestamp, 1)])
@@ -360,6 +361,7 @@ def _controller(tmp_path: Path):
         telemetry=telemetry,
         head_camera=head,
         wrist_camera=wrist,
+        **kwargs,
     ), telemetry, head, wrist
 
 
@@ -420,20 +422,15 @@ def test_y_saves_npz_media_and_increments_index(tmp_path: Path) -> None:
     assert len(tuple((saved[1] / "head" / "depth").glob("*.png"))) >= 1
 
 
-def test_clean_episode_saves_empty_intervals_and_preserves_raw_contract(
+def test_clean_episode_preserves_raw_contract_without_old_intervention_metadata(
     tmp_path: Path,
 ) -> None:
     controller, _, _, _ = _controller(tmp_path)
     controller.handle_input("On")
-    assert controller.operator_intervention is False
-    assert controller.operator_interventions == []
     controller.handle_input("Off")
     original = controller.candidate_arrays
     saved = controller.handle_input("Y")
-    assert json.loads((saved[1] / "metadata.json").read_text()) == {
-        "operator_intervention": False,
-        "operator_interventions": [],
-    }
+    assert not (saved[1] / "metadata.json").exists()
     with np.load(saved[0], allow_pickle=False) as archive:
         assert set(archive.files) == set(original)
         n = archive["timestamp_ns"].shape[0]
@@ -447,93 +444,237 @@ def test_clean_episode_saves_empty_intervals_and_preserves_raw_contract(
             np.testing.assert_array_equal(archive[key], original[key])
 
 
-def test_complete_intervention_interval_and_recording_continues(tmp_path: Path) -> None:
+def test_i_is_inactive_before_on_and_after_off(tmp_path: Path) -> None:
     controller, _, _, _ = _controller(tmp_path)
-    controller.handle_input("On")
-    frames_before = len(controller.buffer)
-    assert controller.toggle_intervention(100) == ("START", 100)
-    assert controller.toggle_intervention(200) == ("END", 200)
-    assert controller.intervention_active is False
-    assert controller.operator_intervention is True
-    assert controller.operator_interventions == [
-        {"start_timestamp_ns": 100, "end_timestamp_ns": 200}
-    ]
-    time.sleep(0.07)
-    assert controller.state is EpisodeState.RECORDING
-    assert len(controller.buffer) > frames_before
-    controller.handle_input("Off")
-    saved = controller.handle_input("Y")
-    assert json.loads((saved[1] / "metadata.json").read_text()) == {
-        "operator_intervention": True,
-        "operator_interventions": [
-            {"start_timestamp_ns": 100, "end_timestamp_ns": 200}
-        ],
-    }
+    for key in ("i", "I"):
+        assert controller.handle_input(key) is None
+        with pytest.raises(RuntimeError, match="仅在 RECORDING"):
+            controller.restart_recording()
+    assert controller.state is EpisodeState.READY
+    assert not tuple(tmp_path.iterdir())
+    controller.handle_input("on")
+    controller.handle_input("off")
+    pending = controller.pending_dir
+    for key in ("i", "I"):
+        assert controller.handle_input(key) is None
+        with pytest.raises(RuntimeError, match="仅在 RECORDING"):
+            controller.restart_recording()
+    assert controller.state is EpisodeState.PENDING_CONFIRMATION
+    assert pending.exists()
+    controller.handle_input("N")
 
 
-def test_multiple_intervention_intervals_keep_order(tmp_path: Path) -> None:
-    controller, _, _, _ = _controller(tmp_path)
-    controller.handle_input("On")
-    for timestamp in (100, 150, 300, 350):
-        controller.toggle_intervention(timestamp)
-    assert controller.operator_interventions == [
-        {"start_timestamp_ns": 100, "end_timestamp_ns": 150},
-        {"start_timestamp_ns": 300, "end_timestamp_ns": 350},
-    ]
-    controller.handle_input("Off")
-    saved = controller.handle_input("Y")
-    assert len(json.loads((saved[1] / "metadata.json").read_text())["operator_interventions"]) == 2
+def _restart_with_fresh_sources(controller, telemetry, head, wrist, key="i"):
+    """Model live camera/telemetry threads continuing to publish during I."""
+    stop = threading.Event()
+
+    def publish():
+        while not stop.is_set():
+            timestamp = time.monotonic_ns()
+            telemetry.packets.append(_packet(timestamp, sequence=101))
+            head.frames.append(_frame("head", timestamp, 11))
+            wrist.frames.append(_frame("right_wrist", timestamp, 22))
+            stop.wait(0.005)
+
+    thread = threading.Thread(target=publish, daemon=True)
+    thread.start()
+    try:
+        return controller.handle_input(key)
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
 
 
-def test_incomplete_intervention_has_null_end_and_warning(
-    tmp_path: Path, capsys,
+@pytest.mark.parametrize("roles", [("head",), ("head", "right_wrist")])
+@pytest.mark.parametrize("modalities", [("rgb",), ("rgb", "depth")])
+def test_i_discards_only_unsaved_attempt_and_saves_only_fresh_recording(
+    tmp_path: Path, roles, modalities,
 ) -> None:
-    controller, _, _, _ = _controller(tmp_path)
-    controller.handle_input("On")
-    controller.toggle_intervention(100)
-    controller.handle_input("Off")
-    assert "WARNING: Episode ended while operator intervention was still active." in capsys.readouterr().out
+    # Existing saved data must never be touched by the destructive hotkey.
+    previous_npz = tmp_path / "episode_000000.npz"
+    previous_npz.write_bytes(b"previous saved data")
+    previous_media = tmp_path / "episode_000000_media"
+    previous_media.mkdir()
+    (previous_media / "keep.txt").write_text("keep")
+    controller, telemetry, head, wrist = _controller(
+        tmp_path, required_cameras=roles, camera_modalities=modalities,
+    )
+    if "right_wrist" not in roles:
+        controller.wrist_camera = None
+    assert controller.handle_input("on") == 1
+    old_pending = controller.pending_dir
+    old_buffer, old_sampler, old_writer = controller.buffer, controller.sampler, controller.media_writer
+    old_start = controller.episode_start_monotonic_ns
+    (old_pending / "discard_this_attempt.txt").write_text("discard")
+    time.sleep(0.07)
+    controller.language_instruction = "Changed for a future episode"
+    pressed_ns = time.monotonic_ns()
+    assert _restart_with_fresh_sources(controller, telemetry, head, wrist) == 1
+    assert controller.state is EpisodeState.RECORDING
+    assert controller.next_episode_index == 1
+    assert controller.frozen_instruction == "Pick the object"
+    assert controller.episode_start_monotonic_ns >= pressed_ns > old_start
+    assert controller.pending_dir != old_pending and not old_pending.exists()
+    assert controller.buffer is not old_buffer
+    assert old_sampler._thread is None and not old_writer._thread.is_alive()
+    # Stale camera/telemetry rings remain warm, but cannot leak into this take.
+    arrays = controller.buffer.arrays()
+    assert np.all(arrays["head_camera_frame_number"] == 11)
+    assert np.all(arrays["head_camera_host_timestamp_ns"] >= pressed_ns)
+    assert np.all(arrays["telemetry_publish_timestamp_ns"] >= pressed_ns)
+    assert telemetry.cleared == head.cleared == wrist.cleared == 0
+    timestamp = time.monotonic_ns()
+    telemetry.packets.append(_packet(timestamp, sequence=101))
+    head.frames.append(_frame("head", timestamp, 11))
+    wrist.frames.append(_frame("right_wrist", timestamp, 22))
+    time.sleep(0.09)
+    report = controller.handle_input("off")
+    assert report.quality == "PASS", report.errors
+    new_start = controller.episode_start_monotonic_ns
     saved = controller.handle_input("Y")
-    assert json.loads((saved[1] / "metadata.json").read_text()) == {
-        "operator_intervention": True,
-        "operator_interventions": [
-            {"start_timestamp_ns": 100, "end_timestamp_ns": None}
-        ],
-    }
+    assert saved[0].name == "episode_000001.npz"
+    assert controller.next_episode_index == 2
+    assert previous_npz.read_bytes() == b"previous saved data"
+    assert (previous_media / "keep.txt").read_text() == "keep"
+    assert not tuple(tmp_path.glob(".pending_*"))
+    assert not (saved[1] / "metadata.json").exists()
+    with np.load(saved[0], allow_pickle=False) as archive:
+        assert archive["episode_start_monotonic_ns"].item() == new_start
+        assert np.all(archive["timestamp_ns"] >= new_start)
+        assert archive["timestamp_relative_ns"][0] == 0
+        assert np.any(archive["head_camera_frame_number"] == 11)
+        assert not np.any(archive["head_camera_frame_number"] == 1)
+        n = len(archive["timestamp_ns"])
+        assert archive["robot_qcmd_17d_rad"].shape == (n, 17)
+        assert archive["robot_qpos_17d_rad"].shape == (n, 17)
+        assert archive["language_instruction"].item() == "Pick the object"
+    import cv2
+
+    for role, value in (("head", 11), ("right_wrist", 22)):
+        images = tuple((saved[1] / role / "rgb").glob("*.jpg"))
+        if role not in roles:
+            assert not images
+            continue
+        assert len(images) == n
+        assert all(np.all(cv2.imread(str(path)) == value) for path in images)
+        depths = tuple((saved[1] / role / "depth").glob("*.png"))
+        assert bool(depths) == ("depth" in modalities)
+        assert all(np.all(cv2.imread(str(path), cv2.IMREAD_UNCHANGED) == value) for path in depths)
 
 
-def test_intervention_state_resets_on_next_episode(tmp_path: Path) -> None:
-    controller, _, _, _ = _controller(tmp_path)
+def test_repeated_i_always_restarts_and_does_not_consume_index(tmp_path: Path) -> None:
+    controller, telemetry, head, wrist = _controller(tmp_path)
     controller.handle_input("On")
-    controller.toggle_intervention(100)
+    for key in ("I", "i", "I"):
+        pending = controller.pending_dir
+        start = controller.episode_start_monotonic_ns
+        assert _restart_with_fresh_sources(controller, telemetry, head, wrist, key) == 0
+        assert not pending.exists()
+        assert controller.episode_start_monotonic_ns > start
+        assert controller.state is EpisodeState.RECORDING
+        assert len(tuple(tmp_path.glob(".pending_*"))) == 1
     controller.handle_input("Off")
     controller.handle_input("N")
     assert controller.next_episode_index == 0
+    assert not tuple(tmp_path.iterdir())
+
+
+def test_restart_readiness_failure_does_not_keep_old_attempt(tmp_path: Path) -> None:
+    controller, _, head, _ = _controller(tmp_path)
     controller.handle_input("On")
-    assert controller.operator_intervention is False
-    assert controller.operator_interventions == []
-    assert controller.intervention_active is False
-    assert controller.current_intervention_start is None
-    controller.handle_input("Off")
-    controller.handle_input("N")
+    pending = controller.pending_dir
+    old_writer = controller.media_writer
+    head.frames.clear()
+    with pytest.raises(RuntimeError, match="HEAD D455"):
+        controller.restart_recording()
+    assert not pending.exists()
+    assert not old_writer._thread.is_alive()
+    assert controller.state is EpisodeState.READY
+    assert controller.buffer is controller.sampler is controller.media_writer is None
+    assert controller.next_episode_index == 0
 
 
-def test_interval_timestamp_uses_master_monotonic_clock(tmp_path: Path) -> None:
+def test_restart_fresh_frame_timeout_leaves_no_old_attempt(tmp_path: Path) -> None:
     controller, _, _, _ = _controller(tmp_path)
     controller.handle_input("On")
-    before = time.monotonic_ns()
-    assert controller.toggle_intervention()[0] == "START"
-    after = time.monotonic_ns()
-    start = controller.current_intervention_start
-    assert before <= start <= after
-    controller.handle_input("Off")
-    assert controller.candidate_arrays["timestamp_ns"][0] <= start
-    assert start <= controller.episode_stop_request_monotonic_ns
-    controller.handle_input("N")
+    pending = controller.pending_dir
+    old_writer = controller.media_writer
+    with pytest.raises(RuntimeError, match="新相机帧超时"):
+        controller.restart_recording()
+    assert not pending.exists()
+    assert not old_writer._thread.is_alive()
+    assert controller.state is EpisodeState.READY
+    assert controller.pending_dir is controller.buffer is None
+    assert controller.next_episode_index == 0
+
+
+def test_recording_key_reader_is_not_active_before_on() -> None:
+    with pytest.raises(RuntimeError, match="输入 On"):
+        _read_recording_command(SimpleNamespace(state=EpisodeState.READY), "unused")
+
+
+def test_restart_sampler_does_not_enqueue_pre_i_ring_frames() -> None:
+    cutoff = 1_000_000_000
+    tick = cutoff + 10_000
+    buffer = VlaRawBuffer()
+    writer = MemoryWriter()
+    sampler = SynchronizedSampler(
+        hz=30, start_monotonic_ns=tick,
+        telemetry=FakeTelemetry([_packet(cutoff - 1)]),
+        head_camera=FakeCamera("head", [_frame("head", cutoff - 1, 1)]),
+        wrist_camera=FakeCamera("right_wrist", [_frame("right_wrist", cutoff - 1, 2)]),
+        buffer=buffer, media_writer=writer, thresholds=FreshnessThresholds(),
+        discard_before_monotonic_ns=cutoff,
+    )
+    sampler.sample_tick(0, tick, tick)
+    assert writer.items == []
+    assert buffer.arrays()["head_camera_frame_number"].tolist() == [-1]
+    assert buffer.arrays()["telemetry_publish_timestamp_ns"].tolist() == [0]
+
+
+@pytest.mark.parametrize("foreign_name", ["episode_000000_media", "../.pending_foreign"])
+def test_restart_refuses_to_delete_non_owned_directory(tmp_path: Path, foreign_name) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    owned = controller.pending_dir
+    foreign = tmp_path / foreign_name
+    foreign.mkdir(exist_ok=True)
+    (foreign / "keep.txt").write_text("keep")
+    controller.pending_dir = foreign
+    try:
+        with pytest.raises(RuntimeError, match="自己的暂存目录"):
+            controller.restart_recording()
+        assert (foreign / "keep.txt").read_text() == "keep"
+        assert owned.exists()
+    finally:
+        controller.pending_dir = owned
+        controller.abort_pending()
+
+
+def test_restart_and_cleanup_refuse_pending_symlink(tmp_path: Path) -> None:
+    controller, _, _, _ = _controller(tmp_path)
+    controller.handle_input("On")
+    owned = controller.pending_dir
+    saved_media = tmp_path / "episode_000000_media"
+    saved_media.mkdir()
+    (saved_media / "keep.txt").write_text("keep")
+    link = tmp_path / ".pending_symlink"
+    link.symlink_to(saved_media, target_is_directory=True)
+    controller.pending_dir = link
+    try:
+        with pytest.raises(RuntimeError, match="自己的暂存目录"):
+            controller.restart_recording()
+        with pytest.raises(RuntimeError, match="自己的暂存目录"):
+            controller.abort_pending()
+        assert link.is_symlink()
+        assert (saved_media / "keep.txt").read_text() == "keep"
+    finally:
+        controller.pending_dir = owned
+        controller.abort_pending()
 
 
 @pytest.mark.parametrize("key", [b"I", b"i"])
-def test_recording_tty_toggles_without_enter_and_accepts_off(
+def test_recording_tty_restarts_without_enter_clears_partial_input_and_accepts_off(
     monkeypatch, key: bytes,
 ) -> None:
     master, slave = pty.openpty()
@@ -548,18 +689,23 @@ def test_recording_tty_toggles_without_enter_and_accepts_off(
         ready.set()
 
     class Controller:
-        def toggle_intervention(self):
-            events.append("START" if not events else "END")
+        state = EpisodeState.RECORDING
+        episode_start_monotonic_ns = 0
+
+        def restart_recording(self):
+            events.append("RESTART")
+            self.episode_start_monotonic_ns += 100
             if len(events) == 1:
                 started.set()
-                return "START", 100
-            ended.set()
-            return "END", 200
+            else:
+                ended.set()
+            return 0
 
     result = []
     monkeypatch.setattr(recorder_cli.tty, "setcbreak", setcbreak)
     try:
         with os.fdopen(slave, "r", encoding="utf-8") as stream:
+            saved_tty = termios.tcgetattr(stream.fileno())
             monkeypatch.setattr(recorder_cli.sys, "stdin", stream)
             worker = threading.Thread(
                 target=lambda: result.append(
@@ -569,16 +715,18 @@ def test_recording_tty_toggles_without_enter_and_accepts_off(
             )
             worker.start()
             assert ready.wait(1.0)
+            os.write(master, b"Of")  # This incomplete old command must be discarded.
             os.write(master, key)
             assert started.wait(1.0)  # No Enter was sent.
             os.write(master, key)
             assert ended.wait(1.0)
-            assert events == ["START", "END"]
+            assert events == ["RESTART", "RESTART"]
             assert worker.is_alive()
             os.write(master, b"Off\n")
             worker.join(timeout=1.0)
             assert not worker.is_alive()
             assert result == ["Off"]
+            assert termios.tcgetattr(stream.fileno()) == saved_tty
     finally:
         os.close(master)
 

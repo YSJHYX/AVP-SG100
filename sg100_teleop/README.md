@@ -276,7 +276,11 @@ final episode index。
 
 **On/Off 不得与其他事件混淆**：`C` 不是录制开始，`A` 不是录制开始，`D` 不是
 录制结束，`E` 不是正常录制结束。只有 `On`（被 state machine 接受）开始
-episode；只有 `Off` 正常停止 episode。On 前允许 camera/telemetry warmup、AVP
+episode；录制中 `I/i` 可直接丢弃当前未保存片段并复用 On 路径重录，
+不能在 On 前或 Off 后激活，也不会增加 episode 编号或影响历史已保存数据。
+每次 I 都重录；原片段的媒体、采样缓存和时间轴会删除重建，相机和遥测连接
+保持开启，旧源帧不会写进新片段。只有 `Off` 正常停止 episode。
+On 前允许 camera/telemetry warmup、AVP
 tracking、`C` 标定，但 pre-On 阶段 0 dataset row、0 media enqueue；On 后第一个
 正式 source sample 必须晚于 `episode_start_monotonic_ns`（pre-On ring 数据只能
 以 invalid 出现，不静默使用）。Off 被接受后立即固定
