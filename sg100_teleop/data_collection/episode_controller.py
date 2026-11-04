@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+import json
 from pathlib import Path
 import time
 import uuid
@@ -90,6 +91,7 @@ class EpisodeController:
         self.validation_report: ValidationReport | None = None
         self._telemetry_stats_start: dict[str, int] = {}
         self._robot_telemetry_present = False
+        self.failure_recovery = False
 
     def turn_on(self) -> int:
         return self._start_recording(instruction=self.language_instruction)
@@ -109,6 +111,7 @@ class EpisodeController:
         self._robot_telemetry_present = bool(self.telemetry.is_alive())
         if self.telemetry_required and not self._robot_telemetry_present:
             raise RuntimeError("Robot telemetry publisher 未 READY或已 stale")
+        self.failure_recovery = False
         self.frozen_instruction = str(instruction)
         self.buffer = VlaRawBuffer()
         self.pending_dir = self.output_dir / f".pending_{uuid.uuid4().hex}"
@@ -174,9 +177,11 @@ class EpisodeController:
         requested_ns = time.monotonic_ns()
         self.abort_pending()
         self._wait_for_restart_frames(requested_ns)
-        return self._start_recording(
+        index = self._start_recording(
             instruction=instruction, discard_before_monotonic_ns=requested_ns
         )
+        self.failure_recovery = True
+        return index
 
     def _wait_for_restart_frames(self, requested_ns: int) -> None:
         """Wait at most 2 s for post-I frames, without restarting live sources.
@@ -408,12 +413,29 @@ class EpisodeController:
         self.state = EpisodeState.PENDING_CONFIRMATION
         return report
 
-    def confirm(self, decision: str) -> tuple[Path, Path] | None:
+    def confirm(
+        self, decision: str, *, is_dagger: bool = False
+    ) -> tuple[Path, Path] | None:
         if self.state is not EpisodeState.PENDING_CONFIRMATION:
             raise RuntimeError("Y/N/Reset 仅在 PENDING_CONFIRMATION 可用")
         choice = str(decision).strip().lower()
         if choice == "y":
             assert self.candidate_arrays is not None and self.pending_dir is not None
+            # Independent episode annotations; never change RAW arrays or validity.
+            tags = []
+            if self.failure_recovery:
+                tags.append("failure_recovery")
+            if is_dagger:
+                tags.append("dagger")
+            metadata_path = self.pending_dir / "metadata.json"
+            if tags:
+                metadata_path.write_text(
+                    json.dumps({"episode_tags": tags}, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+            elif metadata_path.exists():
+                # A failed save may be retried with a different DAgger answer.
+                metadata_path.unlink()
             saved = save_episode_atomic(
                 self.output_dir,
                 self.next_episode_index,
@@ -437,7 +459,7 @@ class EpisodeController:
             return None
         raise ValueError("PENDING_CONFIRMATION 只接受 Y、N 或 Reset")
 
-    def handle_input(self, command: str):
+    def handle_input(self, command: str, *, is_dagger: bool = False):
         value = str(command).strip().lower()
         if self.state is EpisodeState.READY:
             if value == "on":
@@ -450,7 +472,7 @@ class EpisodeController:
                 return self.restart_recording()
             return None
         if value in ("y", "n", "reset"):
-            return self.confirm(value)
+            return self.confirm(value, is_dagger=is_dagger)
         return None
 
     def abort_pending(self) -> None:
@@ -474,5 +496,6 @@ class EpisodeController:
         self.sampler = None
         self.candidate_arrays = None
         self.validation_report = None
+        self.failure_recovery = False
         self._telemetry_stats_start = {}
         self._robot_telemetry_present = False
