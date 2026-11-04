@@ -204,8 +204,17 @@ effective cache 时，`robot_qcmd_17d_valid` 可以为 0，effective17 保持 Na
 ### D. Future real RM65 + restricted SG100 collection
 
 > **这不是 full-hand production 命令。只有完成现场 safety checklist 且明确决定进行
-> 真实硬件验证时才可改成 real。启动仍不授权运动；`A` 才授权，`D` 只撤销。
+> 真实硬件验证时才可改成 real。默认双真机连接后会执行初始姿态动作；
+> 后续遥操作仍需 `C/A` 授权，`D` 只撤销遥操作授权。
 > 当前 SG100 只允许 `index_j3`（J6），J7/full-11D 禁止。**
+
+连接后回初始位置的参数为 `--origin_position {true,false}`（也接受
+`--origin-position`）。默认 `true` 不改变原有行为：双真机连接成功后先给
+SG100 发送初始手势，再执行 RM65 的初始关节姿态 movej。若不希望机械臂和
+机械手自动回初始位置，在启动命令中追加 `--origin_position false`；这会同时
+跳过上述两条位置指令，保留连接、反馈读取、被动 realtime 入口和 `C/A`
+授权流程。它不是断电或主动锁定当前位置，也不会禁止后续已授权的遥操作。
+单真机及纯仿真的原有启动方式不变。
 
 Terminal 1 受限模板（必须替换占位符并先核对 tool、急停、围栏与初始姿态）：
 

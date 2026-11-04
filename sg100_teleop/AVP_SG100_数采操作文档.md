@@ -133,12 +133,14 @@ READY (输入 On):
 
 conda activate avp_sg100
 
-python -m sg100_teleop.sim.run_avp_arm_hand_sim     --calibration sg100_teleop/config/avp_right_calibration.yaml   --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_realworld_teleop_compat.usdz --wrist-roll-ik   --arm-backend real   --arm-ip 192.168.1.18   --arm-safety-profile 10   --arm-tool-profile sg100_attached   --hand-backend real   --hand-port /dev/ttyUSB0 --telemetry-publish 127.0.0.1:5560   --telemetry-publish-hz 100   --verbose  --ip 192.168.2.106
+python -m sg100_teleop.sim.run_avp_arm_hand_sim     --calibration sg100_teleop/config/avp_right_calibration.yaml   --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_realworld_teleop_compat.usdz --wrist-roll-ik   --arm-backend real   --arm-ip 192.168.1.18   --arm-safety-profile 10   --arm-tool-profile sg100_attached   --hand-backend real   --hand-port /dev/ttyUSB0 --origin_position true --telemetry-publish 127.0.0.1:5560   --telemetry-publish-hz 100   --verbose  --ip 192.168.2.106
 ```
 
 说明：
 
-- 启动程序不会自动授权机械臂或手运动；
+- `--origin_position` 默认 `true`，不改变原有流程：双真机连接成功后会先设置机械手初始姿态，再让机械臂回到配置的初始关节位置；启动前务必确认路径和工作区安全；
+- 如不希望机械臂、机械手回初始位置，将参数改成 `--origin_position false`（也接受 `--origin-position false`）。这会同时跳过两者的启动位置指令，连接、反馈读取和后续 `C/A` 授权不变；它不是断电或主动锁定当前位置；
+- 后续遥操作仍需先按 `C` 建立锚点，再按 `A` 授权；
 - `--telemetry-publish` 是正式 VLA 数采必需参数；
 - `--arm-joint-compare` 只增加 2 Hz 只读诊断日志，可用于核对 MuJoCo、反馈和实际下发角度；
 - `arm_not_moving` 自动停止默认关闭，但反馈超时、目标超时、控制器故障和大跟随误差保护仍然有效；
