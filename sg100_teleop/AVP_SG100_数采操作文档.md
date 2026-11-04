@@ -98,18 +98,15 @@ ping -c 2 192.168.2.190
 将 `<D455_SERIAL>`、`<D405_SERIAL>` 和任务指令替换为本次实际值：
 
 ```bash
-cd /home/khan/AVP-SG100
+
 conda activate avp_sg100
 
-python -m sg100_teleop.data_collection.run_vla_raw_recorder \
-  --telemetry 127.0.0.1:5560 \
-  --required-cameras head,right_wrist \
-  --camera-modalities rgb \
-  --head-serial <D455_SERIAL> \
-  --wrist-serial <D405_SERIAL> \
-  --instruction "Pick up the object and place it in the target area" \
-  --output-dir recording/vla_raw \
-  --hz 30
+# 空气炸锅任务
+python -m   sg100_teleop.data_collection.run_vla_raw_recorder   --telemetry 127.0.0.1:5560   --required-cameras head,right_wrist   --camera-modalities rgb   --head-serial 333422300281   --wrist-serial 262622274076   --instruction "Pull the inner basket out of the air fryer and place it on the table."   --output-dir recording/vla_raw   --hz 30
+
+
+# 电机支撑件任务
+python -m   sg100_teleop.data_collection.run_vla_raw_recorder   --telemetry 127.0.0.1:5560   --required-cameras head,right_wrist   --camera-modalities rgb   --head-serial 333422300281   --wrist-serial 262622274076   --instruction "Place the motor support bracket into the fixture."   --output-dir recording/vla_raw   --hz 30
 ```
 
 启动成功后应看到：
@@ -133,30 +130,17 @@ READY (输入 On):
 ### 3.2 终端 2：AVP 真机控制与遥测
 
 ```bash
-cd /home/khan/AVP-SG100
+
 conda activate avp_sg100
 
-python -m sg100_teleop.sim.run_avp_arm_hand_sim \
-  --ip 192.168.2.190 \
-  --arm-backend real \
-  --arm-ip 192.168.1.18 \
-  --arm-safety-profile 10 \
-  --arm-tool-profile sg100_attached \
-  --arm-follow low \
-  --hand-backend real \
-  --hand-port /dev/ttyUSB0 \
-  --calibration sg100_teleop/config/avp_right_calibration.yaml \
-  --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_avp_grasp_v8_compat.usdz \
-  --wrist-roll-ik \
-  --telemetry-publish 127.0.0.1:5560 \
-  --telemetry-publish-hz 100 \
-  --arm-joint-compare \
-  --sg100-command-debug
+python -m sg100_teleop.sim.run_avp_arm_hand_sim     --calibration sg100_teleop/config/avp_right_calibration.yaml   --usdz sg100_teleop/assets/rm65_sg100/usdz/rm65_sg100_realworld_teleop_compat.usdz --wrist-roll-ik   --arm-backend real   --arm-ip 192.168.1.18   --arm-safety-profile 10   --arm-tool-profile sg100_attached   --hand-backend real   --hand-port /dev/ttyUSB0 --origin_position true --telemetry-publish 127.0.0.1:5560   --telemetry-publish-hz 100   --verbose  --ip 192.168.2.106
 ```
 
 说明：
 
-- 启动程序不会自动授权机械臂或手运动；
+- `--origin_position` 默认 `true`，不改变原有流程：双真机连接成功后会先设置机械手初始姿态，再让机械臂回到配置的初始关节位置；启动前务必确认路径和工作区安全；
+- 如不希望机械臂、机械手回初始位置，将参数改成 `--origin_position false`（也接受 `--origin-position false`）。这会同时跳过两者的启动位置指令，连接、反馈读取和后续 `C/A` 授权不变；它不是断电或主动锁定当前位置；
+- 后续遥操作仍需先按 `C` 建立锚点，再按 `A` 授权；
 - `--telemetry-publish` 是正式 VLA 数采必需参数；
 - `--arm-joint-compare` 只增加 2 Hz 只读诊断日志，可用于核对 MuJoCo、反馈和实际下发角度；
 - `arm_not_moving` 自动停止默认关闭，但反馈超时、目标超时、控制器故障和大跟随误差保护仍然有效；
@@ -208,37 +192,28 @@ language (frozen): ...
 - 不要移动相机、机器人底座或任务台；
 - 发现跟踪丢失、异常噪声、碰撞趋势或姿态异常时，立即按 `D`，必要时使用物理急停。
 
-### 4.4 人工干预标记：I 键
+### 4.4 丢弃当前片段并重录：I 键
 
-录制中，在 **Recorder 终端**按 `I` 或 `i`（无需回车）标记 operator intervention：人的手、工具或其他外部动作直接进入工作环境，物理改变任务物体、机械臂、灵巧手或场景的状态。例如扶正掉落物体、重摆目标物、解除异常接触，或将场景恢复到可继续操作的状态。
+启动 `python -m sg100_teleop.data_collection.run_vla_raw_recorder`，输入 `On` 并进入 `RECORDING` 后，才会激活 **Recorder 终端**中的 `I` / `i` 热键。短按一次，无需回车，就会直接丢弃从本次 `On`（或上一次 `I` 重录）开始到现在的整个未保存片段，并自动重新开始录制，不需要再次输入 `On`。
 
-**正常 AVP 遥操作修正不属于人工干预。**若只是继续通过 AVP 控制 RM65/SG100 重新对准或修正抓取，不需要按 `I`。
+每次 `I` 都表示重录，不再是起止标记，也没有第二次确认。删除范围包括当前暂存目录中的 RGB/深度文件、机器人采样数据和旧时间轴；已经用 `Y` 保存的 episode 不受影响，候选 episode 编号也不会增加。旧片段丢弃后不能从 Recorder 恢复。
 
-`I` 不是运动停止或安全授权键。人工进入工作区前，仍须先按现场安全流程用 `D` 撤销真机运动授权并确认机器人停止；必要时使用物理急停。每次人工物理修正按以下顺序操作：
+重录复用同一个 Recorder 的 `On` 启动路径：保持相机和遥测连接、沿用本条已冻结的任务指令和采集配置，重新建立暂存目录、buffer、writer 和 sampler，帧编号与相对时间从 0 重新计起。程序会先等待按键之后的新相机帧（最多 2 秒），再开始新时间轴，避免旧画面回流或首行缺少媒体文件；不会伪造占位图。启动边界的有效性仍按原有 RAW 合同检查，不伪造有效数据。
 
-1. 发现需要人工物理修正时，先执行上述安全停止，再在手或工具进入工作区及 head/wrist 相机视野**之前**按第一次 `I`；
-2. 确认 Recorder 打印 `[INTERVENTION START] timestamp_ns=<start>`；
-3. 进行人工修正；
-4. 人手和工具完全离开工作区及 head/wrist 相机视野，等待场景重新稳定；
-5. 再按第二次 `I`，确认打印 `[INTERVENTION END] timestamp_ns=<end>`；
-6. 再次确认现场安全并按 `A` 授权后，继续正常 AVP 遥操作。同一 episode 可重复 START/END，记录多个区间。
+成功时确认终端打印 `[RECORDING RESTARTED]`，随后继续录制；输入 `Off` 并回车结束，再按原来的 `Y/N/Reset` 流程保存或丢弃。最后 `Y` 只保存最近一次 `I` 之后的新片段。`READY` 和 `PENDING_CONFIRMATION` 状态下 `I` 不会触发删除或重录。请短按，不要长按，以免键盘自动重复造成连续重录。
 
-第一次 `I` 必须早于人工进入场景，第二次必须晚于人工退出且场景稳定，才能覆盖完整的视觉污染区间。按 `I` 只改变当前 episode 的 metadata：Recorder、RM65、SG100、相机和 episode 均不暂停或停止，时间轴连续，也不会自动丢弃数据。
-
-若已按 `I` 开始干预，却在第二次 `I` 前输入 `Off`，Recorder 会打印 warning，并把最后一区间保存为 `{"start_timestamp_ns": <start>, "end_timestamp_ns": null}`。这表示从 START 到 episode 结束之间的数据不能证明已经退出人工干预状态；现场应尽量完成 `I START → 人工修正 → 人工完全退出并稳定 → I END` 后再继续或结束。
+`I` 不会控制机器人。需要人工修正场景时，先按现场安全流程用 `D` 撤销真机运动授权并确认停止，必要时使用物理急停；完成人工修正、人手工具退出相机视野且场景稳定后，再按 `I` 丢弃包含修正过程的旧片段。确认安全后才可在控制窗口按 `A` 重新授权。重录失败会报错并退出 Recorder，不能假定录制仍在继续；机器人安全停止仍由控制端负责。
 
 操作示例：
 
 ```text
 C → A → 确认初始状态 → On → RECORDING
-正常 AVP 操作，抓取出现异常
+正常 AVP 操作，当前片段不准备保留
 D，确认机器人停止
+必要时人工复原场景，完全退出相机视野并等待稳定
 I
-[INTERVENTION START] timestamp_ns=<start>
-人工扶正物体，完全退出相机视野，等待场景稳定
-I
-[INTERVENTION END] timestamp_ns=<end>
-A，确认安全后继续 AVP 操作，完成任务
+[RECORDING RESTARTED] 已丢弃本次旧片段；candidate episode index: ...
+确认安全后按 A，重新执行本条完整任务
 D → 等待稳定 → Off
 Keep this episode? [Y/N/Reset]: Y
 ```
@@ -275,7 +250,7 @@ Keep this episode? [Y/N/Reset]:
 | `D` | MuJoCo 窗口 | 只撤销真机授权，不会重新使能 |
 | `E` | MuJoCo 窗口 | SG100 软件急停锁存；需要重启程序才能恢复 |
 | `On` | Recorder 终端 | 开始 episode，不控制机器人 |
-| `I` / `i` | Recorder 终端，仅录制中 | 切换人工物理干预 START/END，无需回车；只标记 metadata |
+| `I` / `i` | Recorder 终端，仅 On 后录制中 | 直接删除当前未保存片段并立即重录，无需回车；编号不增加 |
 | `Off` | Recorder 终端 | 停止、flush 并验证 episode |
 | `Y` | Recorder 终端 | 保存当前 pending episode |
 | `N` | Recorder 终端 | 丢弃当前 episode，编号不增加 |
@@ -294,7 +269,6 @@ Keep this episode? [Y/N/Reset]:
 recording/vla_raw/
   episode_000000.npz
   episode_000000_media/
-    metadata.json
     head/rgb/000000.jpg
     right_wrist/rgb/000000.jpg
 ```
@@ -303,20 +277,9 @@ RGB-D 模式还会在各相机目录中生成 `depth/*.png`。
 
 RAW episode 使用 30 Hz 主时间线，但相机、机械臂、手和遥测保留各自时间戳、序号、数据年龄和有效性；不能仅凭数组非空判断数据有效。
 
-`episode_XXXXXX_media/metadata.json` 保存 episode 级人工干预标记。无人工干预时为 `"operator_intervention": false`、`"operator_interventions": []`；一次完整干预示例：
+`I` 重录会丢弃整个旧片段，而不是在旧片段上保存人工干预标注；新 RAW 不再生成旧人工干预标记使用的 `episode_XXXXXX_media/metadata.json`。历史已保存的 NPZ、媒体及其 metadata 文件不会被修改或删除。
 
-```json
-{
-  "operator_intervention": true,
-  "operator_interventions": [
-    {"start_timestamp_ns": 1780000100000000, "end_timestamp_ns": 1780000104500000}
-  ]
-}
-```
-
-多次干预会按时间顺序增加区间；未闭合的最后一区间使用 JSON `null`，不会伪造结束时间。当前 RAW 只记录这些 annotation；后续 Data Engineering 才会将干预区间视为污染区间剔除。前后的 robot-only clean trajectory 不跨区间直接拼接，而是分别作为候选 Clean Run 接受 D2/D3 检查；干预后的有效 clean suffix 仍可能保留。
-
-这些字段属于 RAW / Data Engineering curation metadata，不进入 π0.5 或 LingBot-VLA 模型特征。训练合同仍为 `observation.state = float32[17]`、`action = float32[17]`、head RGB、wrist RGB、task 和原有 `timestamp_ns`：`state[0:6]` 为 RM65 measured qpos，`state[6:17]` 为 SG100 measured feedback；`action[0:6]` 为 RM65 actual command，`action[6:17]` 为 SG100 effective canonical absolute command。RAW 字段仍须通过各自 validity 检查，人工干预标记不会把无效反馈变成有效训练数据。
+重录后的训练合同不变：`observation.state = float32[17]`、`action = float32[17]`、head RGB、wrist RGB、task 和原有 `timestamp_ns`。`state[0:6]` 为 RM65 measured qpos，`state[6:17]` 为 SG100 measured feedback；`action[0:6]` 为 RM65 actual command，`action[6:17]` 为 SG100 effective canonical absolute command。RAW 字段仍须通过各自 validity 检查，重录不会把无效反馈变成有效训练数据。
 
 ### 6.2 控制程序诊断日志
 
@@ -443,10 +406,25 @@ target_pose rotation must be orthonormal
 - [ ] 确认安全后按 `A`，控制链与任务初始状态均已准备好；
 - [ ] Recorder 输入 `On`；
 - [ ] 完整执行一次任务；
-- [ ] 如发生人工物理干预，先按 `D` 确认停止，进入工作区前按 `I START`，完全退出并稳定后按 `I END`，确认安全后再按 `A`；
+- [ ] 如需放弃当前片段，必要时先按 `D` 确认停止并复原场景，退出并稳定后在 Recorder 短按 `I`，确认 `RECORDING RESTARTED`，再按安全流程执行新任务；
 - [ ] 按 `D` 撤销授权；
 - [ ] 保留最终稳定状态；
 - [ ] Recorder 输入 `Off`；
 - [ ] 检查报告后选择 `Y` 或 `N`；
 - [ ] 保存后运行 inspector；
 - [ ] 恢复下一条数据的初始状态。
+
+
+## 10. 任务初始参考图
+```bash
+python -m sg100_teleop.camera.view_head_camera_reference
+```
+查看参考图
+```bash
+cd /home/c/AVP-SG100
+
+/home/c/miniconda3/envs/avp_sg100/bin/python -m \
+  sg100_teleop.camera.view_head_camera_reference \
+  --reference-image recording/head_camera_reference/head_20261021_105921_505646_inverted.png\
+  --alpha 0.5
+  ```

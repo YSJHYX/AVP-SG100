@@ -138,7 +138,8 @@ IK_ACCEPT_JUMP_LOG_RAD = 0.2
 # out-slew the resume catch-up.
 IK_FALLBACK_MAX_STEP_RAD = 0.05
 
-# When both physical backends are selected, startup is deterministic: the
+# When both physical backends are selected and origin_position is true
+# (the default), startup is deterministic: the
 # SG100 receives thumb_j2=-31 deg and 0 deg on the other ten joints through
 # its vendor SDK, then the RM65 executes one planned, blocking move to the
 # calibrated J1-J6 startup pose below.
@@ -669,6 +670,84 @@ def disarm_real_command_authority(
     return changed
 
 
+def _parse_origin_position(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("origin_position must be true or false")
+
+
+def _apply_real_startup_pose(
+    real_arm_backend,
+    hand_driver,
+    *,
+    origin_position: bool = True,
+    real_error_recorder: RealHardwareErrorRecorder | None = None,
+) -> None:
+    """Apply the existing dual-real startup sequence, unless opted out.
+
+    Connections and passive realtime entry are established by the caller.
+    Opting out sends neither a hand position target nor an arm planned move;
+    it does not enable teleoperation or alter the normal C/A gates.
+    """
+    if not origin_position:
+        print(
+            "[STARTUP] origin_position=false; skipping SG100 and RM65 "
+            "initial-pose commands (C anchor + A enable still required)"
+        )
+        return
+
+    print(
+        "[STARTUP] both real SDK connections are ready; "
+        "commanding SG100 thumb_j2 to -31 deg and all other "
+        "hand joints to 0 deg"
+    )
+    hand_startup_command = hand_driver.send_positions_rad(
+        REAL_STARTUP_HAND_Q_RAD.copy()
+    )
+    if hand_startup_command is None:
+        raise RuntimeError(
+            "SG100 SDK rejected the startup hand target "
+            "(thumb_j2=-31 deg, other joints=0 deg)"
+        )
+    print(
+        "[STARTUP] SG100 startup target accepted; "
+        "commanding RM65 J1-J6 to "
+        f"{np.round(np.degrees(REAL_STARTUP_ARM_Q_RAD), 3).tolist()} "
+        "deg at "
+        f"{REAL_STARTUP_ARM_SPEED_PERCENT}%"
+    )
+    startup_arm_measured_q = real_arm_backend.movej_blocking(
+        REAL_STARTUP_ARM_Q_RAD.copy(),
+        speed_percent=REAL_STARTUP_ARM_SPEED_PERCENT,
+    )
+    print(
+        "[STARTUP] RM65 planned move complete; actual q(deg) =",
+        np.round(np.degrees(startup_arm_measured_q), 3).tolist(),
+    )
+    if real_error_recorder is not None:
+        real_error_recorder.record(
+            severity="INFO",
+            component="real_hardware_startup",
+            event="INITIAL_POSE_COMPLETE",
+            message=(
+                "SG100 startup target (thumb_j2=-31 degrees, all "
+                "other joints=0 degrees) accepted and RM65 J1-J6 "
+                "planned move to the configured initial joint pose "
+                "completed"
+            ),
+            details={
+                "hand_target_rad": REAL_STARTUP_HAND_Q_RAD,
+                "hand_command": hand_startup_command,
+                "arm_target_rad": REAL_STARTUP_ARM_Q_RAD,
+                "arm_measured_rad": startup_arm_measured_q,
+                "arm_speed_percent": REAL_STARTUP_ARM_SPEED_PERCENT,
+            },
+        )
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -902,6 +981,20 @@ def build_arg_parser():
         "--arm-ip",
         default=None,
         help="RM65 controller IP for --arm-backend real (e.g. 192.168.1.18)",
+    )
+
+    parser.add_argument(
+        "--origin_position",
+        "--origin-position",
+        type=_parse_origin_position,
+        default=True,
+        metavar="{true,false}",
+        help=(
+            "Initial-pose commands after both real backends connect: "
+            "true preserves the existing SG100/RM65 startup sequence; "
+            "false skips both hand and arm initial-pose commands "
+            "without changing C/A authorization (default: true)"
+        ),
     )
 
     # ========================================================
@@ -1548,7 +1641,7 @@ def main():
     # downstream initial value (q_arm_goal, posture anchor, command
     # filters, twin state) to measured arm feedback.  When both physical
     # backends are selected, the SG100 and RM65 startup targets are applied
-    # before that state is captured.
+    # before that state is captured, unless --origin_position false is set.
     # ========================================================
 
     real_arm_backend = None
@@ -1705,55 +1798,12 @@ def main():
 
         if real_arm_backend is not None and args.hand_backend == "real":
             assert hand_driver is not None
-            print(
-                "[STARTUP] both real SDK connections are ready; "
-                "commanding SG100 thumb_j2 to -31 deg and all other "
-                "hand joints to 0 deg"
+            _apply_real_startup_pose(
+                real_arm_backend,
+                hand_driver,
+                origin_position=args.origin_position,
+                real_error_recorder=real_error_recorder,
             )
-            hand_startup_command = hand_driver.send_positions_rad(
-                REAL_STARTUP_HAND_Q_RAD.copy()
-            )
-            if hand_startup_command is None:
-                raise RuntimeError(
-                    "SG100 SDK rejected the startup hand target "
-                    "(thumb_j2=-31 deg, other joints=0 deg)"
-                )
-            print(
-                "[STARTUP] SG100 startup target accepted; "
-                "commanding RM65 J1-J6 to "
-                f"{np.round(np.degrees(REAL_STARTUP_ARM_Q_RAD), 3).tolist()} "
-                "deg at "
-                f"{REAL_STARTUP_ARM_SPEED_PERCENT}%"
-            )
-            startup_arm_measured_q = real_arm_backend.movej_blocking(
-                REAL_STARTUP_ARM_Q_RAD.copy(),
-                speed_percent=REAL_STARTUP_ARM_SPEED_PERCENT,
-            )
-            print(
-                "[STARTUP] RM65 planned move complete; actual q(deg) =",
-                np.round(np.degrees(startup_arm_measured_q), 3).tolist(),
-            )
-            if real_error_recorder is not None:
-                real_error_recorder.record(
-                    severity="INFO",
-                    component="real_hardware_startup",
-                    event="INITIAL_POSE_COMPLETE",
-                    message=(
-                        "SG100 startup target (thumb_j2=-31 degrees, all "
-                        "other joints=0 degrees) accepted and RM65 J1-J6 "
-                        "planned move to the configured initial joint pose "
-                        "completed"
-                    ),
-                    details={
-                        "hand_target_rad": REAL_STARTUP_HAND_Q_RAD,
-                        "hand_command": hand_startup_command,
-                        "arm_target_rad": REAL_STARTUP_ARM_Q_RAD,
-                        "arm_measured_rad": startup_arm_measured_q,
-                        "arm_speed_percent": (
-                            REAL_STARTUP_ARM_SPEED_PERCENT
-                        ),
-                    },
-                )
     except BaseException:
         # Startup happens before the main runtime try/finally.  If either SDK
         # setup or initial motion fails, explicitly leave both devices in a

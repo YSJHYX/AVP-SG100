@@ -31,5 +31,18 @@ python -m sg100_teleop.camera.view_head_camera_reference \
 - `Q`、`Esc` 或关闭窗口：退出并释放相机。
 
 使用 `--capture-only` 可只拍照保存，适用于没有桌面窗口的环境。
+
+也可以跳过重新拍照，直接加载一张已经反色的参考图并实时预览：
+
+```bash
+python -m sg100_teleop.camera.view_head_camera_reference \
+  --reference-image recording/head_camera_reference/head_20261020_120000_inverted.png \
+  --alpha 0.5
+```
+
+已有反色图必须与实时画面的 `--width`、`--height` 完全一致；脚本不会缩放
+参考图，以免改变像素对应关系。`--reference-image` 只读取该图，不会重新拍照
+或在 `--output-dir` 中生成新文件。
+
 该脚本独立占用 D455 的 RGB 流；使用 RAW recorder 或官方 RealSense Viewer
 采集同一台相机前，应关闭此预览窗口。

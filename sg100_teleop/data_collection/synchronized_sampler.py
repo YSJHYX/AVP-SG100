@@ -55,6 +55,7 @@ class SynchronizedSampler:
         buffer: VlaRawBuffer,
         media_writer: BoundedMediaWriter,
         thresholds: FreshnessThresholds,
+        discard_before_monotonic_ns: int = 0,
     ) -> None:
         self.timeline = FixedRateTimeline(hz, start_monotonic_ns)
         self.telemetry = telemetry
@@ -69,6 +70,7 @@ class SynchronizedSampler:
         self.buffer = buffer
         self.media_writer = media_writer
         self.thresholds = thresholds
+        self.discard_before_monotonic_ns = int(discard_before_monotonic_ns)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._start_index = 0
@@ -126,6 +128,12 @@ class SynchronizedSampler:
     def sample_tick(self, index: int, tick_ns: int, wakeup_ns: int) -> None:
         floor_ns = self.timeline.start_monotonic_ns
         packet = self.telemetry.latest_before(tick_ns)
+        if (
+            self.discard_before_monotonic_ns
+            and packet is not None
+            and int(packet["publish_monotonic_ns"]) < self.discard_before_monotonic_ns
+        ):
+            packet = None
         packet_ts = 0 if packet is None else int(packet["publish_monotonic_ns"])
         telemetry_age, telemetry_valid = _age_and_valid(
             tick_ns,
@@ -242,6 +250,25 @@ class SynchronizedSampler:
             if wrist_enabled and self.wrist_camera is not None
             else None
         )
+        if self.discard_before_monotonic_ns:
+            # A restarted attempt must not re-save old camera-ring frames,
+            # even as invalid tick-0 media. Leave the ordinary On contract alone.
+            def fresh_frame(frame):
+                if (
+                    frame is None
+                    or frame.host_receive_monotonic_ns < self.discard_before_monotonic_ns
+                ):
+                    return None
+                if (
+                    "depth" in self.camera_modalities
+                    and frame.depth_uint16 is not None
+                    and self._depth_source(frame)[0] < self.discard_before_monotonic_ns
+                ):
+                    return None
+                return frame
+
+            head = fresh_frame(head)
+            wrist = fresh_frame(wrist)
         head_ts = 0 if head is None else int(head.host_receive_monotonic_ns)
         wrist_ts = (
             -1

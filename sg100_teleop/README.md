@@ -204,8 +204,17 @@ effective cache 时，`robot_qcmd_17d_valid` 可以为 0，effective17 保持 Na
 ### D. Future real RM65 + restricted SG100 collection
 
 > **这不是 full-hand production 命令。只有完成现场 safety checklist 且明确决定进行
-> 真实硬件验证时才可改成 real。启动仍不授权运动；`A` 才授权，`D` 只撤销。
+> 真实硬件验证时才可改成 real。默认双真机连接后会执行初始姿态动作；
+> 后续遥操作仍需 `C/A` 授权，`D` 只撤销遥操作授权。
 > 当前 SG100 只允许 `index_j3`（J6），J7/full-11D 禁止。**
+
+连接后回初始位置的参数为 `--origin_position {true,false}`（也接受
+`--origin-position`）。默认 `true` 不改变原有行为：双真机连接成功后先给
+SG100 发送初始手势，再执行 RM65 的初始关节姿态 movej。若不希望机械臂和
+机械手自动回初始位置，在启动命令中追加 `--origin_position false`；这会同时
+跳过上述两条位置指令，保留连接、反馈读取、被动 realtime 入口和 `C/A`
+授权流程。它不是断电或主动锁定当前位置，也不会禁止后续已授权的遥操作。
+单真机及纯仿真的原有启动方式不变。
 
 Terminal 1 受限模板（必须替换占位符并先核对 tool、急停、围栏与初始姿态）：
 
@@ -276,7 +285,11 @@ final episode index。
 
 **On/Off 不得与其他事件混淆**：`C` 不是录制开始，`A` 不是录制开始，`D` 不是
 录制结束，`E` 不是正常录制结束。只有 `On`（被 state machine 接受）开始
-episode；只有 `Off` 正常停止 episode。On 前允许 camera/telemetry warmup、AVP
+episode；录制中 `I/i` 可直接丢弃当前未保存片段并复用 On 路径重录，
+不能在 On 前或 Off 后激活，也不会增加 episode 编号或影响历史已保存数据。
+每次 I 都重录；原片段的媒体、采样缓存和时间轴会删除重建，相机和遥测连接
+保持开启，旧源帧不会写进新片段。只有 `Off` 正常停止 episode。
+On 前允许 camera/telemetry warmup、AVP
 tracking、`C` 标定，但 pre-On 阶段 0 dataset row、0 media enqueue；On 后第一个
 正式 source sample 必须晚于 `episode_start_monotonic_ns`（pre-On ring 数据只能
 以 invalid 出现，不静默使用）。Off 被接受后立即固定
