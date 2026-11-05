@@ -28,6 +28,10 @@ CLAW_LITTLE_J1_RAD = float(-np.pi)
 CLAW_LITTLE_J2_RAD = 0.0
 CLAW_LITTLE_J3_RAD = 0.0
 
+# While CLAW is active, thumb_j2/thumb_j3 are driven from the matching
+# little-finger joints instead of the incoming AVP thumb articulation.
+CLAW_THUMB_J2_LITTLE_OFFSET_RAD = float(np.deg2rad(149.0))
+
 # Always held while CLAW is active.
 CLAW_LOCK_RAD = (
     ("thumb_j1", CLAW_THUMB_J1_RAD),
@@ -135,6 +139,17 @@ class GraspModeController:
                 next_v = current + float(np.clip(delta, -step, step))
             self._hold_state[index] = next_v
             out[index] = next_v
+        if self.mode == GraspMode.CLAW:
+            thumb_j2 = self.index_of["thumb_j2"]
+            thumb_j3 = self.index_of["thumb_j3"]
+            little_j2 = self.index_of["little_j2"]
+            little_j3 = self.index_of["little_j3"]
+            out[thumb_j2] = (
+                out[little_j2] - CLAW_THUMB_J2_LITTLE_OFFSET_RAD
+            )
+            out[thumb_j3] = out[little_j3]
+            self._hold_state[thumb_j2] = float(out[thumb_j2])
+            self._hold_state[thumb_j3] = float(out[thumb_j3])
         if self.mode == GraspMode.CLAW and self._claw_init_pending:
             done = True
             for name, target in CLAW_INIT_RAD:
