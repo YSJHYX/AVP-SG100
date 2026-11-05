@@ -315,6 +315,29 @@ writer 只允许 flush Off 前已 enqueue 的内容。`A` 前少量 stationary s
 | `N` | recorder | 丢弃 pending，sources 保持 warm，index 不变 |
 | `Reset` | recorder | 丢弃并清 source rings/timing/validation，index 不变 |
 
+### Hand morphology (`1`–`5`)
+
+在 MuJoCo viewer 中按 `1`=FREE、`2`=HAND、`3`=CLAW、`4`=SCRIPT、
+`5`=PINCH。按 `5` 会退出 SCRIPT 并恢复 AVP 手部输入。
+
+PINCH 目标使用 canonical 关节顺序：
+
+| SG100 joint | PINCH target |
+|---|---|
+| J1 / `thumb_j1` | 固定 +90° |
+| J2 / `thumb_j2` | AVP 拇指外展/屈曲基础映射 |
+| J3 / `thumb_j3` | AVP 拇指末节基础映射 |
+| J4 / `index_j1` | 固定 0° |
+| J5 / `index_j2` | AVP 食指屈曲基础映射 |
+| J6 / `index_j3` | AVP 食指末节基础映射 |
+| J7–J11 | 固定 0° |
+
+只有 J2/J3/J5/J6 随拇指、食指动作变化，用于夹合和张开。此显式模式使用
+`raw_retarget_qcmd`，避免自动 pinch coordination 把 J2 拉到固定 -30°，
+也避免中指/小指动作改变这四个关节的协调结果。继续使用现有标定与关节范围。
+模式切换沿用形态 slew 和下游关节滤波/速度限制，固定关节平滑到达目标；
+真实硬件仍须 `C` 标定与 `A` 授权，`D`/`E` 语义保持不变。
+
 ### Reserved Safety / Control Keys
 
 `C` / `A` / `D` / `E` 属于现有 teleop authority/safety contract，语义固定：

@@ -2166,7 +2166,7 @@ def main():
     print(
         "grasp mode         :",
         grasp_mode_controller.mode.value,
-        "(1=FREE 2=HAND 3=CLAW 4=SCRIPT J/K/L)",
+        "(1=FREE 2=HAND 3=CLAW 4=SCRIPT J/K/L 5=PINCH)",
     )
 
     # ========================================================
@@ -2855,6 +2855,16 @@ def main():
                 "(same pose as 3, not AVP) | J close  K hold  L open"
             )
 
+        elif keycode == ord("5"):
+            script_hand_controller.exit()
+            mode = grasp_mode_controller.set_mode(GraspMode.PINCH)
+            print(
+                "[HAND] grasp mode:",
+                mode.value,
+                "| PINCH: AVP controls J2/J3/J5/J6; "
+                "J1=90deg; J4/J7/J8/J9/J10/J11=0deg (slew-limited)",
+            )
+
         elif keycode in (ord("J"), ord("j")):
             if not script_hand_controller.enabled:
                 print("[HAND] J ignored; press 4 for script source")
@@ -3047,6 +3057,7 @@ def main():
                             q_hand_candidate = grasp_mode_controller.apply(
                                 q_hand_candidate,
                                 dt_s=tracking_period,
+                                raw_retarget_qcmd=hand_stages["raw_retarget_qcmd"],
                             )
 
                             # Full hand command provenance (audit only):
