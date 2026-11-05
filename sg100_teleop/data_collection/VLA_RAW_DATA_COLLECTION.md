@@ -413,3 +413,17 @@ datasets/pi05_ahfe/      π0.5-AHFE model-ready（ADAPTER: NOT IMPLEMENTED YET�
   depth 不进入 Curated；RGB media 按 RAW frame identity 去重保存。
 - 修改 raw/curated/training 目录、训练字段、17D ordering 或 camera modality
   时，必须同步更新 README 的 Training Data Contract 与本文档。
+
+
+## RAW v4：SG100 action 与 SDK 用户角度统一
+
+新录制 `robot_qcmd_17d_rad[6:17]` 仍取自原有的最终有效命令
+`hand_qcmd_effective_canonical_rad`，只对 J4/J7/J9 翻转符号一次。
+结果与最终 SDK 用户目标角度的 rad 表示一致，元数据为
+`robot_qcmd_hand_domain=sdk_user_rad`。
+J4/J7/J9 的 action 因此分别采用负/正/正方向，与 SDK v3/R 限位一致。
+`hand_qcmd_effective_canonical_rad` 仍保留内部 canonical 诊断值；
+重定向、仿真、限速及 F_cmd 不变，不能将该诊断字段误作新的训练 action。
+历史 RAW v1–v3 未声明该标记时仍按 canonical 命令解析。
+配套 data-engineering 按 `action_hand_domain` 区分新旧来源，SDK 域 action
+直接导出，不再对 J4/J7/J9 重复取反。

@@ -320,7 +320,7 @@ def test_causal_alignment_staleness_17d_and_equal_n() -> None:
     assert arrays["head_camera_host_timestamp_ns"][0] <= arrays["timestamp_ns"][0]
     np.testing.assert_allclose(
         arrays["robot_qcmd_17d_rad"][0],
-        np.concatenate((10 + np.arange(6), 40 + np.arange(11))),
+        np.concatenate((10 + np.arange(6), [40, 41, 42, -43, 44, 45, -46, 47, -48, 49, 50])),
     )
     assert not arrays["robot_qpos_17d_valid"][0]
     assert np.isnan(arrays["robot_qpos_17d_rad"][0, 6:]).all()
@@ -405,7 +405,7 @@ def test_state_machine_only_on_off_and_n_reset_do_not_consume_index(tmp_path: Pa
 
 
 def test_y_saves_npz_media_and_increments_index(tmp_path: Path) -> None:
-    controller, _, _, _ = _controller(tmp_path)
+    controller, _, _, _ = _controller(tmp_path, camera_modalities=("rgb", "depth"))
     controller.handle_input("On")
     controller.handle_input("Off")
     saved = controller.handle_input("Y")
@@ -537,7 +537,9 @@ def test_i_discards_only_unsaved_attempt_and_saves_only_fresh_recording(
     assert previous_npz.read_bytes() == b"previous saved data"
     assert (previous_media / "keep.txt").read_text() == "keep"
     assert not tuple(tmp_path.glob(".pending_*"))
-    assert not (saved[1] / "metadata.json").exists()
+    assert json.loads((saved[1] / "metadata.json").read_text()) == {
+        "episode_tags": ["failure_recovery"],
+    }
     with np.load(saved[0], allow_pickle=False) as archive:
         assert archive["episode_start_monotonic_ns"].item() == new_start
         assert np.all(archive["timestamp_ns"] >= new_start)
@@ -731,7 +733,7 @@ def test_recording_tty_restarts_without_enter_clears_partial_input_and_accepts_o
         os.close(master)
 
 
-def test_cli_preserves_original_end_prompt(monkeypatch) -> None:
+def test_cli_asks_dagger_after_save_confirmation(monkeypatch) -> None:
     class Source:
         def start(self):
             pass
@@ -745,7 +747,7 @@ def test_cli_preserves_original_end_prompt(monkeypatch) -> None:
             self.frozen_instruction = "Pick the object"
             self.next_episode_index = 0
 
-        def handle_input(self, command):
+        def handle_input(self, command, *, is_dagger=False):
             if command.lower() == "on":
                 self.state = EpisodeState.RECORDING
                 return 0
@@ -753,6 +755,7 @@ def test_cli_preserves_original_end_prompt(monkeypatch) -> None:
                 self.state = EpisodeState.PENDING_CONFIRMATION
                 return object()
             if command.lower() == "y":
+                assert is_dagger is True
                 self.state = EpisodeState.READY
                 self.next_episode_index += 1
                 return Path("episode_000000.npz"), Path("episode_000000_media")
@@ -777,7 +780,7 @@ def test_cli_preserves_original_end_prompt(monkeypatch) -> None:
         recorder_cli, "_read_recording_command", lambda controller, prompt: "Off"
     )
     prompts = []
-    answers = iter(("On", "Y"))
+    answers = iter(("On", "Y", "D"))
 
     def input_answer(prompt):
         prompts.append(prompt)
@@ -791,6 +794,7 @@ def test_cli_preserves_original_end_prompt(monkeypatch) -> None:
     assert prompts == [
         "READY (输入 On): ",
         "Keep this episode? [Y/N/Reset]: ",
+        "该条数据是否为 DAgger 数据？[d/D=是，Enter/N=否]: ",
         "READY (输入 On): ",
     ]
 
@@ -887,7 +891,9 @@ def _head_only_controller(
 def test_head_only_camera_only_ready_has_no_fake_wrist_or_robot_data(
     tmp_path: Path,
 ) -> None:
-    controller, _, _ = _head_only_controller(tmp_path)
+    controller, _, _ = _head_only_controller(
+        tmp_path, camera_modalities=("rgb", "depth")
+    )
     assert controller.handle_input("On") == 0
     assert controller.state is EpisodeState.RECORDING
     report = controller.handle_input("Off")
@@ -968,7 +974,7 @@ def test_head_only_with_valid_telemetry_keeps_robot_data(tmp_path: Path) -> None
     assert arrays["robot_qcmd_17d_valid"][1:].all()
     np.testing.assert_allclose(
         arrays["robot_qcmd_17d_rad"][1],
-        np.concatenate((10 + np.arange(6), 40 + np.arange(11))),
+        np.concatenate((10 + np.arange(6), [40, 41, 42, -43, 44, 45, -46, 47, -48, 49, 50])),
     )
     assert not arrays["wrist_camera_valid"].any()
     controller.handle_input("N")
@@ -1029,7 +1035,7 @@ def test_cli_head_only_instantiates_no_wrist_and_production_default_requires_it(
     assert roles == ("head",)
     assert telemetry_required is False
     assert telemetry.is_alive() is False
-    assert head["expected_model"] == "Intel RealSense D455"
+    assert head["expected_model"] == "RealSense D455"
     assert wrist is None
     assert [item["role"] for item in constructed] == ["head"]
 
@@ -1346,7 +1352,7 @@ def test_desired_and_effective_are_allowed_to_differ(tmp_path: Path) -> None:
     report = _record_with_post_on_packet(controller, telemetry)
     assert report.quality == "PASS", report.errors
     arrays = controller.candidate_arrays
-    assert arrays["schema_version"].item() == SCHEMA_VERSION == 3
+    assert arrays["schema_version"].item() == SCHEMA_VERSION == 4
     assert arrays["robot_desired_qcmd_17d_valid"][1:].all()
     assert arrays["robot_qcmd_17d_valid"][1:].all()
     assert arrays["telemetry_publish_hz_requested"].item() == 100.0

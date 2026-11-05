@@ -26,7 +26,7 @@
 7. `D`：撤销真机运动授权；
 8. 等待稳定：保留任务结束后的静止状态 0.5～1 秒；
 9. `Off`：在 Recorder 终端停止并验证本条数据；
-10. `Y/N/Reset`：根据报告保存、丢弃或丢弃并清空采集缓存。
+10. `Y/N/Reset`：根据报告保存、丢弃或丢弃并清空采集缓存。输入 `Y` 后再确认是否为 DAgger 数据：`d/D` 表示是，回车或 `N/n` 表示否，随后保存。
 
 正式录制期间不要再次按 `C`，避免把坐标重建过程写入任务轨迹。
 若曾在 `C/A` 等准备操作前就输入 `On`，D2 会基于 action / telemetry validity 正确裁除缺少完整 17D action 证据的 preparation 数据。调整顺序是为了减少无效 RAW pre-roll，让 episode 边界更贴近真实任务边界。
@@ -200,7 +200,7 @@ language (frozen): ...
 
 重录复用同一个 Recorder 的 `On` 启动路径：保持相机和遥测连接、沿用本条已冻结的任务指令和采集配置，重新建立暂存目录、buffer、writer 和 sampler，帧编号与相对时间从 0 重新计起。程序会先等待按键之后的新相机帧（最多 2 秒），再开始新时间轴，避免旧画面回流或首行缺少媒体文件；不会伪造占位图。启动边界的有效性仍按原有 RAW 合同检查，不伪造有效数据。
 
-成功时确认终端打印 `[RECORDING RESTARTED]`，随后继续录制；输入 `Off` 并回车结束，再按原来的 `Y/N/Reset` 流程保存或丢弃。最后 `Y` 只保存最近一次 `I` 之后的新片段。`READY` 和 `PENDING_CONFIRMATION` 状态下 `I` 不会触发删除或重录。请短按，不要长按，以免键盘自动重复造成连续重录。
+成功时确认终端打印 `[RECORDING RESTARTED]`，新片段自动标记 `failure_recovery`（失败后恢复的数据），随后继续录制；输入 `Off` 并回车结束，按 `Y/N/Reset` 保存或丢弃。输入 `Y` 后额外询问是否为 DAgger 数据：`d/D` 标记 `dagger`，回车或 `N/n` 不添加该标签。最后只保存最近一次 `I` 之后的新片段。`READY` 和 `PENDING_CONFIRMATION` 状态下 `I` 不会触发删除或重录。请短按，不要长按，以免键盘自动重复造成连续重录。
 
 `I` 不会控制机器人。需要人工修正场景时，先按现场安全流程用 `D` 撤销真机运动授权并确认停止，必要时使用物理急停；完成人工修正、人手工具退出相机视野且场景稳定后，再按 `I` 丢弃包含修正过程的旧片段。确认安全后才可在控制窗口按 `A` 重新授权。重录失败会报错并退出 Recorder，不能假定录制仍在继续；机器人安全停止仍由控制端负责。
 
@@ -216,6 +216,7 @@ I
 确认安全后按 A，重新执行本条完整任务
 D → 等待稳定 → Off
 Keep this episode? [Y/N/Reset]: Y
+该条数据是否为 DAgger 数据？[d/D=是，Enter/N=否]: N
 ```
 
 该 episode 仍可由 `Y` 保存。`I` 与结束后的确认不同：`I` 只标记人工干预区间；`Y` 保存，`N` 丢弃，`Reset` 按原逻辑丢弃并清空采集缓存。
@@ -277,7 +278,7 @@ RGB-D 模式还会在各相机目录中生成 `depth/*.png`。
 
 RAW episode 使用 30 Hz 主时间线，但相机、机械臂、手和遥测保留各自时间戳、序号、数据年龄和有效性；不能仅凭数组非空判断数据有效。
 
-`I` 重录会丢弃整个旧片段，而不是在旧片段上保存人工干预标注；新 RAW 不再生成旧人工干预标记使用的 `episode_XXXXXX_media/metadata.json`。历史已保存的 NPZ、媒体及其 metadata 文件不会被修改或删除。
+带标签的 episode 会生成 `episode_XXXXXX_media/metadata.json`，例如 `{"episode_tags": ["failure_recovery", "dagger"]}`。`failure_recovery` 只由录制中 `I/i` 成功重录触发；`dagger` 只由保存时输入 `d/D` 触发，两者独立、可以同时存在，不会相互推断。普通未标记数据保持原来的无 sidecar 行为。丢弃、Reset、退出和下一次 On 均不会继承上条标签。它们不是旧的 `operator_intervention`/`operator_interventions` 标注，不会制造人工介入区间或改变数据检查。历史已保存的 NPZ、媒体及其 metadata 文件不会被修改或删除。
 
 重录后的训练合同不变：`observation.state = float32[17]`、`action = float32[17]`、head RGB、wrist RGB、task 和原有 `timestamp_ns`。`state[0:6]` 为 RM65 measured qpos，`state[6:17]` 为 SG100 measured feedback；`action[0:6]` 为 RM65 actual command，`action[6:17]` 为 SG100 effective canonical absolute command。RAW 字段仍须通过各自 validity 检查，重录不会把无效反馈变成有效训练数据。
 

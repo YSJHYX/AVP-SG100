@@ -173,6 +173,7 @@ def _read_recording_command(controller: EpisodeController, prompt: str) -> str:
                 command.clear()
                 print(
                     "\n[RECORDING RESTARTED] 已丢弃本次旧片段；"
+                    "新片段标签：失败后恢复的数据 (failure_recovery)；"
                     f"candidate episode index: {index}; "
                     f"start_timestamp_ns={controller.episode_start_monotonic_ns}"
                 )
@@ -188,6 +189,16 @@ def _read_recording_command(controller: EpisodeController, prompt: str) -> str:
     finally:
         if saved_tty is not None:
             termios.tcsetattr(fd, termios.TCSADRAIN, saved_tty)
+
+
+def _read_dagger_choice() -> bool:
+    while True:
+        choice = input("该条数据是否为 DAgger 数据？[d/D=是，Enter/N=否]: ").strip().lower()
+        if choice == "d":
+            return True
+        if choice in ("", "n"):
+            return False
+        print("请输入 d/D 标记 DAgger 数据，或按 Enter/N 保存为非 DAgger 数据。")
 
 
 def main() -> None:
@@ -248,7 +259,15 @@ def main() -> None:
                 else input(prompt).strip()
             )
             try:
-                result = controller.handle_input(command)
+                if (
+                    controller.state is EpisodeState.PENDING_CONFIRMATION
+                    and command.lower() == "y"
+                ):
+                    result = controller.handle_input(
+                        command, is_dagger=_read_dagger_choice()
+                    )
+                else:
+                    result = controller.handle_input(command)
                 if command.lower() == "on" and controller.state is EpisodeState.RECORDING:
                     print("RECORDING")
                     print(f"candidate episode index: {result}")
