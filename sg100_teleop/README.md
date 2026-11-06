@@ -317,8 +317,10 @@ writer 只允许 flush Off 前已 enqueue 的内容。`A` 前少量 stationary s
 
 ### Hand morphology (`1`–`5`)
 
-在 MuJoCo viewer 中按 `1`=FREE、`2`=HAND、`3`=CLAW、`4`=SCRIPT、
-`5`=PINCH。按 `5` 会退出 SCRIPT 并恢复 AVP 手部输入。
+真机操作顺序：保持中立姿态按 `C`，等待标定完成，再按 `A` 启用，随后用
+`1`=FREE、`2`=HAND、`3`=CLAW、`4`=SCRIPT、`5`=PINCH 选择模式。
+五个数字键是并列入口，可从任意模式直接切换到另一个模式；切换保留标定和启用状态。
+按键在 MuJoCo viewer 窗口生效。按 `5` 会退出 SCRIPT 并恢复 AVP 手部输入。
 
 PINCH 目标使用 canonical 关节顺序：
 

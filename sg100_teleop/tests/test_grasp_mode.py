@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from sg100_teleop.control.grasp_mode import (
     CLAW_THUMB_J2_LITTLE_OFFSET_RAD,
@@ -181,7 +182,7 @@ def test_raw_pinch_source_does_not_change_existing_modes():
         )
 
 
-def test_key_5_exits_script_source_and_selects_pinch():
+def _viewer_key_handler(scope):
     # Exercise the actual nested viewer callback without creating a viewer,
     # importing the runner, opening serial, or connecting to Vision Pro.
     import ast
@@ -200,19 +201,101 @@ def test_key_5_exits_script_source_and_selects_pinch():
               callback, ast.Return(value=ast.Name(id="on_viewer_key", ctx=ast.Load()))],
         decorator_list=[],
     )
+    module = ast.fix_missing_locations(ast.Module(body=[factory], type_ignores=[]))
+    exec(compile(module, str(runner), "exec"), scope)
+    return scope["make_handler"]()
+
+
+def test_key_5_exits_script_source_and_selects_pinch():
     class ScriptStub:
         enabled = True
         def exit(self):
             self.enabled = False
     script = ScriptStub()
     controller = GraspModeController(initial_mode=GraspMode.CLAW)
-    scope = {"GraspMode": GraspMode, "grasp_mode_controller": controller,
-             "script_hand_controller": script}
-    module = ast.fix_missing_locations(ast.Module(body=[factory], type_ignores=[]))
-    exec(compile(module, str(runner), "exec"), scope)
-    handler = scope["make_handler"]()
+    handler = _viewer_key_handler({
+        "GraspMode": GraspMode, "grasp_mode_controller": controller,
+        "script_hand_controller": script,
+    })
     handler(ord("5"))
     assert controller.mode == GraspMode.PINCH
     assert not script.enabled
     handler(ord("1"))
     assert controller.mode == GraspMode.FREE
+
+
+@pytest.mark.parametrize("source_key", "12345")
+@pytest.mark.parametrize("target_key", "12345")
+def test_c_then_a_allows_direct_switch_between_all_five_modes(source_key, target_key):
+    from types import SimpleNamespace
+
+    from sg100_teleop.control.scripted_hand import ScriptHandController
+    from sg100_teleop.control.teleop_arming import TeleopArmingController
+
+    arming = TeleopArmingController()
+    arming.observe_valid_frame(1)
+    calibration_requests = []
+
+    def request_calibration():
+        calibration_requests.append(1)
+        return arming.request_neutral_calibration(requested_monotonic_ns=10)
+
+    # Only the hardware boundary is stubbed: no serial port or robot is opened.
+    class BackendStub:
+        enabled = False
+        anchored = False
+
+        def __init__(self):
+            self.enable_calls = []
+            self.anchor_token = None
+
+        def set_enabled(self, enabled):
+            assert self.anchored
+            self.enable_calls.append(enabled)
+            self.enabled = enabled
+
+    backend = BackendStub()
+    controller = GraspModeController()
+    script = ScriptHandController()
+    seed = np.linspace(-0.4, 0.4, len(SG100_JOINT_ORDER))
+    handler = _viewer_key_handler({
+        "request_neutral_calibration": request_calibration,
+        "real_arm_backend": None,
+        "restricted_hand_backend": backend,
+        "real_error_recorder": None,
+        "GraspMode": GraspMode,
+        "grasp_mode_controller": controller,
+        "script_hand_controller": script,
+        "hand_command_filter": SimpleNamespace(value=seed),
+    })
+
+    handler(ord("C"))
+    assert not backend.enabled
+    # C is asynchronous: the main tracking loop captures the next valid frame.
+    assert arming.should_calibrate(2, received_monotonic_ns=11)
+    backend.anchored = True
+    backend.anchor_token = object()
+    anchor = backend.anchor_token
+    arming.complete_calibration()
+    handler(ord("A"))
+    assert backend.enabled
+
+    for key in (source_key, target_key):
+        handler(ord(key))
+        if key == "4":
+            assert script.enabled
+            np.testing.assert_array_equal(script.step(0.0), seed)
+        else:
+            assert not script.enabled
+            assert controller.mode == {
+                "1": GraspMode.FREE,
+                "2": GraspMode.HAND,
+                "3": GraspMode.CLAW,
+                "5": GraspMode.PINCH,
+            }[key]
+        assert backend.enabled
+        assert backend.anchored
+        assert backend.anchor_token is anchor
+        assert arming.active
+        assert calibration_requests == [1]
+        assert backend.enable_calls == [True]

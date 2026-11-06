@@ -2168,6 +2168,10 @@ def main():
         grasp_mode_controller.mode.value,
         "(1=FREE 2=HAND 3=CLAW 4=SCRIPT J/K/L 5=PINCH)",
     )
+    print(
+        "real hand sequence : C (wait for calibration) -> A -> select 1/2/3/4/5; "
+        "mode switching preserves calibration and enable state"
+    )
 
     # ========================================================
     # RM65 Cartesian teleoperation pipeline
