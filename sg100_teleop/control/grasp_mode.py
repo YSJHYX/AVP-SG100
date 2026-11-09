@@ -1,4 +1,4 @@
-"""Runtime FREE / HAND / CLAW grasp morphology (post-retarget, pre-filter)."""
+"""Runtime FREE / HAND / CLAW / PINCH morphology (pre-filter)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ class GraspMode(str, Enum):
     FREE = "free"
     HAND = "hand"
     CLAW = "claw"
+    PINCH = "pinch"
 
 
 # thumb_j1 canonical domain is [0, ~125 deg]; claw parks at +90 deg.
@@ -49,6 +50,19 @@ CLAW_INIT_RAD = (
     ("middle_j2", CLAW_MIDDLE_J2_RAD),
     ("little_j2", CLAW_LITTLE_J2_RAD),
     ("little_j3", CLAW_LITTLE_J3_RAD),
+)
+
+# PINCH keeps only thumb J2/J3 and index J5/J6 under AVP control.
+# These are canonical radians; the hardware F_cmd conversion stays downstream.
+PINCH_ACTIVE_JOINTS = ("thumb_j2", "thumb_j3", "index_j2", "index_j3")
+PINCH_LOCK_RAD = (
+    ("thumb_j1", float(np.deg2rad(90.0))),
+    ("index_j1", 0.0),
+    ("middle_j1", 0.0),
+    ("middle_j2", 0.0),
+    ("little_j1", 0.0),
+    ("little_j2", 0.0),
+    ("little_j3", 0.0),
 )
 
 HAND_INDEX_J1_RAD = 0.0
@@ -107,6 +121,8 @@ class GraspModeController:
                 i["index_j1"]: HAND_INDEX_J1_RAD,
                 i["little_j1"]: HAND_LITTLE_J1_RAD,
             }
+        if self.mode == GraspMode.PINCH:
+            return {i[name]: float(target) for name, target in PINCH_LOCK_RAD}
         holds = {i[name]: float(target) for name, target in CLAW_LOCK_RAD}
         if self._claw_init_pending:
             for name, target in CLAW_INIT_RAD:
@@ -118,10 +134,18 @@ class GraspModeController:
         q_hand_candidate: np.ndarray,
         *,
         dt_s: float,
+        raw_retarget_qcmd: np.ndarray | None = None,
     ) -> np.ndarray:
         q = np.asarray(q_hand_candidate, dtype=np.float64)
         if q.shape != (HAND_DOF,) or not np.all(np.isfinite(q)):
             raise ValueError("q_hand_candidate must be finite 11D")
+        if self.mode == GraspMode.PINCH and raw_retarget_qcmd is not None:
+            # Automatic pinch coordination parks J2 at -30 deg and uses
+            # other fingers as context. This explicit four-joint mode uses
+            # the base thumb/index mapping so both fingers remain live.
+            q = np.asarray(raw_retarget_qcmd, dtype=np.float64)
+            if q.shape != (HAND_DOF,) or not np.all(np.isfinite(q)):
+                raise ValueError("raw_retarget_qcmd must be finite 11D")
         out = q.copy()
         if self._hold_state is None:
             self._hold_state = out.copy()
