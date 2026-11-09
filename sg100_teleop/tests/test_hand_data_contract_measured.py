@@ -140,6 +140,7 @@ def test_measured_transition_happy_path():
     with tempfile.TemporaryDirectory() as directory:
         collector, driver = make_collector(Path(directory))
         q_hand = np.zeros(11)
+        q_hand[1] = np.deg2rad(-90.0)  # Legal thumb_j2; zero exceeds its -30 deg limit.
         q_hand[4] = 0.5
         bundle = run_happy_transition(collector, driver, q_hand=q_hand)
 

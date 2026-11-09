@@ -322,6 +322,34 @@ writer 只允许 flush Off 前已 enqueue 的内容。`A` 前少量 stationary s
 五个数字键是并列入口，可从任意模式直接切换到另一个模式；切换保留标定和启用状态。
 按键在 MuJoCo viewer 窗口生效。按 `5` 会退出 SCRIPT 并恢复 AVP 手部输入。
 
+CLAW（mode 3）与 PINCH（mode 5）都使用标定后的食指近端屈曲
+`canonical.index_flexion` 作为唯一开合进度 `c`，范围 `[0, 1]`。
+CLAW 的四个近端关节共享同一个进度，两个夹爪侧不再分别跟随不同人手手指：
+
+| SG100 joint | CLAW target（canonical） |
+|---|---|
+| J1 / `thumb_j1` | 固定 +90°，不跟随侧摆 |
+| J2 / `thumb_j2` | −149° + 90° × c |
+| J3 / `thumb_j3` | 固定 +50° |
+| J4 / `index_j1` | 固定 0°，不跟随侧摆 |
+| J5 / `index_j2` | +90° × c |
+| J6 / `index_j3` | 固定 +50° |
+| J7 / `middle_j1` | −90° × c（canonical 屈曲为负） |
+| J8 / `middle_j2` | 固定 +50° |
+| J9 / `little_j1` | 保持 claw 外翻姿态，按当前下限限位至 −3.14 rad |
+| J10 / `little_j2` | +90° × c |
+| J11 / `little_j3` | 固定 +50° |
+
+四个近端目标同启同停、等角度联动。切换时固定关节沿用原有 slew 平滑到位，
+到位后持续保持；真实运动仍经过下游滤波、限速与安全门控。mode 4 的 SCRIPT
+姿态和键盘开合逻辑保持独立。固定指尖的转动结构不保证全行程夹持面严格平行。
+
+RAW recorder 继续从后端已接受的最终有效命令构建 action，保持 RAW v4 的
+`robot_qcmd_hand_domain=sdk_user_rad`；canonical→SDK 的 `[3,6,8]` 手部符号
+转换仅执行一次。data-engineering 对该域直接导出，仅对历史 `canonical_rad`
+action 做兼容转换，不应额外翻转符号或修改历史数据。关节顺序、17D 合同、
+validity、时间戳及 measured feedback 的证据要求均不变。
+
 PINCH 目标使用 canonical 关节顺序：
 
 | SG100 joint | PINCH target |

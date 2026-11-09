@@ -29,18 +29,17 @@ CLAW_LITTLE_J1_RAD = float(-np.pi)
 CLAW_LITTLE_J2_RAD = 0.0
 CLAW_LITTLE_J3_RAD = 0.0
 
-# While CLAW is active, thumb_j2/thumb_j3 are driven from the matching
-# little-finger joints instead of the incoming AVP thumb articulation.
+# Legacy SCRIPT shape constants remain independent of live CLAW control.
 CLAW_THUMB_J2_LITTLE_OFFSET_RAD = float(np.deg2rad(149.0))
 
-# Always held while CLAW is active.
+# Legacy claw shape definitions retained for SCRIPT/API compatibility.
 CLAW_LOCK_RAD = (
     ("thumb_j1", CLAW_THUMB_J1_RAD),
     ("index_j1", CLAW_INDEX_J1_RAD),
     ("little_j1", CLAW_LITTLE_J1_RAD),
 )
 
-# Slew to these once on CLAW entry, then release back to AVP.
+# The old shape values must not change mode 4 when live CLAW changes.
 CLAW_INIT_RAD = (
     ("thumb_j2", CLAW_THUMB_J2_RAD),
     ("thumb_j3", CLAW_THUMB_J3_RAD),
@@ -72,11 +71,24 @@ PINCH_LOCK_RAD = (
     ("little_j3", 0.0),
 )
 
+# CLAW forms two opposed two-finger jaws. One index-flexion progress drives
+# all four proximal joints; middle flexion is negative in canonical radians.
+CLAW_GRIPPER_ACTIVE_JOINTS = ("thumb_j2", "index_j2", "middle_j1", "little_j2")
+CLAW_GRIPPER_TRAVEL_RAD = float(np.deg2rad(90.0))
+CLAW_GRIPPER_LOCK_RAD = (
+    ("thumb_j1", CLAW_THUMB_J1_RAD),
+    ("thumb_j3", PINCH_DISTAL_RAD),
+    ("index_j1", CLAW_INDEX_J1_RAD),
+    ("index_j3", PINCH_DISTAL_RAD),
+    ("middle_j2", PINCH_DISTAL_RAD),
+    ("little_j1", CLAW_LITTLE_J1_RAD),
+    ("little_j3", PINCH_DISTAL_RAD),
+)
+
 HAND_INDEX_J1_RAD = 0.0
 HAND_LITTLE_J1_RAD = 0.0
 
 DEFAULT_HOLD_SLEW_RAD_S = 3.0
-_INIT_DONE_TOL_RAD = 1e-3
 
 
 class GraspModeController:
@@ -89,10 +101,11 @@ class GraspModeController:
         hold_slew_rad_s: float = DEFAULT_HOLD_SLEW_RAD_S,
         initial_mode: GraspMode = GraspMode.FREE,
     ) -> None:
+        hardware_map = SG100HardwareMap()
         order = list(
             joint_order
             if joint_order is not None
-            else SG100HardwareMap().software_joint_order
+            else hardware_map.software_joint_order
         )
         if len(order) != HAND_DOF:
             raise ValueError(f"joint_order must have length {HAND_DOF}")
@@ -112,11 +125,18 @@ class GraspModeController:
         self.hold_slew_rad_s = float(hold_slew_rad_s)
         self.mode = GraspMode(initial_mode)
         self._hold_state: np.ndarray | None = None
-        self._claw_init_pending = False
+        self._claw_holds = {}
+        for name, target in CLAW_GRIPPER_LOCK_RAD:
+            hardware_index = hardware_map.software_index_of[name]
+            # In particular, -pi for little_j1 is slightly below the model's
+            # -3.14 limit. Hold the legal pose, never expand the command range.
+            self._claw_holds[self.index_of[name]] = float(np.clip(
+                target, hardware_map.lower_rad[hardware_index],
+                hardware_map.upper_rad[hardware_index],
+            ))
 
     def set_mode(self, mode: GraspMode | str) -> GraspMode:
         self.mode = GraspMode(mode)
-        self._claw_init_pending = self.mode == GraspMode.CLAW
         return self.mode
 
     def _hold_targets(self) -> dict[int, float]:
@@ -130,11 +150,7 @@ class GraspModeController:
             }
         if self.mode == GraspMode.PINCH:
             return {i[name]: float(target) for name, target in PINCH_LOCK_RAD}
-        holds = {i[name]: float(target) for name, target in CLAW_LOCK_RAD}
-        if self._claw_init_pending:
-            for name, target in CLAW_INIT_RAD:
-                holds[i[name]] = float(target)
-        return holds
+        return self._claw_holds
 
     def apply(
         self,
@@ -147,18 +163,27 @@ class GraspModeController:
         if q.shape != (HAND_DOF,) or not np.all(np.isfinite(q)):
             raise ValueError("q_hand_candidate must be finite 11D")
         out = q.copy()
-        if self.mode == GraspMode.PINCH:
+        if self.mode in (GraspMode.CLAW, GraspMode.PINCH):
             if pinch_closure is None or not np.isfinite(pinch_closure):
-                raise ValueError("PINCH requires finite calibrated index flexion")
+                raise ValueError(f"{self.mode.value.upper()} requires finite calibrated index flexion")
+            # Both gripper modes use the same calibrated single input.
+            closure = float(np.clip(pinch_closure, 0.0, 1.0))
+        if self.mode == GraspMode.PINCH:
             # Use one shared progress value instead of two independently
             # mapped finger features, including when automatic pinch is on.
-            travel = PINCH_J2_TRAVEL_RAD * float(np.clip(pinch_closure, 0.0, 1.0))
+            travel = PINCH_J2_TRAVEL_RAD * closure
             out[self.index_of["thumb_j2"]] = float(np.clip(
                 PINCH_THUMB_J2_OPEN_RAD + travel,
                 PINCH_THUMB_J2_OPEN_RAD,
                 PINCH_THUMB_J2_CLOSED_RAD,
             ))
             out[self.index_of["index_j2"]] = travel
+        elif self.mode == GraspMode.CLAW:
+            travel = CLAW_GRIPPER_TRAVEL_RAD * closure
+            out[self.index_of["thumb_j2"]] = CLAW_THUMB_J2_RAD + travel
+            out[self.index_of["index_j2"]] = travel
+            out[self.index_of["middle_j1"]] = -travel
+            out[self.index_of["little_j2"]] = travel
         if self._hold_state is None:
             self._hold_state = out.copy()
         holds = self._hold_targets()
@@ -175,26 +200,6 @@ class GraspModeController:
                 next_v = current + float(np.clip(delta, -step, step))
             self._hold_state[index] = next_v
             out[index] = next_v
-        if self.mode == GraspMode.CLAW:
-            thumb_j2 = self.index_of["thumb_j2"]
-            thumb_j3 = self.index_of["thumb_j3"]
-            little_j2 = self.index_of["little_j2"]
-            little_j3 = self.index_of["little_j3"]
-            out[thumb_j2] = (
-                out[little_j2] - CLAW_THUMB_J2_LITTLE_OFFSET_RAD
-            )
-            out[thumb_j3] = out[little_j3]
-            self._hold_state[thumb_j2] = float(out[thumb_j2])
-            self._hold_state[thumb_j3] = float(out[thumb_j3])
-        if self.mode == GraspMode.CLAW and self._claw_init_pending:
-            done = True
-            for name, target in CLAW_INIT_RAD:
-                index = self.index_of[name]
-                if abs(float(self._hold_state[index]) - float(target)) > _INIT_DONE_TOL_RAD:
-                    done = False
-                    break
-            if done:
-                self._claw_init_pending = False
         for index in range(HAND_DOF):
             if index not in holds:
                 self._hold_state[index] = float(out[index])

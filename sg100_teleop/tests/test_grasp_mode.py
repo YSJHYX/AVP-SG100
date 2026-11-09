@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 
 from sg100_teleop.control.grasp_mode import (
-    CLAW_THUMB_J2_LITTLE_OFFSET_RAD,
     GraspMode,
     GraspModeController,
 )
@@ -13,39 +12,42 @@ def _index(name: str) -> int:
     return SG100_JOINT_ORDER.index(name)
 
 
-def test_claw_couples_thumb_to_little_during_initialization():
-    controller = GraspModeController(joint_order=SG100_JOINT_ORDER)
-    seed = np.linspace(-0.4, 0.6, len(SG100_JOINT_ORDER))
-    controller.apply(seed, dt_s=1.0 / 60.0)
-    controller.set_mode(GraspMode.CLAW)
+@pytest.mark.parametrize("closure", (0.0, 0.2, 0.5, 1.0))
+@pytest.mark.parametrize("order", (SG100_JOINT_ORDER, tuple(reversed(SG100_JOINT_ORDER))))
+def test_claw_synchronizes_four_joints_and_locks_fingertips(closure, order):
+    from sg100_teleop.robot.sg100_driver import SG100HardwareMap
 
-    incoming = seed.copy()
-    incoming[_index("thumb_j2")] = 1.2
-    incoming[_index("thumb_j3")] = -0.9
-    output = controller.apply(incoming, dt_s=1.0 / 60.0)
+    controller = GraspModeController(joint_order=order, initial_mode=GraspMode.CLAW)
+    incoming = np.linspace(-0.4, 0.6, len(order))
+    original = incoming.copy()
+    output = controller.apply(incoming, dt_s=0.0, pinch_closure=closure)
+    angle = np.deg2rad(90.0) * closure
+    hardware_map = SG100HardwareMap()
+    expected = {
+        "thumb_j1": np.deg2rad(90.0), "thumb_j2": np.deg2rad(-149.0) + angle,
+        "thumb_j3": np.deg2rad(50.0), "index_j1": 0.0, "index_j2": angle,
+        "index_j3": np.deg2rad(50.0), "middle_j1": -angle,
+        "middle_j2": np.deg2rad(50.0),
+        "little_j1": hardware_map.lower_rad[hardware_map.software_index_of["little_j1"]],
+        "little_j2": angle, "little_j3": np.deg2rad(50.0),
+    }
+    for index, name in enumerate(order):
+        assert output[index] == pytest.approx(expected[name], abs=1e-14)
+    np.testing.assert_array_equal(incoming, original)
 
-    assert output[_index("thumb_j2")] == (
-        output[_index("little_j2")] - CLAW_THUMB_J2_LITTLE_OFFSET_RAD
-    )
-    assert output[_index("thumb_j3")] == output[_index("little_j3")]
 
-
-def test_claw_couples_thumb_to_live_little_targets_after_initialization():
-    controller = GraspModeController(joint_order=SG100_JOINT_ORDER)
-    controller.set_mode(GraspMode.CLAW)
-    controller.apply(np.zeros(len(SG100_JOINT_ORDER)), dt_s=0.0)
-
-    incoming = np.zeros(len(SG100_JOINT_ORDER))
-    incoming[_index("thumb_j2")] = -1.9
-    incoming[_index("thumb_j3")] = 0.8
-    incoming[_index("little_j2")] = 0.45
-    incoming[_index("little_j3")] = -0.35
-    output = controller.apply(incoming, dt_s=1.0 / 60.0)
-
-    assert output[_index("thumb_j2")] == (
-        incoming[_index("little_j2")] - CLAW_THUMB_J2_LITTLE_OFFSET_RAD
-    )
-    assert output[_index("thumb_j3")] == incoming[_index("little_j3")]
+def test_claw_ignores_independent_avp_finger_articulation():
+    controller = GraspModeController(initial_mode=GraspMode.CLAW)
+    first = np.linspace(-0.4, 0.6, len(SG100_JOINT_ORDER))
+    second = first[::-1].copy()
+    q1 = controller.apply(first, dt_s=0.0, pinch_closure=0.3)
+    q2 = controller.apply(second, dt_s=0.0, pinch_closure=0.3)
+    np.testing.assert_array_equal(q1, q2)
+    q3 = controller.apply(second, dt_s=0.0, pinch_closure=0.7)
+    delta = q3 - q2
+    active = [_index(n) for n in ("thumb_j2", "index_j2", "middle_j1", "little_j2")]
+    np.testing.assert_allclose(delta[active], np.deg2rad(36.0) * np.array([1, 1, -1, 1]))
+    assert np.count_nonzero(np.abs(delta) > 1e-12) == 4
 
 
 def test_free_and_hand_modes_do_not_couple_thumb_to_little():
@@ -182,8 +184,8 @@ def test_pinch_transition_respects_slew_and_releases_on_free():
     np.testing.assert_array_equal(controller.apply(incoming, dt_s=1 / 60), incoming)
 
 
-def test_shared_pinch_input_does_not_change_existing_modes():
-    for mode in (GraspMode.FREE, GraspMode.HAND, GraspMode.CLAW):
+def test_shared_gripper_input_does_not_change_free_and_hand():
+    for mode in (GraspMode.FREE, GraspMode.HAND):
         incoming = np.linspace(-0.5, 0.5, len(SG100_JOINT_ORDER))
         normal = GraspModeController(initial_mode=mode)
         with_closure = GraspModeController(initial_mode=mode)

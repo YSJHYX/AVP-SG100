@@ -2846,9 +2846,9 @@ def main():
             print(
                 "[HAND] grasp mode:",
                 mode.value,
-                "| CLAW: lock thumb_j1/index_j1/little_j1; "
-                "other joints slew to claw init then follow AVP; "
-                "thumb_j2=little_j2-149deg, thumb_j3=little_j3",
+                "| CLAW: AVP index flexion synchronizes J2/J5/J7/J10; "
+                "J3/J6/J8/J11=+50deg; J1=90deg; J4=0deg; "
+                "J9=legal claw limit (slew-limited)",
             )
 
         elif keycode == ord("4"):
