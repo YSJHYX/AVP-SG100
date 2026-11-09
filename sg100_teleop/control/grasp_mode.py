@@ -52,12 +52,19 @@ CLAW_INIT_RAD = (
     ("little_j3", CLAW_LITTLE_J3_RAD),
 )
 
-# PINCH keeps only thumb J2/J3 and index J5/J6 under AVP control.
-# These are canonical radians; the hardware F_cmd conversion stays downstream.
-PINCH_ACTIVE_JOINTS = ("thumb_j2", "thumb_j3", "index_j2", "index_j3")
+# PINCH uses one calibrated index-flexion input for both proximal joints.
+# Equal angular travel closes the opposed fingers together, within the
+# existing conservative thumb teleop range. F_cmd remains downstream.
+PINCH_ACTIVE_JOINTS = ("thumb_j2", "index_j2")
+PINCH_THUMB_J2_OPEN_RAD = -2.0
+PINCH_THUMB_J2_CLOSED_RAD = float(np.deg2rad(-30.0))
+PINCH_J2_TRAVEL_RAD = PINCH_THUMB_J2_CLOSED_RAD - PINCH_THUMB_J2_OPEN_RAD
+PINCH_DISTAL_RAD = float(np.deg2rad(50.0))
 PINCH_LOCK_RAD = (
     ("thumb_j1", float(np.deg2rad(90.0))),
+    ("thumb_j3", PINCH_DISTAL_RAD),
     ("index_j1", 0.0),
+    ("index_j3", PINCH_DISTAL_RAD),
     ("middle_j1", 0.0),
     ("middle_j2", 0.0),
     ("little_j1", 0.0),
@@ -134,19 +141,24 @@ class GraspModeController:
         q_hand_candidate: np.ndarray,
         *,
         dt_s: float,
-        raw_retarget_qcmd: np.ndarray | None = None,
+        pinch_closure: float | None = None,
     ) -> np.ndarray:
         q = np.asarray(q_hand_candidate, dtype=np.float64)
         if q.shape != (HAND_DOF,) or not np.all(np.isfinite(q)):
             raise ValueError("q_hand_candidate must be finite 11D")
-        if self.mode == GraspMode.PINCH and raw_retarget_qcmd is not None:
-            # Automatic pinch coordination parks J2 at -30 deg and uses
-            # other fingers as context. This explicit four-joint mode uses
-            # the base thumb/index mapping so both fingers remain live.
-            q = np.asarray(raw_retarget_qcmd, dtype=np.float64)
-            if q.shape != (HAND_DOF,) or not np.all(np.isfinite(q)):
-                raise ValueError("raw_retarget_qcmd must be finite 11D")
         out = q.copy()
+        if self.mode == GraspMode.PINCH:
+            if pinch_closure is None or not np.isfinite(pinch_closure):
+                raise ValueError("PINCH requires finite calibrated index flexion")
+            # Use one shared progress value instead of two independently
+            # mapped finger features, including when automatic pinch is on.
+            travel = PINCH_J2_TRAVEL_RAD * float(np.clip(pinch_closure, 0.0, 1.0))
+            out[self.index_of["thumb_j2"]] = float(np.clip(
+                PINCH_THUMB_J2_OPEN_RAD + travel,
+                PINCH_THUMB_J2_OPEN_RAD,
+                PINCH_THUMB_J2_CLOSED_RAD,
+            ))
+            out[self.index_of["index_j2"]] = travel
         if self._hold_state is None:
             self._hold_state = out.copy()
         holds = self._hold_targets()

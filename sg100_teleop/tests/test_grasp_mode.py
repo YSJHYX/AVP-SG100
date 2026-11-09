@@ -65,24 +65,32 @@ def test_free_and_hand_modes_do_not_couple_thumb_to_little():
         assert output[_index("thumb_j3")] == incoming[_index("thumb_j3")]
 
 
-def test_pinch_keeps_exactly_four_live_joints_and_parks_the_rest():
-    from sg100_teleop.control.grasp_mode import PINCH_ACTIVE_JOINTS
+@pytest.mark.parametrize("closure", (0.0, 0.1, 0.5, 0.9, 1.0))
+@pytest.mark.parametrize("order", (SG100_JOINT_ORDER, tuple(reversed(SG100_JOINT_ORDER))))
+def test_pinch_synchronizes_two_live_joints_and_parks_the_rest(closure, order):
+    from sg100_teleop.control.grasp_mode import (
+        PINCH_ACTIVE_JOINTS, PINCH_J2_TRAVEL_RAD, PINCH_LOCK_RAD,
+        PINCH_THUMB_J2_OPEN_RAD,
+    )
 
     # Resolve by name even when a caller uses a different joint order.
-    order = tuple(reversed(SG100_JOINT_ORDER))
     controller = GraspModeController(joint_order=order, initial_mode=GraspMode.PINCH)
     incoming = np.linspace(-1.1, 1.1, len(order))
     original = incoming.copy()
-    output = controller.apply(incoming, dt_s=0.0)
+    output = controller.apply(incoming, dt_s=0.0, pinch_closure=closure)
+    expected = dict(PINCH_LOCK_RAD)
+    expected["index_j2"] = closure * PINCH_J2_TRAVEL_RAD
+    expected["thumb_j2"] = PINCH_THUMB_J2_OPEN_RAD + expected["index_j2"]
+    assert PINCH_ACTIVE_JOINTS == ("thumb_j2", "index_j2")
     for i, name in enumerate(order):
-        if name in PINCH_ACTIVE_JOINTS:
-            assert output[i] == incoming[i]
-        else:
-            assert output[i] == (np.pi / 2 if name == "thumb_j1" else 0.0)
+        assert output[i] == pytest.approx(expected[name], abs=1e-14)
     np.testing.assert_array_equal(incoming, original)
 
 
-def test_pinch_uses_base_mapping_so_automatic_coordination_cannot_freeze_j2():
+def test_pinch_shared_input_bypasses_automatic_coordination():
+    from sg100_teleop.control.grasp_mode import (
+        PINCH_J2_TRAVEL_RAD, PINCH_THUMB_J2_OPEN_RAD,
+    )
     from sg100_teleop.hand.canonical_hand import CanonicalHandState
     from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
 
@@ -96,12 +104,14 @@ def test_pinch_uses_base_mapping_so_automatic_coordination_cannot_freeze_j2():
     # The existing automatic pinch branch parks J2 at -30 deg.
     assert not np.isclose(final[_index("thumb_j2")], raw[_index("thumb_j2")])
     controller = GraspModeController(initial_mode=GraspMode.PINCH)
-    output = controller.apply(final, dt_s=0.0, raw_retarget_qcmd=raw)
-    assert output[_index("thumb_j2")] == raw[_index("thumb_j2")]
+    output = controller.apply(final, dt_s=0.0, pinch_closure=hand.index_flexion)
+    travel = hand.index_flexion * PINCH_J2_TRAVEL_RAD
+    assert output[_index("thumb_j2")] == PINCH_THUMB_J2_OPEN_RAD + travel
+    assert output[_index("index_j2")] == travel
 
 
-def test_pinch_open_close_maps_thumb_and_index_independently():
-    from sg100_teleop.control.grasp_mode import PINCH_ACTIVE_JOINTS
+def test_pinch_open_close_uses_one_input_for_both_j2_joints():
+    from sg100_teleop.control.grasp_mode import PINCH_ACTIVE_JOINTS, PINCH_LOCK_RAD
     from sg100_teleop.hand.canonical_hand import CanonicalHandState
     from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
 
@@ -114,16 +124,18 @@ def test_pinch_open_close_maps_thumb_and_index_independently():
                            index_flexion=0.9, index_distal=0.8),
         CanonicalHandState.neutral(),
     ):
-        final, stages = retargeter.retarget_with_stages(hand)
-        output = controller.apply(final, dt_s=0.0,
-                                  raw_retarget_qcmd=stages["raw_retarget_qcmd"])
-        for name in PINCH_ACTIVE_JOINTS:
-            i = _index(name)
-            assert output[i] == stages["raw_retarget_qcmd"][i]
+        final = retargeter.retarget(hand)
+        output = controller.apply(final, dt_s=0.0, pinch_closure=hand.index_flexion)
+        for name, target in PINCH_LOCK_RAD:
+            assert output[_index(name)] == target
         outputs.append(output)
     for name in PINCH_ACTIVE_JOINTS:
         i = _index(name)
         assert not np.isclose(outputs[0][i], outputs[1][i])
+    np.testing.assert_allclose(
+        outputs[1][_index("thumb_j2")] - outputs[0][_index("thumb_j2")],
+        outputs[1][_index("index_j2")] - outputs[0][_index("index_j2")],
+    )
     np.testing.assert_array_equal(outputs[0], outputs[2])
 
 
@@ -142,43 +154,42 @@ def test_pinch_is_not_affected_by_middle_or_little_finger_motion():
             little_outward=background, little_flexion=background,
             little_distal=background,
         )
-        final, stages = retargeter.retarget_with_stages(hand)
+        final = retargeter.retarget(hand)
         outputs.append(controller.apply(final, dt_s=0.0,
-                       raw_retarget_qcmd=stages["raw_retarget_qcmd"]))
+                       pinch_closure=hand.index_flexion))
     for output in outputs[1:]:
         np.testing.assert_array_equal(output, outputs[0])
 
 
 def test_pinch_transition_respects_slew_and_releases_on_free():
-    from sg100_teleop.control.grasp_mode import PINCH_ACTIVE_JOINTS
+    from sg100_teleop.control.grasp_mode import PINCH_ACTIVE_JOINTS, PINCH_LOCK_RAD
 
     controller = GraspModeController(hold_slew_rad_s=3.0)
     seed = np.linspace(-0.8, 0.8, len(SG100_JOINT_ORDER))
     controller.apply(seed, dt_s=1 / 60)
     controller.set_mode(GraspMode.PINCH)
     incoming = seed[::-1].copy()
-    first = controller.apply(incoming, dt_s=1 / 60)
+    first = controller.apply(incoming, dt_s=1 / 60, pinch_closure=0.6)
     for i, name in enumerate(SG100_JOINT_ORDER):
         if name not in PINCH_ACTIVE_JOINTS:
             assert abs(first[i] - seed[i]) <= 3.0 / 60 + 1e-12
     for _ in range(120):
-        output = controller.apply(incoming, dt_s=1 / 60)
+        output = controller.apply(incoming, dt_s=1 / 60, pinch_closure=0.6)
     for i, name in enumerate(SG100_JOINT_ORDER):
         if name not in PINCH_ACTIVE_JOINTS:
-            assert output[i] == (np.pi / 2 if name == "thumb_j1" else 0.0)
+            assert output[i] == dict(PINCH_LOCK_RAD)[name]
     controller.set_mode(GraspMode.FREE)
     np.testing.assert_array_equal(controller.apply(incoming, dt_s=1 / 60), incoming)
 
 
-def test_raw_pinch_source_does_not_change_existing_modes():
+def test_shared_pinch_input_does_not_change_existing_modes():
     for mode in (GraspMode.FREE, GraspMode.HAND, GraspMode.CLAW):
         incoming = np.linspace(-0.5, 0.5, len(SG100_JOINT_ORDER))
-        raw = incoming[::-1].copy()
         normal = GraspModeController(initial_mode=mode)
-        with_raw = GraspModeController(initial_mode=mode)
+        with_closure = GraspModeController(initial_mode=mode)
         np.testing.assert_array_equal(
             normal.apply(incoming, dt_s=1 / 60),
-            with_raw.apply(incoming, dt_s=1 / 60, raw_retarget_qcmd=raw),
+            with_closure.apply(incoming, dt_s=1 / 60, pinch_closure=0.8),
         )
 
 

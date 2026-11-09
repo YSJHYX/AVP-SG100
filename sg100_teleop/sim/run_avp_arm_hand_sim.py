@@ -2865,8 +2865,9 @@ def main():
             print(
                 "[HAND] grasp mode:",
                 mode.value,
-                "| PINCH: AVP controls J2/J3/J5/J6; "
-                "J1=90deg; J4/J7/J8/J9/J10/J11=0deg (slew-limited)",
+                "| PINCH: AVP index flexion synchronizes J2/J5; "
+                "J3/J6=+50deg; J1=90deg; "
+                "J4/J7/J8/J9/J10/J11=0deg (slew-limited)",
             )
 
         elif keycode in (ord("J"), ord("j")):
@@ -3061,7 +3062,7 @@ def main():
                             q_hand_candidate = grasp_mode_controller.apply(
                                 q_hand_candidate,
                                 dt_s=tracking_period,
-                                raw_retarget_qcmd=hand_stages["raw_retarget_qcmd"],
+                                pinch_closure=canonical.index_flexion,
                             )
 
                             # Full hand command provenance (audit only):
