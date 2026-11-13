@@ -198,7 +198,7 @@ class SG100Mode7AllowlistSubmission:
 DEFAULT_KP = 10.0
 DEFAULT_KI = 0.0
 DEFAULT_KD = 0.05
-DEFAULT_OUTPUT_LIMIT = 1.0
+DEFAULT_OUTPUT_LIMIT = 1.5
 
 # SG100_Quant (sg100_types.h): symmetric int16, [-range, +range] with
 # QUANT_MAX = 32767; PID and output_limit both use range 10.

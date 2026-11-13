@@ -81,7 +81,7 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
   binary: the cache at Impl+0x79 stores the caller struct verbatim and the
   scheduler's encode lambda applies `clamp(min,max) -> *a+b -> *pi/180`).
 - Default control mode `MODE_JOINT_POSITION` (7), with configured whole-hand
-  gains Kp 10.0, Ki 0, Kd 0.05, output_limit 1.0, quantized with
+  gains Kp 10.0, Ki 0, Kd 0.05, output_limit 1.5, quantized with
   `SG100_Quant` semantics range 10. Ki/Kd retain the vendor teaching-example
   values; output_limit is the configured override, not a value in amperes.
 - `SetJointPositions` is NOT used by the production path (its forced
@@ -99,10 +99,10 @@ AVP -> SG100Retargeter -> pinch/power-grasp/limits/filter
   API builds one `Hand_Control_t` with per-joint fields and calls the same
   `sg100_set_hand_control -> SG100Device::SetHandControl` path exactly once per
   stage. Single-joint tests use `p=0.1, i=0, d=0`; restricted AVP uses
-  `p=10.0, i=0, d=0`. Both use the shared `DEFAULT_OUTPUT_LIMIT=1.0` and
+  `p=10.0, i=0, d=0`. Both use the shared `DEFAULT_OUTPUT_LIMIT=1.5` and
   leave unopened joints at zero output. The historical SDK example and
   vendor MODE7 log used 0.1/0/0/0.5 (quantized 328/0/0/1638); that evidence
-  does not validate the configured 1.0 override.
+  does not validate the configured 1.5 override.
 
 ## Feedback API
 

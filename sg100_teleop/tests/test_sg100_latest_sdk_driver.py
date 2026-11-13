@@ -132,7 +132,7 @@ def _serialize_control(wrapper_lib, positions_deg, mode):
         quantize_gain(0.5),
         quantize_gain(0.0),
         quantize_gain(0.05),
-        quantize_gain(1.0),
+        quantize_gain(1.5),
         out,
         out.size,
     )
@@ -167,7 +167,7 @@ def test_e_set_hand_control_structure(wrapper_lib) -> None:
         quantize_gain(0.5),
         quantize_gain(0.0),
         quantize_gain(0.05),
-        quantize_gain(1.0),
+        quantize_gain(1.5),
     )
     for joint in range(HAND_DOF):
         base = joint * 16
@@ -333,8 +333,8 @@ def test_driver_defaults_use_configured_whole_hand_gains() -> None:
     )
     assert driver.control_mode == MODE_JOINT_POSITION
     assert driver._pid_p == quantize_gain(10.0)
-    assert DEFAULT_OUTPUT_LIMIT == 1.0
-    assert driver._output_limit == int(round(1.0 * 32767 / 10.0))
+    assert DEFAULT_OUTPUT_LIMIT == 1.5
+    assert driver._output_limit == int(round(1.5 * 32767 / 10.0))
 
 
 @pytest.fixture
@@ -355,7 +355,7 @@ def offline_driver_with_controls():
 
 
 @pytest.mark.parametrize("path", ("whole_hand", "allowlist", "single_joint"))
-def test_active_send_paths_serialize_output_limit_1_0(offline_driver_with_controls, path):
+def test_active_send_paths_serialize_output_limit_1_5(offline_driver_with_controls, path):
     driver, calls = offline_driver_with_controls
     positions = np.zeros(HAND_DOF)
     if path == "whole_hand":
@@ -370,14 +370,14 @@ def test_active_send_paths_serialize_output_limit_1_0(offline_driver_with_contro
     assert event is not None
     assert len(calls) == 1
     expected = np.zeros(HAND_DOF, dtype=np.uint16)
-    expected[active] = quantize_gain(1.0)
+    expected[active] = quantize_gain(1.5)
     np.testing.assert_array_equal(calls[0][5], expected)
     np.testing.assert_array_equal(calls[0][1], [MODE_JOINT_POSITION] * HAND_DOF)
 
 
 @pytest.mark.parametrize("path", ("allowlist", "single_joint"))
-@pytest.mark.parametrize("invalid_limit", (0.5, 0.8))
-def test_active_send_guards_match_output_limit_1_0(
+@pytest.mark.parametrize("invalid_limit", (0.5, 0.8, 1.0))
+def test_active_send_guards_match_output_limit_1_5(
     offline_driver_with_controls, path, invalid_limit,
 ):
     driver, calls = offline_driver_with_controls
@@ -385,10 +385,10 @@ def test_active_send_guards_match_output_limit_1_0(
         send = lambda **kwargs: driver.send_mode7_active_allowlist((5,), np.zeros(HAND_DOF), **kwargs)
     else:
         send = lambda **kwargs: driver.send_mode7_active_single_joint(5, np.zeros(HAND_DOF), **kwargs)
-    with pytest.raises(ValueError, match=r"1\.0"):
+    with pytest.raises(ValueError, match=r"1\.5"):
         send(output_limit=invalid_limit)
     assert calls == []
-    assert send(output_limit=1.0) is not None
+    assert send(output_limit=1.5) is not None
     assert len(calls) == 1
 
 
