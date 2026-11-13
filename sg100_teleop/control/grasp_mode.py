@@ -1,4 +1,4 @@
-"""Runtime FREE / HAND / CLAW / PINCH morphology (pre-filter)."""
+"""Runtime FREE / HAND / CLAW / PINCH / TWO_FINGER morphology (pre-filter)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ class GraspMode(str, Enum):
     HAND = "hand"
     CLAW = "claw"
     PINCH = "pinch"
+    TWO_FINGER = "two_finger"
 
 
 # thumb_j1 canonical domain is [0, ~125 deg]; claw parks at +90 deg.
@@ -85,10 +86,32 @@ CLAW_GRIPPER_LOCK_RAD = (
     ("little_j3", PINCH_DISTAL_RAD),
 )
 
+# Mode 6 uses only index J2/J3 to drive all four fingers. The middle finger
+# has only J1/J2: proximal J1 flexes negatively; distal J2 follows index J3.
+# Thumb J2 retains its claw offset, and the three base axes stay parked.
+TWO_FINGER_THUMB_J2_OFFSET_RAD = float(np.deg2rad(-149.0))
+TWO_FINGER_LOCK_RAD = (
+    ("thumb_j1", float(np.deg2rad(90.0))),
+    ("index_j1", float(np.deg2rad(90.0))),
+    ("little_j1", float(np.deg2rad(-90.0))),
+)
+TWO_FINGER_INIT_RAD = (
+    ("thumb_j2", TWO_FINGER_THUMB_J2_OFFSET_RAD),
+    ("thumb_j3", 0.0),
+    ("index_j2", 0.0),
+    ("index_j3", 0.0),
+    ("middle_j1", 0.0),
+    ("middle_j2", 0.0),
+    ("little_j2", 0.0),
+    ("little_j3", 0.0),
+)
+TWO_FINGER_DISTAL_MAX_RAD = float(np.deg2rad(60.0))
+
 HAND_INDEX_J1_RAD = 0.0
 HAND_LITTLE_J1_RAD = 0.0
 
 DEFAULT_HOLD_SLEW_RAD_S = 3.0
+_INIT_DONE_TOL_RAD = 1e-3
 
 
 class GraspModeController:
@@ -125,6 +148,7 @@ class GraspModeController:
         self.hold_slew_rad_s = float(hold_slew_rad_s)
         self.mode = GraspMode(initial_mode)
         self._hold_state: np.ndarray | None = None
+        self._two_finger_init_pending = self.mode == GraspMode.TWO_FINGER
         self._claw_holds = {}
         for name, target in CLAW_GRIPPER_LOCK_RAD:
             hardware_index = hardware_map.software_index_of[name]
@@ -137,6 +161,7 @@ class GraspModeController:
 
     def set_mode(self, mode: GraspMode | str) -> GraspMode:
         self.mode = GraspMode(mode)
+        self._two_finger_init_pending = self.mode == GraspMode.TWO_FINGER
         return self.mode
 
     def _hold_targets(self) -> dict[int, float]:
@@ -150,6 +175,11 @@ class GraspModeController:
             }
         if self.mode == GraspMode.PINCH:
             return {i[name]: float(target) for name, target in PINCH_LOCK_RAD}
+        if self.mode == GraspMode.TWO_FINGER:
+            holds = {i[name]: float(target) for name, target in TWO_FINGER_LOCK_RAD}
+            if self._two_finger_init_pending:
+                holds.update((i[name], float(target)) for name, target in TWO_FINGER_INIT_RAD)
+            return holds
         return self._claw_holds
 
     def apply(
@@ -200,6 +230,26 @@ class GraspModeController:
                 next_v = current + float(np.clip(delta, -step, step))
             self._hold_state[index] = next_v
             out[index] = next_v
+        if self.mode == GraspMode.TWO_FINGER:
+            # Couple AFTER initialization/holds so the relationships also
+            # apply during entry. Ignore all independent non-index inputs.
+            j2 = float(out[self.index_of["index_j2"]])
+            j3 = min(float(out[self.index_of["index_j3"]]), TWO_FINGER_DISTAL_MAX_RAD)
+            out[self.index_of["thumb_j2"]] = j2 + TWO_FINGER_THUMB_J2_OFFSET_RAD
+            out[self.index_of["middle_j1"]] = -j2
+            out[self.index_of["little_j2"]] = j2
+            for name in ("thumb_j3", "index_j3", "middle_j2", "little_j3"):
+                out[self.index_of[name]] = j3
+            for name, _ in TWO_FINGER_INIT_RAD:
+                self._hold_state[self.index_of[name]] = float(out[self.index_of[name]])
+        if self.mode == GraspMode.TWO_FINGER and self._two_finger_init_pending:
+            # Return the complete initial pose for this frame before releasing
+            # the eight coupled joints on the next frame. Base axes stay held.
+            if all(
+                abs(float(out[index]) - target) <= _INIT_DONE_TOL_RAD
+                for index, target in holds.items()
+            ):
+                self._two_finger_init_pending = False
         for index in range(HAND_DOF):
             if index not in holds:
                 self._hold_state[index] = float(out[index])

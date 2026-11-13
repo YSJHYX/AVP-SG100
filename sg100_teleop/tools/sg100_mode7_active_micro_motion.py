@@ -31,6 +31,7 @@ from sg100_teleop.robot.sg100_driver import (
 )
 from sg100_teleop.robot.sg100_sdk_driver import (
     DEFAULT_BAUDRATE,
+    DEFAULT_OUTPUT_LIMIT,
     DEFAULT_SDK_DIR,
     SG100SDKDriver,
     load_vendor_user_ranges,
@@ -41,15 +42,17 @@ from sg100_teleop.robot.sg100_sdk_driver import (
 ROOT = Path(__file__).resolve().parents[2]
 RECORDING_ROOT = ROOT / "recording"
 
-# 唯一有当前 SDK example + vendor production log 双重证据的低增益组。
+# 当前测试配置；输出限幅与驱动统一，历史厂商参考不代表当前值已验证。
 ACTIVE_KP = 10
 ACTIVE_KI = 0.0
 ACTIVE_KD = 0.0
-ACTIVE_OUTPUT_LIMIT = 0.5
+ACTIVE_OUTPUT_LIMIT = DEFAULT_OUTPUT_LIMIT
 GAIN_EVIDENCE = (
     "SG100_SDK_Publish/examples/realtime_joint_control_example.cpp: "
     "InitHandCtrl(0.1,0,0,0.5); vendor sg100_control.log MODE7 TX: "
-    "p=328,i=0,d=0,output_limit=1638"
+    "p=328,i=0,d=0,output_limit=1638 (historical reference); "
+    f"configured output_limit override={ACTIVE_OUTPUT_LIMIT}, "
+    "not validated by that historical reference"
 )
 
 DEFAULT_DELTA_DEG = 0.5

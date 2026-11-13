@@ -237,9 +237,9 @@ def test_key_5_exits_script_source_and_selects_pinch():
     assert controller.mode == GraspMode.FREE
 
 
-@pytest.mark.parametrize("source_key", "12345")
-@pytest.mark.parametrize("target_key", "12345")
-def test_c_then_a_allows_direct_switch_between_all_five_modes(source_key, target_key):
+@pytest.mark.parametrize("source_key", "123456")
+@pytest.mark.parametrize("target_key", "123456")
+def test_c_then_a_allows_direct_switch_between_all_modes(source_key, target_key):
     from types import SimpleNamespace
 
     from sg100_teleop.control.scripted_hand import ScriptHandController
@@ -305,6 +305,7 @@ def test_c_then_a_allows_direct_switch_between_all_five_modes(source_key, target
                 "2": GraspMode.HAND,
                 "3": GraspMode.CLAW,
                 "5": GraspMode.PINCH,
+                "6": GraspMode.TWO_FINGER,
             }[key]
         assert backend.enabled
         assert backend.anchored
@@ -312,3 +313,187 @@ def test_c_then_a_allows_direct_switch_between_all_five_modes(source_key, target
         assert arming.active
         assert calibration_requests == [1]
         assert backend.enable_calls == [True]
+
+
+@pytest.mark.parametrize("order", (SG100_JOINT_ORDER, tuple(reversed(SG100_JOINT_ORDER))))
+def test_two_finger_initializes_then_couples_all_fingers_to_index(order):
+    controller = GraspModeController(joint_order=order, initial_mode=GraspMode.TWO_FINGER)
+    locks = {
+        "thumb_j1": np.deg2rad(90.0), "index_j1": np.deg2rad(90.0),
+        "little_j1": np.deg2rad(-90.0),
+    }
+    live = {"index_j2": 0.6, "index_j3": -0.3, "little_j2": 1.1, "little_j3": 0.4}
+    incoming = np.array([live.get(name, -0.7) for name in order])
+    original = incoming.copy()
+
+    initial = controller.apply(incoming, dt_s=0.0)
+    for i, name in enumerate(order):
+        expected = np.deg2rad(-149.0) if name == "thumb_j2" else locks.get(name, 0.0)
+        assert initial[i] == pytest.approx(expected, abs=1e-14)
+
+    for changed_joint in ("index_j2", "index_j3"):
+        candidate = incoming.copy()
+        candidate[order.index(changed_joint)] += 0.15
+        output = controller.apply(candidate, dt_s=1 / 60, pinch_closure=0.0)
+        j2 = candidate[order.index("index_j2")]
+        j3 = candidate[order.index("index_j3")]
+        expected = {
+            **locks, "thumb_j2": j2 - np.deg2rad(149.0),
+            "index_j2": j2, "middle_j1": -j2, "little_j2": j2,
+            "thumb_j3": j3, "index_j3": j3, "middle_j2": j3, "little_j3": j3,
+        }
+        for i, name in enumerate(order):
+            assert output[i] == pytest.approx(expected[name], abs=1e-14)
+    np.testing.assert_array_equal(incoming, original)
+
+
+def test_two_finger_slews_to_initial_pose_before_releasing_live_joints():
+    controller = GraspModeController(hold_slew_rad_s=3.0)
+    # Start from a pose with the same coupling, as on mode-6 reentry.
+    seed = np.deg2rad([0, -119, 20, 0, 30, 20, -30, 20, 0, 30, 20])
+    controller.apply(seed, dt_s=1 / 60)
+    controller.set_mode(GraspMode.TWO_FINGER)
+    incoming = np.full(len(SG100_JOINT_ORDER), 0.7)
+    initial_pose = np.deg2rad([90, -149, 0, 90, 0, 0, 0, 0, -90, 0, 0])
+    previous = seed
+
+    for _ in range(120):
+        output = controller.apply(incoming, dt_s=1 / 60)
+        assert np.all(np.abs(output - previous) <= 3.0 / 60 + 1e-12)
+        previous = output
+        if np.allclose(output, initial_pose, atol=1e-12, rtol=0.0):
+            break
+    else:
+        pytest.fail("mode 6 did not reach the full initial pose")
+
+    output = controller.apply(incoming, dt_s=1 / 60)
+    active = [_index(name) for name in (
+        "thumb_j2", "thumb_j3", "index_j2", "index_j3",
+        "middle_j1", "middle_j2", "little_j2", "little_j3",
+    )]
+    np.testing.assert_allclose(
+        output[active], [0.7 - np.deg2rad(149.0), 0.7, 0.7, 0.7, -0.7, 0.7, 0.7, 0.7],
+    )
+    fixed = [i for i in range(len(SG100_JOINT_ORDER)) if i not in active]
+    np.testing.assert_allclose(output[fixed], initial_pose[fixed], atol=1e-14, rtol=0.0)
+
+
+def test_two_finger_can_be_cancelled_and_reinitialized_on_reentry():
+    controller = GraspModeController()
+    incoming = np.linspace(-0.4, 0.4, len(SG100_JOINT_ORDER))
+    controller.set_mode(GraspMode.TWO_FINGER)
+    controller.apply(incoming, dt_s=1 / 60)
+    controller.set_mode(GraspMode.FREE)
+    np.testing.assert_array_equal(controller.apply(incoming, dt_s=1 / 60), incoming)
+
+    for _ in range(2):
+        controller.set_mode(GraspMode.TWO_FINGER)
+        initial = controller.apply(incoming, dt_s=0.0)
+        assert initial[_index("thumb_j2")] == np.deg2rad(-149.0)
+        for name in (
+            "thumb_j3", "index_j2", "index_j3",
+            "middle_j1", "middle_j2", "little_j2", "little_j3",
+        ):
+            assert initial[_index(name)] == 0.0
+        live = controller.apply(incoming, dt_s=1 / 60)
+        for name in ("index_j2", "index_j3"):
+            assert live[_index(name)] == incoming[_index(name)]
+        assert live[_index("little_j2")] == live[_index("index_j2")]
+        assert live[_index("middle_j1")] == -live[_index("index_j2")]
+        assert live[_index("thumb_j2")] == live[_index("index_j2")] - np.deg2rad(149.0)
+        for name in ("thumb_j3", "middle_j2", "little_j3"):
+            assert live[_index(name)] == live[_index("index_j3")]
+
+
+@pytest.mark.parametrize("order", (SG100_JOINT_ORDER, tuple(reversed(SG100_JOINT_ORDER))))
+@pytest.mark.parametrize("angle_deg", (-45.0, 0.0, 59.0, 60.0, 75.0, 90.0))
+def test_two_finger_caps_distal_targets_at_60_degrees(order, angle_deg):
+    controller = GraspModeController(joint_order=order, initial_mode=GraspMode.TWO_FINGER)
+    controller.apply(np.zeros(len(order)), dt_s=0.0)
+    incoming = np.zeros(len(order))
+    incoming[order.index("index_j3")] = np.deg2rad(angle_deg)
+    incoming[order.index("thumb_j3")] = -0.1
+    incoming[order.index("middle_j2")] = 1.5
+    incoming[order.index("little_j3")] = 1.3
+    # J2 targets retain their full range even when the distal joints saturate.
+    incoming[order.index("index_j2")] = np.deg2rad(90.0)
+    incoming[order.index("thumb_j2")] = -0.6
+    incoming[order.index("middle_j1")] = -0.3
+    incoming[order.index("little_j2")] = 0.2
+    original = incoming.copy()
+
+    output = controller.apply(incoming, dt_s=1 / 60)
+    for name in ("thumb_j3", "index_j3", "middle_j2", "little_j3"):
+        assert output[order.index(name)] == pytest.approx(np.deg2rad(min(angle_deg, 60.0)))
+    for name in ("index_j2", "little_j2"):
+        assert output[order.index(name)] == incoming[order.index("index_j2")]
+    assert output[order.index("thumb_j2")] == pytest.approx(np.deg2rad(-59.0))
+    assert output[order.index("middle_j1")] == pytest.approx(np.deg2rad(-90.0))
+    np.testing.assert_array_equal(incoming, original)
+
+    controller.set_mode(GraspMode.FREE)
+    np.testing.assert_array_equal(controller.apply(incoming, dt_s=1 / 60), incoming)
+
+
+def test_two_finger_caps_distal_targets_when_switching_from_a_larger_pose():
+    controller = GraspModeController()
+    seed = np.zeros(len(SG100_JOINT_ORDER))
+    distal = [_index(name) for name in ("thumb_j3", "index_j3", "middle_j2", "little_j3")]
+    seed[distal] = np.deg2rad(90.0)
+    controller.apply(seed, dt_s=1 / 60)
+    controller.set_mode(GraspMode.TWO_FINGER)
+
+    output = controller.apply(seed, dt_s=1 / 60)
+    assert np.all(output[distal] <= np.deg2rad(60.0))
+    for _ in range(120):
+        output = controller.apply(seed, dt_s=1 / 60)
+        assert np.all(output[distal] <= np.deg2rad(60.0))
+    np.testing.assert_allclose(output[distal], np.deg2rad(60.0))
+
+
+def test_two_finger_ignores_non_index_articulation_through_retargeter():
+    from sg100_teleop.hand.canonical_hand import CanonicalHandState
+    from sg100_teleop.retargeting.sg100_retargeter import SG100Retargeter
+
+    controller = GraspModeController(initial_mode=GraspMode.TWO_FINGER)
+    controller.apply(np.zeros(len(SG100_JOINT_ORDER)), dt_s=0.0)
+    retargeter = SG100Retargeter()
+    outputs = []
+    for background in (0.0, 0.5, 1.0):
+        hand = CanonicalHandState(
+            index_flexion=0.35, index_distal=0.4,
+            thumb_opposition=background, thumb_abduction=background,
+            thumb_distal=background, middle_flexion=background,
+            middle_distal=background, little_outward=background,
+            little_flexion=background, little_distal=background,
+        )
+        outputs.append(controller.apply(retargeter.retarget(hand), dt_s=1 / 60))
+    for output in outputs[1:]:
+        np.testing.assert_array_equal(output, outputs[0])
+    output = outputs[0]
+    assert output[_index("index_j2")] == pytest.approx(0.35 * 2.18)
+    assert output[_index("index_j3")] == pytest.approx(0.4 * 1.57)
+    assert output[_index("little_j2")] == output[_index("index_j2")]
+    assert output[_index("middle_j1")] == -output[_index("index_j2")]
+    assert output[_index("thumb_j2")] == output[_index("index_j2")] - np.deg2rad(149.0)
+    for name in ("thumb_j3", "middle_j2", "little_j3"):
+        assert output[_index(name)] == output[_index("index_j3")]
+
+
+@pytest.mark.parametrize("index_flexion_deg", (0.0, 30.0, 90.0, 124.0))
+def test_two_finger_middle_has_correct_sdk_direction_and_distal_limit(index_flexion_deg):
+    from sg100_teleop.robot.sg100_driver import SG100HardwareMap
+
+    controller = GraspModeController(initial_mode=GraspMode.TWO_FINGER)
+    controller.apply(np.zeros(len(SG100_JOINT_ORDER)), dt_s=0.0)
+    incoming = np.zeros(len(SG100_JOINT_ORDER))
+    incoming[_index("index_j2")] = np.deg2rad(index_flexion_deg)
+    incoming[_index("index_j3")] = np.deg2rad(75.0)
+    output = controller.apply(incoming, dt_s=1 / 60)
+    sdk_deg = np.rad2deg(SG100HardwareMap().canonical_to_actual(output))
+
+    # The canonical proximal direction is negative; F_cmd flips it once
+    # for the SDK. The middle distal command remains positive and capped.
+    assert output[_index("middle_j1")] == pytest.approx(-np.deg2rad(index_flexion_deg))
+    assert sdk_deg[_index("middle_j1")] == pytest.approx(index_flexion_deg)
+    assert sdk_deg[_index("middle_j2")] == pytest.approx(60.0)

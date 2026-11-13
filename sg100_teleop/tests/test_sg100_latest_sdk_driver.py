@@ -36,6 +36,7 @@ from sg100_teleop.robot.sg100_driver import (
 )
 from sg100_teleop.robot.sg100_mock_driver import MockSG100Driver
 from sg100_teleop.robot.sg100_sdk_driver import (
+    DEFAULT_OUTPUT_LIMIT,
     DEFAULT_SDK_DIR,
     MODE_JOINT_POSITION,
     MODE_NULL,
@@ -332,7 +333,74 @@ def test_driver_defaults_use_configured_whole_hand_gains() -> None:
     )
     assert driver.control_mode == MODE_JOINT_POSITION
     assert driver._pid_p == quantize_gain(10.0)
+    assert DEFAULT_OUTPUT_LIMIT == 1.0
     assert driver._output_limit == int(round(1.0 * 32767 / 10.0))
+
+
+@pytest.fixture
+def offline_driver_with_controls():
+    class Capture:
+        def __init__(self):
+            self.calls = []
+
+        def sg100_set_hand_control(self, *args):
+            self.calls.append(args)
+            return 1
+
+    driver = SG100SDKDriver("OFFLINE_ONLY", sdk_dir=DEFAULT_SDK_DIR)
+    capture = Capture()
+    driver._lib = capture
+    driver._connected = driver._realtime = True
+    return driver, capture.calls
+
+
+@pytest.mark.parametrize("path", ("whole_hand", "allowlist", "single_joint"))
+def test_active_send_paths_serialize_output_limit_1_0(offline_driver_with_controls, path):
+    driver, calls = offline_driver_with_controls
+    positions = np.zeros(HAND_DOF)
+    if path == "whole_hand":
+        event = driver.send_positions_rad(positions)
+        active = list(range(HAND_DOF))
+    elif path == "allowlist":
+        event = driver.send_mode7_active_allowlist((1, 5), positions)
+        active = [1, 5]
+    else:
+        event = driver.send_mode7_active_single_joint(5, positions)
+        active = [5]
+    assert event is not None
+    assert len(calls) == 1
+    expected = np.zeros(HAND_DOF, dtype=np.uint16)
+    expected[active] = quantize_gain(1.0)
+    np.testing.assert_array_equal(calls[0][5], expected)
+    np.testing.assert_array_equal(calls[0][1], [MODE_JOINT_POSITION] * HAND_DOF)
+
+
+@pytest.mark.parametrize("path", ("allowlist", "single_joint"))
+@pytest.mark.parametrize("invalid_limit", (0.5, 0.8))
+def test_active_send_guards_match_output_limit_1_0(
+    offline_driver_with_controls, path, invalid_limit,
+):
+    driver, calls = offline_driver_with_controls
+    if path == "allowlist":
+        send = lambda **kwargs: driver.send_mode7_active_allowlist((5,), np.zeros(HAND_DOF), **kwargs)
+    else:
+        send = lambda **kwargs: driver.send_mode7_active_single_joint(5, np.zeros(HAND_DOF), **kwargs)
+    with pytest.raises(ValueError, match=r"1\.0"):
+        send(output_limit=invalid_limit)
+    assert calls == []
+    assert send(output_limit=1.0) is not None
+    assert len(calls) == 1
+
+
+def test_zero_output_paths_stay_zero(offline_driver_with_controls):
+    driver, calls = offline_driver_with_controls
+    assert driver.send_mode7_zero_output_sdk_targets(np.zeros(HAND_DOF)) is not None
+    assert driver.send_mode7_feedback_probe() is not None
+    assert driver._send_null_control()
+    assert len(calls) == 3
+    for call in calls:
+        for values in call[2:6]:
+            np.testing.assert_array_equal(values, np.zeros(HAND_DOF, dtype=np.uint16))
 
 
 # -- probe tool: runtime map proof + MODE_NULL purity ------------------------

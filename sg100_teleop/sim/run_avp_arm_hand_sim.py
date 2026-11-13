@@ -2166,10 +2166,10 @@ def main():
     print(
         "grasp mode         :",
         grasp_mode_controller.mode.value,
-        "(1=FREE 2=HAND 3=CLAW 4=SCRIPT J/K/L 5=PINCH)",
+        "(1=FREE 2=HAND 3=CLAW 4=SCRIPT J/K/L 5=PINCH 6=TWO_FINGER)",
     )
     print(
-        "real hand sequence : C (wait for calibration) -> A -> select 1/2/3/4/5; "
+        "real hand sequence : C (wait for calibration) -> A -> select 1/2/3/4/5/6; "
         "mode switching preserves calibration and enable state"
     )
 
@@ -2868,6 +2868,18 @@ def main():
                 "| PINCH: AVP index flexion synchronizes J2/J5; "
                 "J3/J6=+50deg; J1=90deg; "
                 "J4/J7/J8/J9/J10/J11=0deg (slew-limited)",
+            )
+
+        elif keycode == ord("6"):
+            script_hand_controller.exit()
+            mode = grasp_mode_controller.set_mode(GraspMode.TWO_FINGER)
+            print(
+                "[HAND] grasp mode:",
+                mode.value,
+                "| TWO_FINGER: thumb_j1/index_j1=+90deg; little_j1=-90deg; "
+                "thumb_j2=index_j2-149deg; middle_j1=-index_j2; little_j2=index_j2; "
+                "thumb_j3/index_j3/middle_j2/little_j3=min(AVP index_j3,+60deg); "
+                "slew to open pose then follow AVP index J2/J3 only",
             )
 
         elif keycode in (ord("J"), ord("j")):

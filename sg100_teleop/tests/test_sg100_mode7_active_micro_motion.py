@@ -185,6 +185,7 @@ def test_control_has_exactly_one_driven_joint_and_other_ten_zero():
     )
     assert producing.tolist() == [5]
     assert np.count_nonzero(control["output_limit"] == 0) == 10
+    assert control["output_limit"][5] == active.quantize_gain(1.0)
 
 
 def test_native_per_joint_serializer_matches_exact_hand_control():
@@ -228,6 +229,7 @@ def test_driver_active_path_bypasses_maps_has_one_native_call_and_sdk_clamp():
     sent = capture.calls[0]
     np.testing.assert_allclose(sent[0], positions)
     assert np.flatnonzero(sent[5]).tolist() == [5]
+    assert sent[5][5] == active.quantize_gain(1.0)
     positions[5] = 900.0
     clamped = driver.send_mode7_active_single_joint(5, positions)
     assert clamped is not None
@@ -236,7 +238,7 @@ def test_driver_active_path_bypasses_maps_has_one_native_call_and_sdk_clamp():
         driver.vendor_user_ranges[5][1]
     )
     positions[5] = 1.25
-    with pytest.raises(ValueError, match="vendor-evidenced"):
+    with pytest.raises(ValueError, match="configured"):
         driver.send_mode7_active_single_joint(5, positions, output_limit=0.4)
     assert len(capture.calls) == 2
 

@@ -247,7 +247,7 @@ def test_sides_survive_restricted_backend_driver_and_sdk_mapping(
         assert lo <= user_deg <= hi
         if j in (3, 8):
             assert (p, i, d, limit) == (
-                quantize_gain(10.0), 0, 0, quantize_gain(0.5)
+                quantize_gain(10.0), 0, 0, quantize_gain(1.0)
             )
             # Vendor formula after its own user-domain clamp. Previously both
             # sides became zero here despite nonzero serialized targets.

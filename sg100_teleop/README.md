@@ -64,6 +64,10 @@ no-op；若变化超过浮点比较 epsilon，会记录 `SDK_LIMIT_MAPPING_MISMA
 当前 SDK 没有已验证的逐关节 0.5 A 运行时命令限制，因此本项目不把通用
 `output_limit` 解释为安培，也不猜测或自动写入未注明单位的 Flash 参数。
 
+当前驱动的主动输出限幅统一为 `DEFAULT_OUTPUT_LIMIT = 1.0`：启动姿态/整手位置发送、
+restricted MODE7 遥操作、单关节主动测试及其校验均引用该值。被动保持、MODE7 零输出
+标定和未启用关节仍使用 `0`。`1.0` 是输出限幅配置，不能直接等同于 `1.0 A`。
+
 ## 3. Environment
 
 ```bash
@@ -134,6 +138,16 @@ cd ~/VisionProTeleop
 
 等待 valid tracking，在 MuJoCo viewer 按 `C` 建立 AVP relative anchor。`C` 不是
 mechanical zero，也不修改 robot base axes。
+
+在 MuJoCo viewer 按 `6` 切换到 `TWO_FINGER` 模式：`thumb_j1/index_j1`
+持续锁定在 `+90°`，`little_j1=-90°`。
+切入时先平滑到达张开姿态：`thumb_j2=-149°`，其余参与联动的关节均为 `0°`。
+随后仅使用食指的两个输入联动：`thumb_j2=index_j2-149°`，`little_j2=index_j2`，
+`middle_j1=-index_j2`，`thumb_j3=index_j3=middle_j2=little_j3=min(食指 J3 输入,60°)`。
+SG100 中指只有 `middle_j1/middle_j2`，分别对应其他手指的近端屈伸和末节；近端使用负方向。
+其他手指的独立输入无效。上述角度为滤波前目标，后续仍遵守已有机械限位。
+可在遥操作过程中使用 `1/2/3/4/5/6` 随时切换，
+沿用同一目标、滤波和 backend 下发链路；切换保留已有的 `C` 标定和 `A` 授权状态。
 
 ### B. H1 — D455 camera-only recorder
 

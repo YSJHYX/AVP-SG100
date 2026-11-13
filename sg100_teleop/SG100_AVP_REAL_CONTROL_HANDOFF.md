@@ -480,9 +480,10 @@ p = 0.1,  i = 0,  d = 0,  output_limit = 0.5
 
 注意：只证明了**该参数在 J6 小幅（±0.5°）测试中受控**。不要自动推断
 所有关节 production 都用同参数。当前 AVP restricted allowlist 路径已配置为
-Kp 10.0 / Ki 0 / Kd 0 / output_limit 0.5；直接 `send_positions_rad`
-路径配置为 Kp 10.0 / Ki 0 / Kd 0.05 / output_limit 1.0。两条路径的
-Kp 10.0 均未被逐轴真机验证。
+Kp 10.0 / Ki 0 / Kd 0 / output_limit 1.0；直接 `send_positions_rad`
+路径配置为 Kp 10.0 / Ki 0 / Kd 0.05 / output_limit 1.0。单关节测试也已统一为
+output_limit 1.0，均引用 `DEFAULT_OUTPUT_LIMIT`。上述 0.5 历史证据不代表 1.0
+配置已获验证；两条路径的 Kp 10.0 均未被逐轴真机验证。
 
 ---
 
