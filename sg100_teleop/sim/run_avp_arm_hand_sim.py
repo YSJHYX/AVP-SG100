@@ -17,6 +17,10 @@ from sg100_teleop.calibration.io import load_calibration
 
 from sg100_teleop.hand.canonical_hand import CanonicalHandState
 
+from sg100_teleop.control.closure_conditioner import (
+    ClosureSignalConditioner,
+)
+
 from sg100_teleop.control.joint_command_filter import JointCommandFilter
 
 from sg100_teleop.control.grasp_mode import (
@@ -826,6 +830,48 @@ def build_arg_parser():
         type=float,
         default=4.0,
         help="Maximum SG100 hand joint velocity (rad/s)",
+    )
+
+    parser.add_argument(
+        "--closure-median-window",
+        type=int,
+        default=5,
+        help=(
+            "Median-filter window in tracking frames for the shared "
+            "CLAW/PINCH closure input; 1 disables (default: 5)"
+        ),
+    )
+
+    parser.add_argument(
+        "--closure-latch-engage",
+        type=float,
+        default=0.85,
+        help=(
+            "Closure latch engage level: at/above this filtered closure the "
+            "gripper holds its running max and ignores AVP finger-estimate "
+            "sag while the human keeps gripping (default: 0.85)"
+        ),
+    )
+
+    parser.add_argument(
+        "--closure-latch-release",
+        type=float,
+        default=0.40,
+        help=(
+            "Closure latch release level: the held grip releases only when "
+            "filtered closure falls below this, i.e. genuine hand opening "
+            "(default: 0.40)"
+        ),
+    )
+
+    parser.add_argument(
+        "--closure-deadband",
+        type=float,
+        default=0.02,
+        help=(
+            "Deadband on conditioned closure changes in the released "
+            "tracking region; suppresses pinch-pose wobble (default: 0.02)"
+        ),
     )
 
     parser.add_argument(
@@ -2085,6 +2131,12 @@ def main():
     grasp_mode_controller = GraspModeController(
         joint_order=tuple(retargeter.joint_order),
     )
+    closure_conditioner = ClosureSignalConditioner(
+        median_window=args.closure_median_window,
+        latch_engage=args.closure_latch_engage,
+        latch_release=args.closure_latch_release,
+        deadband=args.closure_deadband,
+    )
     script_hand_controller = ScriptHandController(
         joint_order=tuple(retargeter.joint_order),
     )
@@ -2846,7 +2898,8 @@ def main():
             print(
                 "[HAND] grasp mode:",
                 mode.value,
-                "| CLAW: AVP index flexion synchronizes J2/J5/J7/J10; "
+                "| CLAW: conditioned AVP index flexion "
+                "synchronizes J2/J5/J7/J10; "
                 "J3/J6/J8/J11=+50deg; J1=90deg; J4=0deg; "
                 "J9=legal claw limit (slew-limited)",
             )
@@ -2865,7 +2918,8 @@ def main():
             print(
                 "[HAND] grasp mode:",
                 mode.value,
-                "| PINCH: AVP index flexion synchronizes J2/J5; "
+                "| PINCH: conditioned AVP index flexion "
+                "synchronizes J2/J5; "
                 "J3/J6=+50deg; J1=90deg; "
                 "J4/J7/J8/J9/J10/J11=0deg (slew-limited)",
             )
@@ -3074,7 +3128,15 @@ def main():
                             q_hand_candidate = grasp_mode_controller.apply(
                                 q_hand_candidate,
                                 dt_s=tracking_period,
-                                pinch_closure=canonical.index_flexion,
+                                # One update per new tracking frame: the
+                                # median window spans real frames, and a
+                                # clenched-fist occlusion sag (0.5-0.7
+                                # sustained) no longer opens the gripper.
+                                pinch_closure=(
+                                    closure_conditioner.update(
+                                        canonical.index_flexion
+                                    )
+                                ),
                             )
 
                             # Full hand command provenance (audit only):
