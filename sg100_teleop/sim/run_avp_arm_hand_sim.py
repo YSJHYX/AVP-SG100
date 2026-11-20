@@ -767,6 +767,11 @@ def build_arg_parser():
     )
 
     parser.add_argument(
+        "--connection-timeout", type=float, default=30.0,
+        help="Seconds to wait for each AVP connection stage (default: 30)",
+    )
+
+    parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
         help="Combined RM65 + SG100 MuJoCo XML",
@@ -807,6 +812,11 @@ def build_arg_parser():
         type=float,
         default=60.0,
         help="MuJoCo state streaming frequency back to AVP",
+    )
+
+    parser.add_argument(
+        "--viewer-hz", type=float, default=60.0,
+        help="Local viewer synchronization rate; independent of control/physics (default: 60)",
     )
 
     parser.add_argument(
@@ -1305,16 +1315,19 @@ def main():
     # Argument validation
     # ========================================================
 
-    if args.tracking_hz <= 0.0:
+    if not math.isfinite(args.tracking_hz) or args.tracking_hz <= 0.0:
         raise ValueError(
             "--tracking-hz must be > 0"
         )
     
-    if args.stream_hz <= 0.0:
+    if not math.isfinite(args.stream_hz) or args.stream_hz <= 0.0:
         raise ValueError(
             "--stream-hz must be > 0"
         )
     
+    if not math.isfinite(args.viewer_hz) or args.viewer_hz <= 0.0:
+        raise ValueError("--viewer-hz must be finite and > 0")
+
     if args.filter_tau <= 0.0:
         raise ValueError(
             "--filter-tau must be > 0"
@@ -1638,6 +1651,7 @@ def main():
     if args.arm_backend == "real" or args.hand_backend == "real":
         real_error_recorder = RealHardwareErrorRecorder(
             recording_session_dir,
+            background=True,
             context={
                 "pid": os.getpid(),
                 "cwd": Path.cwd(),
@@ -1734,6 +1748,7 @@ def main():
             args.arm_ip,
             args.arm_port,
             send_hz=args.arm_send_hz,
+            record_command_events=args.collect_arm_hand_data,
             follow=args.arm_follow,
             radio=args.arm_radio,
             qdot_max_rad_s=qdot_max,
@@ -2455,7 +2470,8 @@ def main():
 
     streamer = VisionProStreamer(
         ip=args.ip,
-        record=True,
+        connection_timeout=args.connection_timeout,
+        record=False,
         verbose=args.verbose,
     )
 
@@ -2474,6 +2490,7 @@ def main():
             args.attach
         ),
         grpc_port=args.port,
+        streaming_hz=args.stream_hz,
         usdz_path=prebuilt_usdz_path,
     )
 
@@ -2509,6 +2526,8 @@ def main():
     )
 
     physics_accumulator = 0.0
+    viewer_period = 1.0 / args.viewer_hz
+    last_viewer_sync = -float("inf")
 
     last_tracking_query = (
         -float("inf")
@@ -4487,6 +4506,11 @@ def main():
                             data
                         )
 
+                    # Mock/alternate hand drivers also emit command events.
+                    # Without a collector these events have no consumer.
+                    if arm_hand_collector is None and hand_driver is not None:
+                        hand_driver.drain_command_events()
+
                     # External telemetry is a best-effort data-plane tap.
                     # Its configured data-plane rate does not change AVP, RM65,
                     # SG100, physics, or feedback control rates above.
@@ -4511,7 +4535,10 @@ def main():
                 # viewer.sync() is outside the 500 Hz physics loop.
                 # =================================================
 
-                viewer.sync()
+                viewer_now = time.perf_counter()
+                if viewer_now - last_viewer_sync >= viewer_period:
+                    viewer.sync()
+                    last_viewer_sync = viewer_now
 
 
                 # =================================================
@@ -4899,7 +4926,7 @@ def main():
     )
 
     if real_error_recorder is not None:
-        real_error_recorder.finish(
+        error_log_complete = real_error_recorder.finish(
             outcome=run_outcome,
             details={
                 "recording_path": recording_path,
@@ -4933,6 +4960,9 @@ def main():
             "real error log    :",
             real_error_recorder.path,
         )
+        if not error_log_complete:
+            print("[DIAGNOSTICS] Error log incomplete or still flushing:",
+                  real_error_recorder.dropped_records, real_error_recorder.last_error)
         if previous_excepthook is not None:
             sys.excepthook = previous_excepthook
 

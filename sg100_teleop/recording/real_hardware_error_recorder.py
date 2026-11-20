@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import atexit
+from collections import OrderedDict
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from enum import Enum
 import json
 import math
 import os
+import queue
 from pathlib import Path
 import threading
 import time
@@ -64,6 +67,8 @@ class RealHardwareErrorRecorder:
         session_dir: str | Path,
         *,
         context: dict[str, Any] | None = None,
+        background: bool = False,
+        queue_size: int = 1024,
     ) -> None:
         self.session_dir = Path(session_dir)
         self.path = self.session_dir / REAL_HARDWARE_ERROR_LOG
@@ -71,9 +76,20 @@ class RealHardwareErrorRecorder:
         self._sequence = 0
         self._severity_counts: dict[str, int] = {}
         self._lock = threading.Lock()
-        # Keep the exception objects alive for this short-lived run so Python
-        # cannot recycle an id and accidentally suppress a later exception.
-        self._logged_exceptions: dict[int, BaseException] = {}
+        # Keep a bounded identity cache; retaining every traceback leaks runs.
+        self._logged_exceptions = OrderedDict()
+        self.dropped_records = 0
+        self.last_error = ""
+        if queue_size < 1:
+            raise ValueError("queue_size must be positive")
+        self._queue = queue.Queue(maxsize=queue_size) if background else None
+        self._closing = threading.Event()
+        self._writer = None
+        if background:
+            self._writer = threading.Thread(target=self._write_loop, daemon=True,
+                                            name="hardware-error-log")
+            self._writer.start()
+            atexit.register(self.close)
         self.record(
             severity="INFO",
             component="runtime",
@@ -118,18 +134,49 @@ class RealHardwareErrorRecorder:
             }
             if include_stack:
                 payload["call_stack"] = traceback.format_stack(limit=16)[:-1]
-            line = json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                allow_nan=False,
-            )
-            self.session_dir.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-                handle.flush()
-                if severity_name == "ERROR":
-                    os.fsync(handle.fileno())
+            if self._queue is not None:
+                if self._closing.is_set():
+                    self.dropped_records += 1
+                    return
+                try:
+                    self._queue.put_nowait(payload)
+                except queue.Full:
+                    self.dropped_records += 1
+                return
+            self._write_payload(payload)
+
+    def _write_payload(self, payload):
+        line = json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+            if payload["severity"] == "ERROR":
+                os.fsync(handle.fileno())
+
+    def _write_loop(self):
+        while not self._closing.is_set() or not self._queue.empty():
+            try:
+                payload = self._queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                self._write_payload(payload)
+            except Exception as exc:
+                with self._lock:
+                    self.last_error = repr(exc)
+                    self.dropped_records += 1
+            finally:
+                self._queue.task_done()
+        if self.dropped_records or self.last_error:
+            try:
+                self._write_payload({
+                    "severity": "WARNING", "component": "diagnostic_logger",
+                    "event": "DIAGNOSTIC_LOG_INCOMPLETE",
+                    "dropped_records": self.dropped_records, "last_error": self.last_error,
+                })
+            except Exception as exc:
+                self.last_error = repr(exc)
 
     def record_exception(
         self,
@@ -145,6 +192,8 @@ class RealHardwareErrorRecorder:
             if self._logged_exceptions.get(exception_id) is exception:
                 return
             self._logged_exceptions[exception_id] = exception
+            if len(self._logged_exceptions) > 64:
+                self._logged_exceptions.popitem(last=False)
         tb = exception.__traceback__ if traceback_object is None else traceback_object
         merged = dict(details or {})
         merged.update(
@@ -170,7 +219,8 @@ class RealHardwareErrorRecorder:
         *,
         outcome: str,
         details: dict[str, Any] | None = None,
-    ) -> None:
+        timeout_s: float = 2.0,
+    ) -> bool:
         self.record(
             severity="INFO",
             component="runtime",
@@ -182,3 +232,15 @@ class RealHardwareErrorRecorder:
                 **(details or {}),
             },
         )
+
+        return self.close(timeout_s=timeout_s)
+
+    def close(self, timeout_s: float = 2.0) -> bool:
+        """Bounded drain, also used at process exit after startup exceptions."""
+        if self._writer is not None:
+            self._closing.set()
+            self._writer.join(timeout=max(0.0, timeout_s))
+            if self._writer.is_alive():
+                return False
+            atexit.unregister(self.close)
+        return not self.last_error and not self.dropped_records

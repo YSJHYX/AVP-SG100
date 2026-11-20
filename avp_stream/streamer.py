@@ -1,6 +1,6 @@
 import grpc
 from avp_stream.grpc_msg import * 
-from threading import Thread, Lock, Condition
+from threading import Thread, Lock, RLock, Condition, Event
 from avp_stream.utils.grpc_utils import * 
 import time 
 import numpy as np
@@ -891,7 +891,7 @@ def _is_room_code(value: str) -> bool:
 
 class VisionProStreamer:
 
-    def __init__(self, ip=None, record=True, ht_backend="grpc", benchmark_quiet=False, verbose=False, origin="avp", signaling_url=None, relay_only=False):
+    def __init__(self, ip=None, record=True, ht_backend="grpc", benchmark_quiet=False, verbose=False, origin="avp", signaling_url=None, relay_only=False, connection_timeout=30.0):
         """Initialize the VisionProStreamer.
 
         Parameters
@@ -949,7 +949,16 @@ class VisionProStreamer:
 
         # Vision Pro IP (only used in same-network mode)
         self.ip = None if self._cross_network_mode else ip
-        self.record = record 
+        self.record = record
+        if not math.isfinite(connection_timeout) or connection_timeout <= 0:
+            raise ValueError("connection_timeout must be finite and positive")
+        self._connection_timeout = float(connection_timeout)
+        self._connection_shutdown = Event()
+        self._connection_request_lock = RLock()
+        self._reconnect_thread = None
+        self._signaling_thread = None
+        self._tracking_channel = None
+        self._tracking_call = None
         
         # In cross-network mode, always use WebRTC for hand tracking
         if self._cross_network_mode:
@@ -1011,6 +1020,12 @@ class VisionProStreamer:
         self._pose_stream_running = False
         self._pose_stream_thread = None
         self._pose_stream_lock = Lock()
+        self._pose_send_lock = Lock()
+        self._pose_send_pending = False
+        self._pending_pose_message = None
+        self._pose_send_dropped = 0
+        self._pose_send_errors = 0
+        self._pose_buffer_limit = 1024 * 1024
         self._current_poses: Dict[str, Dict[str, Any]] = {}
         self._attach_to_mat = np.eye(4)
         self._session_id = f"avpstream_{int(time.time())}"
@@ -1047,7 +1062,11 @@ class VisionProStreamer:
             # This allows configure_video() / configure_audio() to be called first
         else:
             self._start_info_server()  # Start HTTP endpoint immediately
-            self._start_hand_tracking()  # Start hand tracking stream
+            try:
+                self._start_hand_tracking()  # Start hand tracking stream
+            except Exception:
+                self.cleanup()
+                raise
     
     def cleanup(self):
         """Clean up resources and notify VisionOS of disconnect.
@@ -1056,6 +1075,19 @@ class VisionProStreamer:
         VisionOS receives a proper disconnect notification.
         """
         self._log("[CLEANUP] Cleaning up streamer resources...", force=True)
+        self._connection_shutdown.set()
+        self._stop_pose_streaming()
+        with self._connection_request_lock:
+            info_server = self.info_server
+            self.info_server = None
+        if info_server is not None:
+            info_server.shutdown()
+            info_server.server_close()
+        tracking_call, tracking_channel = self._tracking_call, self._tracking_channel
+        if tracking_call is not None:
+            tracking_call.cancel()
+        if tracking_channel is not None:
+            tracking_channel.close()
         
         # Send explicit leave message via signaling
         if self._cross_network_mode and self._signaling_ws and self._signaling_connected:
@@ -1507,16 +1539,34 @@ class VisionProStreamer:
         if self.ht_backend == "webrtc":
             self._log("Note: WebRTC hand tracking requires an active WebRTC session (start_streaming).")
         self._log('Waiting for hand tracking data...')
-        retry_count = 0
-        while self.latest is None: 
-            time.sleep(0.1)
-            retry_count += 1
-            if retry_count > 100:  # 10 seconds timeout
-                self._log('WARNING: No data received yet. Is the VisionOS app running?', force=True)
-                retry_count = 0
-        
+        self._wait_for_connection(lambda: self.latest is not None, "first hand tracking frame")
+
         self._log(' == DATA IS FLOWING IN! ==', force=True)
         self._log('Ready to start streaming.') 
+
+    def _wait_for_connection(self, predicate, description):
+        deadline = time.monotonic() + self._connection_timeout
+        while not predicate():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Timed out waiting for {description}")
+            if self._connection_shutdown.wait(min(0.1, remaining)):
+                raise ConnectionError("Streamer is shutting down")
+
+    def _request_cross_network_reconnect(self):
+        # get_latest() is a control-loop accessor: never wait for network here.
+        with self._connection_request_lock:
+            if self._connection_shutdown.is_set():
+                return
+            if self._reconnect_thread is not None and self._reconnect_thread.is_alive():
+                return
+            def reconnect():
+                try:
+                    self._ensure_cross_network_connected()
+                except (TimeoutError, ConnectionError) as exc:
+                    self._log(f"[CROSS-NETWORK] {exc}", force=True)
+            self._reconnect_thread = Thread(target=reconnect, daemon=True)
+            self._reconnect_thread.start()
 
     def _ensure_cross_network_connected(self):
         """Ensure cross-network WebRTC connection is established (lazy initialization).
@@ -1539,27 +1589,15 @@ class VisionProStreamer:
             
             # Step 2: Wait for VisionOS peer to be ready
             self._log('[CROSS-NETWORK] Waiting for VisionOS peer...', force=True)
-            retry_count = 0
-            while not self._peer_ready:
-                time.sleep(0.1)
-                retry_count += 1
-                if retry_count > 100:  # 10 seconds
-                    self._log('[CROSS-NETWORK] Still waiting for VisionOS to join the room...', force=True)
-                    retry_count = 0
-            
+            self._wait_for_connection(lambda: self._peer_ready, "VisionOS peer")
+
             # Step 3: Trigger WebRTC offer (hand-tracking only, no video/audio configured)
             self._trigger_webrtc_offer()
             
             # Step 4: Wait for hand tracking data to flow
             self._log('[CROSS-NETWORK] Waiting for hand tracking data...', force=True)
-            retry_count = 0
-            while not self._webrtc_hand_ready:
-                time.sleep(0.1)
-                retry_count += 1
-                if retry_count > 100:  # 10 seconds
-                    self._log('[CROSS-NETWORK] Still waiting for hand tracking channel...', force=True)
-                    retry_count = 0
-            
+            self._wait_for_connection(lambda: self._webrtc_hand_ready, "hand tracking channel")
+
             self._log('[CROSS-NETWORK] Hand tracking connected!', force=True)
         finally:
             self._cross_network_connecting = False
@@ -1571,22 +1609,19 @@ class VisionProStreamer:
         offer creation happens later when serve()/start_webrtc() is called,
         ensuring video/audio configuration is complete before creating the offer.
         """
-        signaling_thread = Thread(target=self._signaling_loop, daemon=True)
-        signaling_thread.start()
-        
-        self._ice_servers = None  # Initialize ICE servers storage
+        with self._connection_request_lock:
+            if self._connection_shutdown.is_set():
+                raise ConnectionError("Streamer is shutting down")
+            if self._signaling_thread is None or not self._signaling_thread.is_alive():
+                self._ice_servers = None
+                self._signaling_thread = Thread(target=self._signaling_loop, daemon=True)
+                self._signaling_thread.start()
         
         self._log('[CROSS-NETWORK] Connecting to signaling server...', force=True)
         
         # Wait for signaling connection
-        retry_count = 0
-        while not self._signaling_connected:
-            time.sleep(0.1)
-            retry_count += 1
-            if retry_count > 100:  # 10 seconds timeout
-                self._log('[CROSS-NETWORK] WARNING: Still waiting for signaling connection...', force=True)
-                retry_count = 0
-        
+        self._wait_for_connection(lambda: self._signaling_connected, "signaling server")
+
         self._log('[CROSS-NETWORK] Signaling connected.', force=True)
         self._log('[CROSS-NETWORK] Call configure_video()/configure_mujoco() then start_webrtc() to begin streaming.', force=True)
 
@@ -1681,7 +1716,7 @@ class VisionProStreamer:
             self._signaling_ws = None
         
         # Connect to signaling server with retry
-        while True:
+        while not self._connection_shutdown.is_set():
             try:
                 ws = websocket.WebSocketApp(
                     self._signaling_url,
@@ -1690,13 +1725,18 @@ class VisionProStreamer:
                     on_error=on_error,
                     on_close=on_close
                 )
+                self._signaling_ws = ws
+                if self._connection_shutdown.is_set():
+                    ws.close()
+                    return
                 ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception as e:
                 self._log(f'[SIGNALING] Connection error: {e}', force=True)
             
             # Retry after delay
             self._log('[SIGNALING] Reconnecting in 5 seconds...', force=True)
-            time.sleep(5)
+            if self._connection_shutdown.wait(5):
+                return
 
     async def _create_webrtc_offer_signaling(self):
         """Create WebRTC offer with video/audio/sim tracks for cross-network mode.
@@ -2152,9 +2192,13 @@ class VisionProStreamer:
         retry_delay = 0.5
         
         for attempt in range(max_retries):
+            if self._connection_shutdown.is_set():
+                return
+            channel = None
             try:
                 self._log(f"Attempting to connect to {self.ip}:12345 (attempt {attempt + 1}/{max_retries})...")
                 channel = grpc.insecure_channel(f"{self.ip}:12345")
+                self._tracking_channel = channel
                 
                 try:
                     # Wait for channel to be ready
@@ -2165,7 +2209,7 @@ class VisionProStreamer:
                     self._log(f"[GRPC] Warning: Channel not ready: {type(channel_error).__name__}: {channel_error}")
                     channel.close()
                     if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
+                        self._connection_shutdown.wait(retry_delay)
                         retry_delay *= 2
                     continue
                     
@@ -2184,7 +2228,10 @@ class VisionProStreamer:
                 responses = stub.StreamHandUpdates(request, metadata=metadata if metadata else None)
                 self._log("[GRPC] Stream established, waiting for responses...")
                 
+                self._tracking_call = responses
                 for response in responses:
+                    if self._connection_shutdown.is_set():
+                        return
                     self._process_hand_update(response, source="grpc")
                 
                 # If we get here, connection was successful
@@ -2194,7 +2241,7 @@ class VisionProStreamer:
             except grpc.RpcError as e:
                 if attempt < max_retries - 1:
                     self._log(f"[GRPC] Connection failed: {e.code()}. Retrying in {retry_delay}s...")
-                    time.sleep(retry_delay)
+                    self._connection_shutdown.wait(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                 else:
                     self._log(f"[GRPC] Failed to connect after {max_retries} attempts", force=True)
@@ -2214,10 +2261,15 @@ class VisionProStreamer:
                     traceback.print_exc()
                 if attempt < max_retries - 1:
                     self._log(f"  Retrying in {retry_delay}s...")
-                    time.sleep(retry_delay)
+                    self._connection_shutdown.wait(retry_delay)
                     retry_delay *= 2
                 else:
-                    break 
+                    break
+            finally:
+                if channel is not None:
+                    channel.close()
+                self._tracking_call = None
+                self._tracking_channel = None
 
     def get_latest(self, use_cache=False, cache_ms=10) -> Optional[TrackingData]: 
         """Return the most recent tracking sample as a TrackingData object.
@@ -2265,7 +2317,7 @@ class VisionProStreamer:
         """
         # Lazy connection for cross-network mode
         if self._cross_network_mode and not self._webrtc_connected:
-            self._ensure_cross_network_connected()
+            self._request_cross_network_reconnect()
         
         raw_data = None
         if use_cache:
@@ -2783,6 +2835,9 @@ class VisionProStreamer:
                 mujoco.mj_step(model, data)
                 streamer.update_sim()
         """
+        if not math.isfinite(streaming_hz) or streaming_hz <= 0:
+            raise ValueError("streaming_hz must be finite and positive")
+
         
         resolved_usdz_path = None
         if usdz_path is not None:
@@ -3570,6 +3625,8 @@ class VisionProStreamer:
             return
         
         self._log("[SIM] Starting pose streaming via WebRTC data channel...", force=True)
+        if self._connection_shutdown.is_set():
+            return
         self._pose_stream_running = True
         
         # Thread-based streaming
@@ -3586,6 +3643,55 @@ class VisionProStreamer:
         if self._pose_stream_thread:
             self._pose_stream_thread.join(timeout=2.0)
     
+    def _queue_pose_message(self, message):
+        """At most one scheduled send and a bounded SCTP backlog.
+
+        Old visualization snapshots may be skipped under congestion. Robot
+        commands and recording data never pass through this lossy channel.
+        """
+        with self._pose_send_lock:
+            if self._connection_shutdown.is_set():
+                self._pose_send_dropped += 1
+                return False
+            self._pending_pose_message = message
+            if self._pose_send_pending:
+                self._pose_send_dropped += 1
+                return False
+            self._pose_send_pending = True
+
+        def send_latest():
+            try:
+                with self._pose_send_lock:
+                    latest_message = self._pending_pose_message
+                channel = self._webrtc_sim_channel
+                if (self._connection_shutdown.is_set() or channel is None
+                        or channel.readyState != "open"):
+                    return
+                if channel.bufferedAmount + len(latest_message) > self._pose_buffer_limit:
+                    self._pose_send_dropped += 1
+                    return
+                channel.send(latest_message)
+            except Exception:
+                # Exceptions occur on the event-loop thread, not the producer.
+                self._pose_send_errors += 1
+            finally:
+                with self._pose_send_lock:
+                    self._pose_send_pending = False
+                    self._pending_pose_message = None
+
+        try:
+            if self._webrtc_loop is not None:
+                self._webrtc_loop.call_soon_threadsafe(send_latest)
+            else:
+                send_latest()
+        except Exception:
+            with self._pose_send_lock:
+                self._pose_send_pending = False
+                self._pending_pose_message = None
+            self._pose_send_errors += 1
+            return False
+        return True
+
     def _pose_streaming_loop_webrtc(self):
         """Background thread to stream poses via WebRTC data channel."""
         import struct
@@ -3606,7 +3712,7 @@ class VisionProStreamer:
         buffer = bytearray(4096)
         
         try:
-            while self._pose_stream_running:
+            while self._pose_stream_running and not self._connection_shutdown.is_set():
                 if not self._webrtc_sim_ready or self._webrtc_sim_channel is None:
                     time.sleep(0.1)
                     continue
@@ -3680,12 +3786,7 @@ class VisionProStreamer:
                     message = b''.join(parts)
                     
                     try:
-                        if self._webrtc_loop is not None:
-                            self._webrtc_loop.call_soon_threadsafe(
-                                self._webrtc_sim_channel.send, message
-                            )
-                        else:
-                            self._webrtc_sim_channel.send(message)
+                        self._queue_pose_message(message)
                         frame_count += 1
                         if frame_count == 1:
                             self._log(f"[SIM] First pose ({valid_count} bodies, {len(message)}B)", force=True)
@@ -3717,7 +3818,7 @@ class VisionProStreamer:
         frame_count = 0
         
         try:
-            while self._pose_stream_running:
+            while self._pose_stream_running and not self._connection_shutdown.is_set():
                 if not self._webrtc_sim_ready or self._webrtc_sim_channel is None:
                     await asyncio.sleep(0.1)
                     continue
@@ -3793,7 +3894,7 @@ class VisionProStreamer:
                     
                     # Send as single binary message
                     try:
-                        self._webrtc_sim_channel.send(message)
+                        self._queue_pose_message(message)
                         frame_count += 1
                         if frame_count == 1:
                             self._log(f"[SIM] First sim pose sent ({len(valid_bodies)} bodies, {len(message)} bytes binary)", force=True)
@@ -5121,7 +5222,11 @@ class VisionProStreamer:
         def run_http_server():
             try:
                 server = ReusableHTTPServer(('0.0.0.0', port), InfoHandler)
-                self.info_server = server
+                with self._connection_request_lock:
+                    if self._connection_shutdown.is_set():
+                        server.server_close()
+                        return
+                    self.info_server = server
                 # print(f"Info server started on port {port}")
                 server.serve_forever()
             except Exception as e:

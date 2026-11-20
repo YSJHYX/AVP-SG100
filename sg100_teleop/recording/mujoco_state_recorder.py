@@ -10,6 +10,8 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from sg100_teleop.recording.session_spool import ArraySpool
+
 from sg100_teleop.sim.camera_observations import (
     CAMERA_TO_OBSERVATION_KEY,
     validate_camera_observation_contract,
@@ -37,9 +39,9 @@ HAND_QPOS_SOURCE = "MuJoCo simulation state"
 class MujocoStateRecorder:
     """Record visual state at a clock independent of physics and tracking.
 
-    Sampling is driven only by ``data.time``. Runtime recording copies qpos,
-    mocap_pos, and mocap_quat into memory; it never renders or encodes video.
-    The complete session is written once during :meth:`stop`.
+    Sampling is driven only by ``data.time``. Fixed-width state rows are
+    spooled to disk; it never renders or encodes video. The same complete
+    NPZ recording is finalized during :meth:`stop` without a full RAM copy.
 
     Hand command recording (optional, enabled by ``hand_qpos_indices``):
     ``set_hand_command`` latches the authoritative canonical 11D hand
@@ -102,12 +104,11 @@ class MujocoStateRecorder:
         self._wall_start: datetime | None = None
         self._simulation_start: float | None = None
         self._next_capture_time: float | None = None
-        self._timestamps: list[float] = []
-        self._qpos: list[np.ndarray] = []
-        self._mocap_pos: list[np.ndarray] = []
-        self._mocap_quat: list[np.ndarray] = []
-        self._hand_qcmd: list[np.ndarray] = []
-        self._hand_qpos: list[np.ndarray] = []
+        self._samples: ArraySpool | None = None
+        self._frame_count = 0
+        self._first_capture_time: float | None = None
+        self._last_capture_time: float | None = None
+        self._missing_hand_commands = 0
         self._latest_hand_qcmd: np.ndarray | None = None
         self._started = False
         self._stopped = False
@@ -156,6 +157,11 @@ class MujocoStateRecorder:
         self._validate_data(data)
 
         self.prepare_session()
+        self._samples = ArraySpool(
+            self.session_dir,
+            1 + self.model.nq + 7 * self.model.nmocap
+            + (2 * HAND_DOF if self.hand_qpos_indices is not None else 0),
+        )
         self._simulation_start = float(data.time)
         self._next_capture_time = self._simulation_start
         self._started = True
@@ -207,19 +213,21 @@ class MujocoStateRecorder:
         if simulation_time + 1e-12 < self._next_capture_time:
             return False
 
-        self._timestamps.append(simulation_time)
-        self._qpos.append(data.qpos.copy())
-        self._mocap_pos.append(data.mocap_pos.copy())
-        self._mocap_quat.append(data.mocap_quat.copy())
+        parts = [np.array([simulation_time]), data.qpos,
+                 data.mocap_pos.ravel(), data.mocap_quat.ravel()]
         if self.hand_qpos_indices is not None:
-            self._hand_qpos.append(
-                data.qpos[self.hand_qpos_indices].copy()
-            )
-            self._hand_qcmd.append(
-                self._latest_hand_qcmd.copy()
-                if self._latest_hand_qcmd is not None
+            command = (
+                self._latest_hand_qcmd if self._latest_hand_qcmd is not None
                 else np.full(HAND_DOF, np.nan)
             )
+            parts.extend([command, data.qpos[self.hand_qpos_indices]])
+            self._missing_hand_commands += int(not np.all(np.isfinite(command)))
+        assert self._samples is not None
+        self._samples.append(np.concatenate(parts))
+        self._frame_count += 1
+        if self._first_capture_time is None:
+            self._first_capture_time = simulation_time
+        self._last_capture_time = simulation_time
 
         # Normally the 2 ms physics step crosses at most one 30 Hz deadline.
         # Advance through every missed deadline without duplicating a state if
@@ -230,12 +238,12 @@ class MujocoStateRecorder:
 
     @property
     def frame_count(self) -> int:
-        return len(self._timestamps)
+        return self._frame_count
 
     def _metadata(self) -> dict[str, Any]:
-        timestamps = np.asarray(self._timestamps, dtype=np.float64)
         recorded_span = (
-            float(timestamps[-1] - timestamps[0]) if timestamps.size > 1 else 0.0
+            self._last_capture_time - self._first_capture_time
+            if self._frame_count > 1 else 0.0
         )
         return {
             "schema_version": 1,
@@ -252,7 +260,7 @@ class MujocoStateRecorder:
             ),
             "simulation_start_time": self._simulation_start,
             "simulation_end_time": (
-                float(timestamps[-1]) if timestamps.size else self._simulation_start
+                self._last_capture_time if self._frame_count else self._simulation_start
             ),
             "recorded_time_span": recorded_span,
             "video_duration": self.frame_count / self.record_fps,
@@ -267,11 +275,6 @@ class MujocoStateRecorder:
         if self.hand_qpos_indices is None:
             return {}
 
-        missing_command_frames = sum(
-            1
-            for sample in self._hand_qcmd
-            if not np.all(np.isfinite(sample))
-        )
         return {
             "hand_dof": int(HAND_DOF),
             "hand_joint_names": list(self.hand_joint_names),
@@ -284,7 +287,7 @@ class MujocoStateRecorder:
                 "command != MuJoCo qpos: qpos is the simulation response "
                 "to this command, not the command itself"
             ),
-            "hand_command_missing_frames": missing_command_frames,
+            "hand_command_missing_frames": self._missing_hand_commands,
         }
 
     def stop(self) -> Path:
@@ -298,20 +301,25 @@ class MujocoStateRecorder:
         assert self.output_path is not None
         assert self.metadata_path is not None
 
-        timestamps = np.asarray(self._timestamps, dtype=np.float64)
-        qpos = np.stack(self._qpos).astype(np.float64, copy=False)
-        mocap_pos = np.stack(self._mocap_pos).astype(np.float64, copy=False)
-        mocap_quat = np.stack(self._mocap_quat).astype(np.float64, copy=False)
+        assert self._samples is not None
+        samples = self._samples.view()
+        timestamps = samples[:, 0]
+        offset = 1
+        qpos = samples[:, offset:offset + self.model.nq]
+        offset += self.model.nq
+        mocap_pos = samples[:, offset:offset + 3 * self.model.nmocap].reshape(
+            self.frame_count, self.model.nmocap, 3
+        )
+        offset += 3 * self.model.nmocap
+        mocap_quat = samples[:, offset:offset + 4 * self.model.nmocap].reshape(
+            self.frame_count, self.model.nmocap, 4
+        )
+        offset += 4 * self.model.nmocap
         metadata = self._metadata()
-
-        hand_arrays: dict[str, np.ndarray] = {}
+        hand_arrays = {}
         if self.hand_qpos_indices is not None:
-            hand_arrays["hand_qcmd_canonical_rad"] = (
-                np.stack(self._hand_qcmd).astype(np.float64, copy=False)
-            )
-            hand_arrays["hand_qpos_mujoco_rad"] = (
-                np.stack(self._hand_qpos).astype(np.float64, copy=False)
-            )
+            hand_arrays["hand_qcmd_canonical_rad"] = samples[:, offset:offset + HAND_DOF]
+            hand_arrays["hand_qpos_mujoco_rad"] = samples[:, offset + HAND_DOF:]
 
         temporary_output = self.output_path.with_name(
             f".{self.output_path.name}.tmp"
@@ -347,5 +355,10 @@ class MujocoStateRecorder:
             encoding="utf-8",
         )
         temporary_metadata.replace(self.metadata_path)
+        # Drop all mmap views before closing scratch storage (also on Windows).
+        hand_arrays.clear()
+        del timestamps, qpos, mocap_pos, mocap_quat
+        samples._mmap.close()
+        self._samples.close()
         self._stopped = True
         return self.output_path

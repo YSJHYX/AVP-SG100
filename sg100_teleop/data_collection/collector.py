@@ -16,6 +16,8 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 
+from sg100_teleop.recording.session_spool import SessionSpool
+
 from sg100_teleop.data_collection.camera import CameraProvider, NullCameraProvider
 from sg100_teleop.data_collection.schema import (
     ARM_DIM,
@@ -126,12 +128,13 @@ class ArmHandDataCollector:
         if self.started_timestamp_ns <= 0:
             raise ValueError("started_timestamp_ns must be positive")
 
+        self._spool = SessionSpool(self.output_dir)
         self._feedback: deque[ArmState] = deque(maxlen=config.feedback_buffer_size)
         self._hand_history: deque[_HandSample] = deque(maxlen=config.hand_history_size)
-        self._decisions: dict[int, HandCommandApplied] = {}
+        self._decisions = self._spool.mapping("_decisions")
         self._pending: list[_PendingTransition] = []
-        self._seen_feedback_sequence: set[int] = set()
-        self._seen_arm_target_sequence: set[int] = set()
+        self._seen_feedback_sequence = self._spool.set("_seen_feedback_sequence")
+        self._seen_arm_target_sequence = self._spool.set("_seen_arm_target_sequence")
         # SG100 measured-feedback mode (real hardware): parallel to the
         # RM65 feedback/command deques.  In proxy mode these stay
         # empty and every hand canonical value keeps the V1
@@ -143,17 +146,17 @@ class ArmHandDataCollector:
         self._hand_sent: deque[_HandSentSample] = deque(
             maxlen=config.hand_history_size
         )
-        self._seen_hand_feedback_sequence: set[int] = set()
-        self._seen_hand_sent: set[tuple[int, int]] = set()
+        self._seen_hand_feedback_sequence = self._spool.set("_seen_hand_feedback_sequence")
+        self._seen_hand_sent = self._spool.set("_seen_hand_sent")
         self._hand_measured_baseline: _HandFeedbackSample | None = None
         self._last_hand_feedback_ns: int | None = None
-        self._hand_sent_for_bundle: dict[int, _HandSentSample] = {}
-        self._raw_events: list[dict[str, Any]] = []
+        self._hand_sent_for_bundle = self._spool.mapping("_hand_sent_for_bundle")
+        self._raw_events = self._spool.sequence("_raw_events")
         self._raw_event_sequence = 0
         self._hand_proxy_baseline_timestamp_ns: int | None = None
         self._hand_proxy_baseline_valid = False
-        self.transitions: list[CanonicalTransition] = []
-        self.rejections: list[RejectedTransition] = []
+        self.transitions = self._spool.sequence("transitions")
+        self.rejections = self._spool.sequence("rejections")
         self._bundle_sequence = 0
         self._last_feedback_timestamp_ns: int | None = None
         self._last_canonical_action: np.ndarray | None = None
@@ -985,8 +988,12 @@ class ArmHandDataCollector:
                 detail,
             )
         self._pending.clear()
-        used = {transition.command_bundle_id for transition in self.transitions}
-        rejected = {item.command_bundle_id for item in self.rejections}
+        used = self._spool.set("finalized_bundles")
+        rejected = self._spool.set("rejected_bundles")
+        for transition in self.transitions:
+            used.add(transition.command_bundle_id)
+        for item in self.rejections:
+            rejected.add(item.command_bundle_id)
         for bundle_id, decision in self._decisions.items():
             if bundle_id not in used and bundle_id not in rejected:
                 if self.hand_measured_feedback and bundle_id not in self._hand_sent_for_bundle:
@@ -999,10 +1006,9 @@ class ArmHandDataCollector:
         arrays = self._transition_arrays()
         np.savez_compressed(episode_path, schema_name=np.asarray(SCHEMA_NAME), **arrays)
         raw_path = self.output_dir / "arm_hand_raw_events.jsonl"
-        raw_path.write_text(
-            "".join(json.dumps(_jsonable(event), sort_keys=True) + "\n" for event in self._raw_events),
-            encoding="utf-8",
-        )
+        with raw_path.open("w", encoding="utf-8") as handle:
+            for event in self._raw_events:
+                handle.write(json.dumps(_jsonable(event), sort_keys=True) + "\n")
         markov = self.markov_diagnostic()
         counts = Counter(item.reason.value for item in self.rejections)
         if self.hand_measured_feedback:
@@ -1091,16 +1097,29 @@ class ArmHandDataCollector:
                     markov is MarkovStatus.MARKOV_SUSPECT
                     or self.hand_measured_feedback
                 )
-                else list(range(len(self.transitions)))
+                else range(len(self.transitions))
             ),
             "camera": self.camera_provider.metadata(),
             "raw_events_file": raw_path.name,
             "canonical_file": episode_path.name,
         }
-        (self.output_dir / "arm_hand_manifest.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        # Stream the potentially long eligible-index array as well.
+        with (self.output_dir / "arm_hand_manifest.json").open("w", encoding="utf-8") as handle:
+            handle.write("{\n")
+            for index, (key, value) in enumerate(sorted(manifest.items())):
+                if index:
+                    handle.write(",\n")
+                handle.write("  " + json.dumps(key) + ": ")
+                if isinstance(value, range):
+                    handle.write("[")
+                    for position in value:
+                        if position:
+                            handle.write(", ")
+                        handle.write(str(position))
+                    handle.write("]")
+                else:
+                    json.dump(value, handle, sort_keys=True)
+            handle.write("\n}\n")
         self._closed = True
         return episode_path
 
@@ -1253,70 +1272,51 @@ class ArmHandDataCollector:
 
     def _transition_arrays(self) -> dict[str, np.ndarray]:
         count = len(self.transitions)
-        def vectors(name: str) -> np.ndarray:
-            if not count:
-                return np.empty((0, PHYSICAL_DIM), dtype=np.float64)
-            return np.stack([getattr(item, name) for item in self.transitions])
-
-        def integers(name: str) -> np.ndarray:
-            return np.asarray([getattr(item, name) for item in self.transitions], dtype=np.int64)
-
-        def auxiliary_vector(name: str, size: int) -> np.ndarray:
-            if not count:
-                return np.empty((0, size), dtype=np.float64)
-            rows = []
-            for item in self.transitions:
-                value = item.auxiliary.get(name)
-                rows.append(
-                    np.full(size, np.nan, dtype=np.float64)
-                    if value is None
-                    else np.asarray(value, dtype=np.float64)
-                )
-            return np.stack(rows)
-
-        def auxiliary_scalar(name: str) -> np.ndarray:
-            return np.asarray(
-                [float(item.auxiliary[name]) for item in self.transitions],
-                dtype=np.float64,
-            )
-
-        return {
-            "state": vectors("state"),
-            "action": vectors("action"),
-            "next_state": vectors("next_state"),
-            "command_bundle_id": integers("command_bundle_id"),
-            "state_timestamp_ns": integers("state_timestamp_ns"),
-            "decision_timestamp_ns": integers("decision_timestamp_ns"),
-            "arm_command_sent_timestamp_ns": integers("arm_command_sent_timestamp_ns"),
-            "hand_command_applied_timestamp_ns": integers("hand_command_applied_timestamp_ns"),
-            "action_effective_timestamp_ns": integers("action_effective_timestamp_ns"),
-            "next_state_timestamp_ns": integers("next_state_timestamp_ns"),
-            "arm_qvel_pre_rad_s": auxiliary_vector("arm_qvel_pre_rad_s", ARM_DIM),
-            "arm_qvel_post_rad_s": auxiliary_vector("arm_qvel_post_rad_s", ARM_DIM),
-            "feedback_dt_s": auxiliary_scalar("feedback_dt_s"),
-            "previous_action": auxiliary_vector("previous_action", PHYSICAL_DIM),
-            "arm_command_latency_s": auxiliary_scalar("arm_command_latency_s"),
-            "hand_qcmd_velocity_proxy_rad_s": auxiliary_vector(
-                "hand_qcmd_velocity_proxy_rad_s", HAND_DIM
-            ),
-            "controller_tcp_pre": auxiliary_vector("controller_tcp_pre", ARM_DIM),
-            "controller_tcp_post": auxiliary_vector("controller_tcp_post", ARM_DIM),
-            "tracking_status": np.asarray(
-                [str(item.auxiliary["tracking_status"]) for item in self.transitions]
-            ),
-            "safety_status": np.asarray(
-                [str(item.auxiliary["safety_status"]) for item in self.transitions]
-            ),
-            "arm_state_measured": np.ones(count, dtype=bool),
-            "hand_state_measured": (
-                np.ones(count, dtype=bool)
-                if self.hand_measured_feedback
-                else np.zeros(count, dtype=bool)
-            ),
-            "hand_action_hardware_applied": np.zeros(count, dtype=bool),
-            "hand_action_hardware_sent": (
-                np.ones(count, dtype=bool)
-                if self.hand_measured_feedback
-                else np.zeros(count, dtype=bool)
-            ),
+        # Populate memory-mapped columns in a single pass; NumPy's NPZ writer
+        # then streams them to the existing archive format in bounded chunks.
+        definitions = {
+            **{name: (PHYSICAL_DIM, np.float64) for name in
+               ("state", "action", "next_state", "previous_action")},
+            **{name: (ARM_DIM, np.float64) for name in
+               ("arm_qvel_pre_rad_s", "arm_qvel_post_rad_s", "controller_tcp_pre", "controller_tcp_post")},
+            "hand_qcmd_velocity_proxy_rad_s": (HAND_DIM, np.float64),
+            **{name: (None, np.int64) for name in
+               ("command_bundle_id", "state_timestamp_ns", "decision_timestamp_ns",
+                "arm_command_sent_timestamp_ns", "hand_command_applied_timestamp_ns",
+                "action_effective_timestamp_ns", "next_state_timestamp_ns")},
+            **{name: (None, np.float64) for name in
+               ("feedback_dt_s", "arm_command_latency_s")},
+            **{name: (None, bool) for name in
+               ("arm_state_measured", "hand_state_measured", "hand_action_hardware_applied",
+                "hand_action_hardware_sent")},
         }
+        for name in ("tracking_status", "safety_status"):
+            width = max((len(str(item.auxiliary[name])) for item in self.transitions), default=1)
+            definitions[name] = (None, f"U{max(1, width)}" if count else np.float64)
+        arrays = {}
+        for name, (width, dtype) in definitions.items():
+            shape = (count,) if width is None else (count, width)
+            arrays[name] = (
+                np.lib.format.open_memmap(
+                    Path(self._spool._temporary.name) / f"{name}.npy",
+                    mode="w+", dtype=dtype, shape=shape,
+                ) if count else np.empty(shape, dtype=dtype)
+            )
+        constants = {
+            "arm_state_measured": True,
+            "hand_state_measured": self.hand_measured_feedback,
+            "hand_action_hardware_applied": False,
+            "hand_action_hardware_sent": self.hand_measured_feedback,
+        }
+        for index, item in enumerate(self.transitions):
+            for name, array in arrays.items():
+                if name in constants:
+                    value = constants[name]
+                elif hasattr(item, name):
+                    value = getattr(item, name)
+                else:
+                    value = item.auxiliary.get(name)
+                    if value is None:
+                        value = np.nan
+                array[index] = value
+        return arrays

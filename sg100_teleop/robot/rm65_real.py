@@ -81,6 +81,7 @@ class RM65RealBackend(ArmBackend):
         upper_rad: np.ndarray = RM65_JOINT_UPPER_RAD,
         on_event: Callable[[str, str], None] = _emit_print,
         sdk: object | None = None,
+        record_command_events: bool = True,
     ) -> None:
         if follow not in FOLLOW_MODES:
             raise ValueError(f"follow must be one of {FOLLOW_MODES}")
@@ -134,6 +135,7 @@ class RM65RealBackend(ArmBackend):
         self._feedback: ArmState | None = None
         self._command_event_lock = threading.Lock()
         self._command_events: deque[ArmCommandSent] = deque()
+        self._record_command_events = bool(record_command_events)
         # Non-consuming read-only view for the external telemetry publisher.
         # This is deliberately separate from the collector's drain queue.
         self._latest_command_sent: ArmCommandSent | None = None
@@ -603,7 +605,8 @@ class RM65RealBackend(ArmBackend):
                                 command_sequence=self._send_count,
                             )
                             with self._command_event_lock:
-                                self._command_events.append(event)
+                                if self._record_command_events:
+                                    self._command_events.append(event)
                                 self._latest_command_sent = event
                         else:
                             self._send_failures += 1

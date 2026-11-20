@@ -51,6 +51,11 @@ def main():
     )
 
     parser.add_argument(
+        "--connection-timeout", type=float, default=30.0,
+        help="Seconds to wait for each AVP connection stage (default: 30)",
+    )
+
+    parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
     )
@@ -262,6 +267,7 @@ def main():
 
     streamer = VisionProStreamer(
         ip=args.ip,
+        connection_timeout=args.connection_timeout,
         record=False,
         verbose=args.verbose,
     )
@@ -276,6 +282,7 @@ def main():
             args.attach
         ),
         grpc_port=args.port,
+        streaming_hz=args.stream_hz,
     )
 
     streamer.start_webrtc()
