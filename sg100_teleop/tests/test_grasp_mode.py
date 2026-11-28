@@ -201,6 +201,7 @@ def _viewer_key_handler(scope):
     import ast
     from pathlib import Path
     scope.setdefault("operator_bridge", None)
+    scope.setdefault("return_home", None)
 
     runner = Path(__file__).resolve().parents[1] / "sim/run_avp_arm_hand_sim.py"
     tree = ast.parse(runner.read_text())

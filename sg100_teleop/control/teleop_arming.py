@@ -43,6 +43,14 @@ class TeleopArmingController:
                 return True
             return False
 
+    def reset(self) -> None:
+        """Invalidate all previous anchors after a connected-session return."""
+        with self._lock:
+            self._state = TeleopArmState.WAITING_FOR_TRACKING
+            self._last_valid_frame_sequence = None
+            self._request_after_sequence = None
+            self._request_monotonic_ns = None
+
     def request_neutral_calibration(
         self,
         requested_monotonic_ns: Optional[int] = None,

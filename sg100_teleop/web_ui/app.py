@@ -60,7 +60,7 @@ def create_app(station=None):
                 station.configure(body.get("config"))
             elif command == "start":
                 station.start()
-            elif command in ("calibrate", "arm", "disarm"):
+            elif command in ("calibrate", "arm", "disarm", "return_home"):
                 station.control(command)
             elif command == "mode":
                 station.control(command, mode=body.get("mode"))

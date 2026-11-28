@@ -98,8 +98,8 @@ class OperatorBridge:
                     break
             if time.monotonic_ns() >= item["expires_ns"]:
                 result = {"ok": False, "error": "操作已过期，未执行"}
-            elif item["command"] == "arm" and item["issued_ns"] <= self._last_stop_ns:
-                result = {"ok": False, "error": "旧的启用请求已被停止操作取消"}
+            elif item["command"] in ("arm", "return_home") and item["issued_ns"] <= self._last_stop_ns:
+                result = {"ok": False, "error": "旧的运动请求已被停止操作取消"}
             else:
                 try:
                     if item["command"] in ("disarm", "shutdown"):

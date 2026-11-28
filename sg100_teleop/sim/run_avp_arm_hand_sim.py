@@ -35,6 +35,8 @@ from sg100_teleop.control.scripted_hand import (
 
 from sg100_teleop.control.tcp_target_filter import TcpTargetFilter
 
+from sg100_teleop.control.return_home import ReturnHomeCycle
+
 from sg100_teleop.control.teleop_arming import (
     TeleopArmingController,
 )
@@ -2820,11 +2822,20 @@ def main(argv=None, *, operator_bridge=None):
         )
         print(message)
 
+    return_home = ReturnHomeCycle(
+        real_arm_backend, hand_driver, REAL_STARTUP_ARM_Q_RAD, REAL_STARTUP_HAND_Q_RAD,
+        speed_percent=REAL_STARTUP_ARM_SPEED_PERCENT,
+    ) if operator_bridge is not None else None
+
     def request_neutral_calibration() -> bool:
+        if return_home is not None and not return_home.allows_calibration:
+            raise RuntimeError("请等待归位完成后再建立新锚点")
         requested = (
             teleop_arming.request_neutral_calibration()
         )
         if requested:
+            if return_home is not None:
+                return_home.anchor_requested()
             print_teleop_state(
                 "Neutral calibration requested; waiting for "
                 "the next NEW + VALID right-hand frame."
@@ -2837,8 +2848,28 @@ def main(argv=None, *, operator_bridge=None):
             )
         return requested
 
+    def cancel_return_home():
+        nonlocal wrist_calibrated
+        if return_home is not None and return_home.stage in ("MOVING", "ANCHORING", "FAILED"):
+            try:
+                return_home.cancel()
+            finally:
+                teleop_arming.reset()
+                wrist_calibrated = False
+                tcp_target_filter.clear()
+
     def on_viewer_key(keycode: int) -> None:
         nonlocal q_hand_goal
+        if return_home is not None:
+            if keycode in (ord("D"), ord("d"), ord("E"), ord("e")):
+                try:
+                    cancel_return_home()
+                except RuntimeError as exc:
+                    operator_bridge.last_error = str(exc)
+            elif return_home.moving or return_home.stage == "ANCHORING":
+                raise RuntimeError("归位或标定进行中，只能停止操作")
+            elif keycode in (ord("A"), ord("a")) and not return_home.allows_arm:
+                raise RuntimeError("请先确认中立姿态并建立新锚点")
         if keycode in (ord("C"), ord("c")):
             if operator_bridge is not None and operator_bridge.recording:
                 raise RuntimeError("录制中不能重建锚点，请先结束本条")
@@ -3050,12 +3081,33 @@ def main(argv=None, *, operator_bridge=None):
             "script_motion": script_hand_controller.motion.value,
             "recording_locked": bool(operator_bridge.recording) if operator_bridge is not None else False,
             "operator_error": operator_bridge.last_error if operator_bridge is not None else "",
+            "return_home": return_home.snapshot() if return_home is not None else {"stage": "IDLE"},
         }
 
     def on_operator_command(command, arguments):
+        nonlocal wrist_calibrated, q_hand0_runtime, latest_control_audit, latest_ik_accepted
         if command == "disarm":
+            try:
+                cancel_return_home()
+            finally:
+                disarm_real_command_authority(real_arm_backend, restricted_hand_backend)
+        elif command == "return_home":
+            if operator_bridge.recording:
+                raise RuntimeError("请先保存或丢弃当前数据，再归位")
+            if restricted_hand_backend is None or restricted_hand_backend.estopped:
+                raise RuntimeError("归位要求双真机已连接且没有急停锁存")
             disarm_real_command_authority(real_arm_backend, restricted_hand_backend)
+            teleop_arming.reset()
+            wrist_calibrated = False
+            q_hand0_runtime = None
+            tcp_target_filter.clear()
+            latest_control_audit = None
+            latest_ik_accepted = False
+            script_hand_controller.exit()
+            return_home.start()
         elif command == "arm":
+            if not return_home.allows_arm:
+                raise RuntimeError("请先完成归位并确认新锚点")
             status = operator_status()
             if not (status["tracking_valid"] and status["avp_anchored"] and teleop_arming.active):
                 raise RuntimeError("请先建立锚点并等待有效 AVP 跟踪")
@@ -3076,6 +3128,8 @@ def main(argv=None, *, operator_bridge=None):
             if not request_neutral_calibration():
                 raise RuntimeError("当前跟踪状态不能建立锚点")
         elif command == "mode":
+            if return_home.moving or return_home.stage == "ANCHORING":
+                raise RuntimeError("归位或标定进行中不能切换模式")
             key = {"free": "1", "hand": "2", "claw": "3", "script": "4", "pinch": "5", "two_finger": "6"}.get(arguments.get("mode"))
             if key is None:
                 raise ValueError("未知手部模式")
@@ -3088,8 +3142,13 @@ def main(argv=None, *, operator_bridge=None):
                 raise ValueError("未知脚本动作")
             on_viewer_key(ord(key))
         elif command == "recording_lock":
+            if arguments.get("active"):
+                current = operator_status()
+                if not return_home.allows_arm or not all(current[k] for k in ("tracking_valid", "avp_anchored", "arm_enabled", "hand_enabled")):
+                    raise RuntimeError("控制状态已改变，请确认锚点并启用遥操后再录制")
             operator_bridge.recording = bool(arguments.get("active"))
         elif command == "shutdown":
+            cancel_return_home()
             disarm_real_command_authority(real_arm_backend, restricted_hand_backend)
             operator_bridge.exit_requested = True
         else:
@@ -3130,6 +3189,15 @@ def main(argv=None, *, operator_bridge=None):
                 if operator_bridge is not None:
                     operator_bridge.drain(on_operator_command)
                     operator_bridge.drain_keys(on_viewer_key)
+                    if return_home.poll():
+                        feedback = real_arm_backend.joint_state()
+                        q_arm_goal = feedback.q_rad.copy()
+                        q_arm_cmd = q_arm_goal.copy()
+                        arm_command_filter.reset(q_arm_goal)
+                        q_hand_goal = REAL_STARTUP_HAND_Q_RAD.copy()
+                        q_hand_cmd = q_hand_goal.copy()
+                        hand_command_filter.reset(q_hand_goal)
+                        initialize_robot_state(model, data, robot_layout, q_arm_goal, q_hand_goal)
                     if time.monotonic_ns() - last_operator_status_ns >= 100_000_000:
                         operator_bridge.update(**operator_status())
                         last_operator_status_ns = time.monotonic_ns()
@@ -3618,6 +3686,8 @@ def main(argv=None, *, operator_bridge=None):
 
                                 wrist_calibrated = True
                                 teleop_arming.complete_calibration()
+                                if return_home is not None:
+                                    return_home.anchor_complete()
                                 latest_control_audit = None
                                 latest_ik_accepted = False
 
@@ -4220,6 +4290,8 @@ def main(argv=None, *, operator_bridge=None):
                         )
                         tcp_target_filter.clear()
                         wrist_calibrated = False
+                        if return_home is not None:
+                            return_home.anchor_lost()
                         T_avp_wrist_0 = None
                         T_tcp_runtime_0 = None
                         R_tcp_rotation_lock = None

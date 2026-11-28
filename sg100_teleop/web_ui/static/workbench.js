@@ -76,6 +76,11 @@ function render(s) {
   const controlReady = active && c.phase === "READY" && c.fresh && s.control_exit_code == null;
   const ready = s.recording_state === "READY", recording = s.recording_state === "RECORDING", pending = s.recording_state === "PENDING_CONFIRMATION";
   const armed = controlReady && c.arm_enabled && c.hand_enabled;
+  const home = c.return_home || {stage:"IDLE",message:""};
+  const returning = home.stage === "MOVING" || home.stage === "ANCHORING";
+  const canArm = home.stage === "IDLE" || home.stage === "READY";
+  $("return-home-status").textContent = home.message || "保持连接执行预设归位，到位后确认中立姿态并建立新锚点。";
+  $("calibrate").firstChild.nodeValue = ["WAITING_NEUTRAL","CANCELLED"].includes(home.stage) ? "确认中立并建立锚点 " : "建立锚点 ";
   if (!configured) {
     for (const [key,value] of Object.entries(s.config)) {
       const element = $("config-form").elements.namedItem(key);
@@ -103,10 +108,11 @@ function render(s) {
   for (const input of $("config-form").elements) input.disabled = active || busy;
   setEnabled("start", !active && !busy);
   setEnabled("close", active && ready && !busy);
-  setEnabled("calibrate", controlReady && ready && !busy);
-  setEnabled("arm", controlReady && c.avp_anchored && c.tracking_valid && !armed && !pending && !busy);
+  setEnabled("return-home", controlReady && ready && !returning && !c.estop_latched && !busy);
+  setEnabled("calibrate", controlReady && ready && !returning && home.stage !== "FAILED" && !busy);
+  setEnabled("arm", canArm && controlReady && c.avp_anchored && c.tracking_valid && !armed && !pending && !busy);
   setEnabled("disarm", active && controlReady); // available during finish/flush
-  setEnabled("begin", ready && armed && s.telemetry_alive && Object.values(s.cameras).length === 2 && Object.values(s.cameras).every(v=>v.ready) && !busy);
+  setEnabled("begin", canArm && ready && armed && s.telemetry_alive && Object.values(s.cameras).length === 2 && Object.values(s.cameras).every(v=>v.ready) && !busy);
   setEnabled("finish", recording && !busy);
   setEnabled("restart", recording && controlReady && !c.arm_enabled && !c.hand_enabled && !busy);
   setEnabled("off", recording && !busy);
@@ -119,10 +125,10 @@ function render(s) {
   for (const button of document.querySelectorAll("[data-mode]")) {
     button.classList.toggle("selected", c.mode === button.dataset.mode);
     button.setAttribute("aria-pressed", c.mode === button.dataset.mode ? "true" : "false");
-    button.disabled = !controlReady || busy;
+    button.disabled = !controlReady || returning || busy;
   }
   $("script-controls").hidden = c.mode !== "script";
-  for (const button of document.querySelectorAll("[data-motion]")) button.disabled = !controlReady || busy;
+  for (const button of document.querySelectorAll("[data-motion]")) button.disabled = !controlReady || returning || busy;
   $("control-dot").classList.toggle("ok", controlReady);
   $("control-state").textContent = !active ? "设备未准备" : !controlReady ? (s.control_exit_code != null ? "控制进程已退出" : (c.error || "正在连接 / 初始化")) : armed ? "遥操已启用" : c.avp_anchored ? "锚点已建立 · 遥操已停止" : "等待建立锚点";
   $("review").hidden = !pending;

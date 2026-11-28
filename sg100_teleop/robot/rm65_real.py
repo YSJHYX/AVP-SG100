@@ -130,7 +130,8 @@ class RM65RealBackend(ArmBackend):
         # calls.  Every SDK call must hold this lock, and the sender
         # thread additionally performs the feedback polling itself so
         # the hot path (canfd + get_state) is single-threaded.
-        self._sdk_lock = threading.Lock()
+        self._sdk_lock = threading.RLock()
+        self._runtime_return = False
         self._feedback_lock = threading.Lock()
         self._feedback: ArmState | None = None
         self._command_event_lock = threading.Lock()
@@ -266,6 +267,8 @@ class RM65RealBackend(ArmBackend):
 
     def set_enabled(self, enabled: bool) -> None:
         """ARM/DISARM; re-enabling re-seeds the limiter from feedback."""
+        if enabled and self._runtime_return:
+            raise RuntimeError("归位运动尚未结束，不能启用遥操")
         self._enabled = bool(enabled)
         if enabled:
             self._send_failures = 0
@@ -396,12 +399,52 @@ class RM65RealBackend(ArmBackend):
         )
         return measured.copy()
 
+    def begin_runtime_return(self, q_rad: np.ndarray, *, speed_percent: int = 25) -> None:
+        """Submit nonblocking controller-planned motion with CANFD suspended.
+
+        Keep the connection and feedback poller. The SDK lock fences any
+        sender tick that had already observed enabled=True before disarm.
+        Completion is verified from feedback by the operator state machine.
+        """
+        target = np.asarray(q_rad, dtype=np.float64)
+        if target.shape != (ARM_DOF,) or not np.all(np.isfinite(target)):
+            raise ValueError("return target must have 6 finite joint angles")
+        if np.any(target < self._limiter.soft_lower) or np.any(target > self._limiter.soft_upper):
+            raise ValueError("return target exceeds soft limits")
+        if isinstance(speed_percent, bool) or int(speed_percent) != speed_percent or not 1 <= speed_percent <= 100:
+            raise ValueError("invalid planned speed")
+        with self._sdk_lock:
+            if not self._connected or self._enabled or self._runtime_return:
+                raise RuntimeError("归位要求设备已连接且遥操已停止，没有其他归位运动")
+            self._buffer.clear()
+            self._runtime_return = True
+            try:
+                tag = int(self._sdk.rm_movej(np.degrees(target).tolist(), int(speed_percent), 0, 0, 0))
+                if tag != 0:
+                    raise RuntimeError(f"rm_movej -> {tag}")
+            except Exception:
+                # Submission may have reached the controller despite an RX
+                # error. Keep re-arm inhibited until a stop is confirmed.
+                raise
+
+    def complete_runtime_return(self, measured_q: np.ndarray) -> None:
+        with self._sdk_lock:
+            self._limiter.reset(np.asarray(measured_q, dtype=np.float64))
+            self._buffer.clear()
+            self._runtime_return = False
+            with self._command_event_lock:
+                self._latest_command_sent = None
+
     def stop_smooth(self) -> int:
         call = getattr(self._sdk, "rm_set_arm_slow_stop", None)
         if not callable(call):
             return 0
         with self._sdk_lock:
-            return int(call())
+            result = int(call())
+            if result == 0:
+                self._runtime_return = False
+                self._buffer.clear()
+            return result
 
     def stop_immediate(self) -> int:
         call = getattr(self._sdk, "rm_set_arm_stop", None)
@@ -589,7 +632,10 @@ class RM65RealBackend(ArmBackend):
                     except ValueError as exc:
                         self._on_event("limiter_error", str(exc))
                     else:
-                        tag = self._send_canfd(cmd)
+                        with self._sdk_lock:
+                            if not self._enabled or self._runtime_return:
+                                continue
+                            tag = self._send_canfd(cmd)
                         if tag == 0:
                             sent_ns = time.monotonic_ns()
                             self._send_failures = 0

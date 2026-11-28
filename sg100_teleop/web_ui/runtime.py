@@ -197,7 +197,7 @@ class Workstation:
         return state
 
     def control(self, command, **arguments):
-        if command not in ("calibrate", "arm", "disarm", "mode", "script"):
+        if command not in ("calibrate", "arm", "disarm", "mode", "script", "return_home"):
             raise ValueError("不支持的遥操操作")
         if command == "mode" and arguments.get("mode") not in MODES:
             raise ValueError("未知手部模式")
@@ -205,10 +205,13 @@ class Workstation:
             raise ValueError("未知脚本动作")
         if command == "calibrate" and self.controller and self.controller.state is not EpisodeState.READY:
             raise RuntimeError("请先结束并处理当前数据，再建立锚点")
+        if command == "return_home" and (self.controller is None or self.controller.state is not EpisodeState.READY):
+            raise RuntimeError("请先保存或丢弃当前数据，再归位")
         self._require_ready_control()
         result = self.client.request(command, **arguments)
         self.event({"calibrate": "锚点请求已提交，等待完成", "arm": "已启用遥操", "disarm": "已停止遥操",
-                    "mode": "手部模式已切换", "script": "脚本动作已设置"}[command])
+                    "mode": "手部模式已切换", "script": "脚本动作已设置",
+                    "return_home": "正在归位；到位后请保持中立姿态，确认建立新锚点"}[command])
         return result
 
     def begin(self, instruction):
@@ -369,10 +372,15 @@ class Workstation:
         control = client.snapshot() if client else {}
         if control.get("operator_error"):
             problems.append(control["operator_error"])
+        home = control.get("return_home", {})
+        message = self.message
+        if (controller and controller.state is EpisodeState.READY
+                and home.get("stage", "IDLE") != "IDLE" and not control.get("arm_enabled")):
+            message = home.get("message") or message
         report = asdict(validation) if validation else None
         frames = len(buffer) if buffer is not None else 0
         return json_safe({
-            "demo": self.demo, "phase": self.phase, "message": self.message,
+            "demo": self.demo, "phase": self.phase, "message": message,
             "problems": problems,
             "config": asdict(self.config), "cameras": cameras,
             "control": control,

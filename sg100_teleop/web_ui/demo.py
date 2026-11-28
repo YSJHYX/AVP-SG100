@@ -68,6 +68,7 @@ class DemoSources:
         self.control = {"phase": "READY", "fresh": True, "tracking_valid": True,
                         "avp_anchored": False, "arm_enabled": False, "hand_enabled": False,
                         "mode": "free", "estop_latched": False, "recording_locked": False}
+        self.control["return_home"] = {"stage": "IDLE", "message": ""}
         self.thread = threading.Thread(target=self._run, name="offline-demo", daemon=True)
 
     def start(self):
@@ -129,10 +130,19 @@ class DemoSources:
     def request(self, command, **arguments):
         if command in ("disarm", "shutdown"):
             self.control.update(arm_enabled=False, hand_enabled=False)
+            if self.control["return_home"]["stage"] == "MOVING":
+                self.control["return_home"] = {"stage": "CANCELLED", "message": "归位已中止，请重新建立锚点"}
+        elif command == "return_home":
+            if self.control["recording_locked"]:
+                raise RuntimeError("请先处理当前数据")
+            self.control.update(arm_enabled=False, hand_enabled=False, avp_anchored=False)
+            self.control["return_home"] = {"stage": "WAITING_NEUTRAL", "message": "演示归位已完成，请保持中立姿态并建立新锚点"}
         elif command == "calibrate":
             if self.control["recording_locked"]:
                 raise RuntimeError("录制中不能重建锚点")
             self.control.update(avp_anchored=True)
+            if self.control["return_home"]["stage"] != "IDLE":
+                self.control["return_home"] = {"stage": "READY", "message": "新锚点已建立，等待启用遥操"}
         elif command == "arm":
             if not self.control["avp_anchored"]:
                 raise RuntimeError("请先建立锚点")
