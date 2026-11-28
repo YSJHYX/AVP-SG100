@@ -664,14 +664,64 @@ def disarm_real_command_authority(
 ) -> bool:
     """显式撤销 real command authority；disabled backend 不产生额外动作。"""
     changed = False
+    errors = []
     if restricted_hand_backend is not None and restricted_hand_backend.enabled:
-        restricted_hand_backend.set_enabled(False)
         changed = True
+        try:
+            restricted_hand_backend.set_enabled(False)
+        except Exception as exc:
+            errors.append(f"SG100 stop: {exc}")
     if real_arm_backend is not None and real_arm_backend.enabled:
-        real_arm_backend.set_enabled(False)
-        real_arm_backend.stop_smooth()
         changed = True
+        try:
+            real_arm_backend.set_enabled(False)
+        except Exception as exc:
+            errors.append(f"RM65 disable: {exc}")
+        try:
+            result = real_arm_backend.stop_smooth()
+            if result not in (None, 0):
+                raise RuntimeError(f"controller stop returned {result}")
+        except Exception as exc:
+            errors.append(f"RM65 stop: {exc}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
     return changed
+
+
+def shutdown_real_devices(real_arm_backend=None, hand_driver=None,
+                          restricted_hand_backend=None, arm_hand_collector=None):
+    """Attempt every device stop/disconnect, even when one SDK raises."""
+    errors = []
+
+    def attempt(label, callback):
+        try:
+            callback()
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+
+    if restricted_hand_backend is not None:
+        attempt("hand disable", lambda: restricted_hand_backend.set_enabled(False))
+    if real_arm_backend is not None:
+        attempt("arm disable", lambda: real_arm_backend.set_enabled(False))
+        def stop_arm():
+            result = real_arm_backend.stop_smooth()
+            if result not in (None, 0):
+                raise RuntimeError(f"controller stop returned {result}")
+        attempt("arm stop", stop_arm)
+    if arm_hand_collector is not None:
+        if hand_driver is not None:
+            attempt("hand final feedback", lambda: arm_hand_collector.observe_hand_feedback(hand_driver.read_feedback()))
+            attempt("hand final events", lambda: arm_hand_collector.ingest_hand_command_events(hand_driver.drain_command_events()))
+        if real_arm_backend is not None:
+            attempt("arm final feedback", lambda: arm_hand_collector.observe_arm_feedback(real_arm_backend.joint_state()))
+            attempt("arm final events", lambda: arm_hand_collector.ingest_arm_command_events(real_arm_backend.drain_command_events()))
+    if hand_driver is not None:
+        attempt("hand stop", hand_driver.stop)
+        attempt("hand disconnect", hand_driver.disconnect)
+    if real_arm_backend is not None:
+        attempt("arm disconnect", real_arm_backend.disconnect)
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 def _parse_origin_position(value: str) -> bool:
@@ -1294,13 +1344,13 @@ def build_arg_parser():
     return parser
 
 
-def main():
+def main(argv=None, *, operator_bridge=None):
     # ========================================================
     # Command-line arguments
     # ========================================================
 
     parser = build_arg_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Assigned after the MuJoCo recording session directory exists.  The
     # real-arm callback closes over this reference, so background errors are
@@ -2790,6 +2840,8 @@ def main():
     def on_viewer_key(keycode: int) -> None:
         nonlocal q_hand_goal
         if keycode in (ord("C"), ord("c")):
+            if operator_bridge is not None and operator_bridge.recording:
+                raise RuntimeError("录制中不能重建锚点，请先结束本条")
             request_neutral_calibration()
 
         elif keycode in (ord("A"), ord("a")) and (
@@ -2983,8 +3035,73 @@ def main():
     # Main runtime loop
     # ========================================================
 
+    def operator_status():
+        now_ns = time.monotonic_ns()
+        last_tracking = tracking_gate.last_valid_tracking_monotonic_ns
+        return {
+            "phase": "READY",
+            "tracking_valid": bool(last_tracking and now_ns - last_tracking <= int(args.tracking_timeout * 1e9)),
+            "avp_anchored": bool(wrist_calibrated and teleop_arming.active),
+            "teleop_state": teleop_arming.state.value,
+            "arm_enabled": bool(real_arm_backend is not None and real_arm_backend.enabled),
+            "hand_enabled": bool(restricted_hand_backend is not None and restricted_hand_backend.enabled),
+            "estop_latched": bool(restricted_hand_backend is not None and restricted_hand_backend.estopped),
+            "mode": "script" if script_hand_controller.enabled else grasp_mode_controller.mode.value,
+            "script_motion": script_hand_controller.motion.value,
+            "recording_locked": bool(operator_bridge.recording) if operator_bridge is not None else False,
+            "operator_error": operator_bridge.last_error if operator_bridge is not None else "",
+        }
+
+    def on_operator_command(command, arguments):
+        if command == "disarm":
+            disarm_real_command_authority(real_arm_backend, restricted_hand_backend)
+        elif command == "arm":
+            status = operator_status()
+            if not (status["tracking_valid"] and status["avp_anchored"] and teleop_arming.active):
+                raise RuntimeError("请先建立锚点并等待有效 AVP 跟踪")
+            if status["estop_latched"]:
+                raise RuntimeError("软件急停已锁存，需要重新启动控制端")
+            try:
+                if restricted_hand_backend is not None and not restricted_hand_backend.enabled:
+                    restricted_hand_backend.set_enabled(True)
+                if real_arm_backend is not None and not real_arm_backend.enabled:
+                    real_arm_backend.set_enabled(True)
+            except Exception:
+                disarm_real_command_authority(real_arm_backend, restricted_hand_backend)
+                raise
+        elif command == "calibrate":
+            if operator_bridge.recording:
+                raise RuntimeError("录制中不能重建锚点")
+            disarm_real_command_authority(real_arm_backend, restricted_hand_backend)
+            if not request_neutral_calibration():
+                raise RuntimeError("当前跟踪状态不能建立锚点")
+        elif command == "mode":
+            key = {"free": "1", "hand": "2", "claw": "3", "script": "4", "pinch": "5", "two_finger": "6"}.get(arguments.get("mode"))
+            if key is None:
+                raise ValueError("未知手部模式")
+            on_viewer_key(ord(key))
+        elif command == "script":
+            if not script_hand_controller.enabled:
+                raise RuntimeError("请先选择 SCRIPT 模式")
+            key = {"close": "J", "hold": "K", "open": "L"}.get(arguments.get("motion"))
+            if key is None:
+                raise ValueError("未知脚本动作")
+            on_viewer_key(ord(key))
+        elif command == "recording_lock":
+            operator_bridge.recording = bool(arguments.get("active"))
+        elif command == "shutdown":
+            disarm_real_command_authority(real_arm_backend, restricted_hand_backend)
+            operator_bridge.exit_requested = True
+        else:
+            raise ValueError("未知控制命令")
+        status = operator_status()
+        operator_bridge.update(**status)
+        return status
+
+
     arm_joint_comparison_recorder = None
     run_outcome = "completed"
+    last_operator_status_ns = 0
     try:
         if args.arm_joint_compare:
             arm_joint_comparison_recorder = ArmJointComparisonRecorder(
@@ -3001,7 +3118,7 @@ def main():
             mujoco.viewer.launch_passive(
                 model,
                 data,
-                key_callback=on_viewer_key,
+                key_callback=(operator_bridge.key if operator_bridge is not None else on_viewer_key),
             )
             as viewer
         ):
@@ -3009,7 +3126,13 @@ def main():
             if args.show_hammer_collision_debug:
                 enable_collision_debug_visualization(model, viewer)
 
-            while viewer.is_running():
+            while viewer.is_running() and not (operator_bridge is not None and operator_bridge.exit_requested):
+                if operator_bridge is not None:
+                    operator_bridge.drain(on_operator_command)
+                    operator_bridge.drain_keys(on_viewer_key)
+                    if time.monotonic_ns() - last_operator_status_ns >= 100_000_000:
+                        operator_bridge.update(**operator_status())
+                        last_operator_status_ns = time.monotonic_ns()
 
                 # =================================================
                 # Wall-clock timing
@@ -4784,37 +4907,9 @@ def main():
             telemetry_publisher.close()
         if hammer_impact_diagnostic is not None:
             hammer_impact_diagnostic.close()
-        if hand_driver is not None:
-            # Final hand feedback + sent events, then stop sending.
-            try:
-                if restricted_hand_backend is not None:
-                    restricted_hand_backend.set_enabled(False)
-                if arm_hand_collector is not None:
-                    arm_hand_collector.observe_hand_feedback(
-                        hand_driver.read_feedback()
-                    )
-                    arm_hand_collector.ingest_hand_command_events(
-                        hand_driver.drain_command_events()
-                    )
-            finally:
-                hand_driver.stop()
-                hand_driver.disconnect()
-                print("[HAND] SG100 driver disconnected")
-        if real_arm_backend is not None:
-            # v3 §A3.5 order on exit: quiesce, slow stop, disconnect.
-            try:
-                if arm_hand_collector is not None:
-                    arm_hand_collector.observe_arm_feedback(
-                        real_arm_backend.joint_state()
-                    )
-                    arm_hand_collector.ingest_arm_command_events(
-                        real_arm_backend.drain_command_events()
-                    )
-                real_arm_backend.set_enabled(False)
-                real_arm_backend.stop_smooth()
-            finally:
-                real_arm_backend.disconnect()
-                print("[REAL-ARM] backend disconnected")
+        shutdown_real_devices(
+            real_arm_backend, hand_driver, restricted_hand_backend, arm_hand_collector
+        )
         if arm_joint_comparison_recorder is not None:
             log_closed = arm_joint_comparison_recorder.close()
             print(

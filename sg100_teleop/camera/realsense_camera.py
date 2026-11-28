@@ -339,7 +339,11 @@ class RealSenseCamera:
     @property
     def ready(self) -> bool:
         with self._lock:
-            return bool(self._ring)
+            return bool(
+                self._ring
+                and 0 <= time.monotonic_ns() - self._ring[-1].host_receive_monotonic_ns
+                <= 100_000_000
+            )
 
     def latest_before(self, timestamp_ns: int) -> RealSenseFrame | None:
         tick = int(timestamp_ns)

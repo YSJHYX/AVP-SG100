@@ -103,11 +103,14 @@ class EpisodeController:
             raise RuntimeError(f"On 仅在 READY 可用，当前 {self.state.value}")
         if not self.head_camera.ready:
             raise RuntimeError("HEAD D455 stream 未 READY")
+        self._require_fresh_camera(self.head_camera, "HEAD D455")
         if (
             "right_wrist" in self.required_cameras
             and (self.wrist_camera is None or not self.wrist_camera.ready)
         ):
             raise RuntimeError("WRIST D405 stream 未 READY")
+        if "right_wrist" in self.required_cameras:
+            self._require_fresh_camera(self.wrist_camera, "WRIST D405")
         self._robot_telemetry_present = bool(self.telemetry.is_alive())
         if self.telemetry_required and not self._robot_telemetry_present:
             raise RuntimeError("Robot telemetry publisher 未 READY或已 stale")
@@ -160,6 +163,12 @@ class EpisodeController:
             raise
         self.state = EpisodeState.RECORDING
         return self.next_episode_index
+
+    def _require_fresh_camera(self, camera, name: str) -> None:
+        now = time.monotonic_ns()
+        frame = camera.latest_before(now)
+        if frame is None or not 0 <= now - frame.host_receive_monotonic_ns <= self.thresholds.max_camera_age_ns:
+            raise RuntimeError(f"{name} 画面已过期，不能开始录制")
 
     def restart_recording(self) -> int:
         """Discard only this unsaved attempt, then reuse the On recording path.

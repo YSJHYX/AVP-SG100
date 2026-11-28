@@ -374,6 +374,12 @@ def _record_with_post_on_packet(controller, telemetry, seconds: float = 0.09):
     """
     controller.handle_input("On")
     telemetry.packets.append(_packet(time.monotonic_ns()))
+    # A successful capture also needs a post-On camera frame. Merely keeping
+    # a pre-On cached frame must no longer earn a PASS quality report.
+    from dataclasses import replace
+    for camera in (controller.head_camera, controller.wrist_camera):
+        if camera is not None:
+            camera.frames.append(replace(camera.frames[-1], host_receive_monotonic_ns=time.monotonic_ns()))
     time.sleep(seconds)
     return controller.handle_input("Off")
 
@@ -897,7 +903,10 @@ def test_head_only_camera_only_ready_has_no_fake_wrist_or_robot_data(
     assert controller.handle_input("On") == 0
     assert controller.state is EpisodeState.RECORDING
     report = controller.handle_input("Off")
-    assert report.quality == "PASS", report.errors
+    # An immediate Off has only invalid pre-On camera frames. The RAW
+    # schema remains readable, but capture quality must report this honestly.
+    assert report.quality == "FAIL"
+    assert report.errors and all("没有有效 RGB 帧" in e for e in report.errors)
     arrays = controller.candidate_arrays
     assert arrays["head_camera_present"].item() is True
     assert arrays["wrist_camera_present"].item() is False
@@ -1108,7 +1117,10 @@ def test_head_only_rgb_has_stable_depth_schema_and_no_fake_depth_media(
     )
     controller.handle_input("On")
     report = controller.handle_input("Off")
-    assert report.quality == "PASS", report.errors
+    # An immediate Off has only invalid pre-On camera frames. The RAW
+    # schema remains readable, but capture quality must report this honestly.
+    assert report.quality == "FAIL"
+    assert report.errors and all("没有有效 RGB 帧" in e for e in report.errors)
     arrays = controller.candidate_arrays
     n = arrays["timestamp_ns"].shape[0]
     assert arrays["camera_modalities"].item() == "rgb"
@@ -1146,7 +1158,10 @@ def test_dual_camera_rgb_only_keeps_both_rgb_and_no_depth(tmp_path: Path) -> Non
     )
     controller.handle_input("On")
     report = controller.handle_input("Off")
-    assert report.quality == "PASS", report.errors
+    # An immediate Off has only invalid pre-On camera frames. The RAW
+    # schema remains readable, but capture quality must report this honestly.
+    assert report.quality == "FAIL"
+    assert report.errors and all("没有有效 RGB 帧" in e for e in report.errors)
     n = controller.candidate_arrays["timestamp_ns"].shape[0]
     for role in ("head", "right_wrist"):
         assert len(tuple((controller.pending_dir / role / "rgb").glob("*.jpg"))) == n
@@ -1235,7 +1250,10 @@ def test_v1_h1_rgbd_episode_contract_remains_readable(tmp_path: Path) -> None:
         writer_error_count=0,
         telemetry_sequence_gap_count=0,
     )
-    assert report.quality == "PASS", report.errors
+    # An immediate Off has only invalid pre-On camera frames. The RAW
+    # schema remains readable, but capture quality must report this honestly.
+    assert report.quality == "FAIL"
+    assert report.errors and all("没有有效 RGB 帧" in e for e in report.errors)
     controller.handle_input("N")
 
 
@@ -1431,5 +1449,8 @@ def test_v2_episode_without_desired17_remains_readable(tmp_path: Path) -> None:
         writer_error_count=0,
         telemetry_sequence_gap_count=0,
     )
-    assert report.quality == "PASS", report.errors
+    # An immediate Off has only invalid pre-On camera frames. The RAW
+    # schema remains readable, but capture quality must report this honestly.
+    assert report.quality == "FAIL"
+    assert report.errors and all("没有有效 RGB 帧" in e for e in report.errors)
     controller.handle_input("N")

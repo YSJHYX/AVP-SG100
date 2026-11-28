@@ -7,6 +7,9 @@ setup(
     author='Younghyo Park',
     author_email='younghyo@mit.edu',
     packages=find_packages(),
+    package_data={
+        'sg100_teleop.web_ui': ['templates/*.html', 'static/*.css', 'static/*.js'],
+    },
     install_requires=[
         'numpy', 'grpcio', 'grpcio-tools', 'matplotlib', 'opencv-python', 
         'aiortc', 'av', 'requests', 'pyyaml', 'mujoco', 'tqdm', 'scipy', 'pydub',

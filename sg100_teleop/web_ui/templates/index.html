@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="workbench-token" content="{{ token }}">
+  <title>AVP-SG100 · 数采工作台</title>
+  <link rel="stylesheet" href="/static/workbench.css">
+  <script src="/static/workbench.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brandmark">H<span>·</span></div>
+    <div class="brand"><strong>HeymanDex <span>/</span> 数采工作台</strong><small>AVP + RM65 + SG100</small></div>
+    <div class="top-actions"><span class="badge" id="environment">{{ '离线演示 · 未连接真机' if demo else '本机工作站' }}</span><span id="clock"></span></div>
+  </header>
+  <main>
+    <section class="page-heading"><div><p class="eyebrow">COLLECTION WORKBENCH</p><h1>臂手一体示教采集</h1><p>检查画面，完成示教，确认每一条数据。</p></div><div class="session-stat"><strong id="saved-count">00</strong><span>本轮已保存</span></div></section>
+    <nav class="steps" aria-label="采集步骤"><span id="step-prepare">01 <b>准备设备</b></span><span id="step-anchor">02 <b>建立锚点</b></span><span id="step-record">03 <b>录制任务</b></span><span id="step-review">04 <b>检查并保存</b></span></nav>
+    <div class="workspace-grid">
+      <div class="main-column">
+        <section class="card live-card">
+          <div class="card-heading"><div><span class="section-number">01</span><h2>实时画面</h2></div><span id="live-indicator" class="subtle">等待相机</span></div>
+          <div class="camera-grid">
+            <figure class="camera"><div class="camera-label"><b>HEAD</b><span>头部相机 · D455</span><i id="head-status">未连接</i></div><div class="camera-view"><div class="camera-placeholder">HEAD CAMERA<small>准备设备后显示实时 RGB</small></div><img id="head-live" alt="头部相机实时 RGB" hidden><img id="head-reference" alt="头部初始参考叠加" hidden></div><figcaption id="head-info">—</figcaption></figure>
+            <figure class="camera"><div class="camera-label"><b>WRIST</b><span>腕部相机 · D405</span><i id="right_wrist-status">未连接</i></div><div class="camera-view"><div class="camera-placeholder">WRIST CAMERA<small>准备设备后显示实时 RGB</small></div><img id="right_wrist-live" alt="腕部相机实时 RGB" hidden></div><figcaption id="right_wrist-info">—</figcaption></figure>
+          </div>
+          <div class="reference-controls"><button class="quiet" id="reference" data-action="reference">设为初始参考</button><label class="checkbox"><input id="reference-toggle" type="checkbox">叠加头部参考图</label><input id="reference-alpha" aria-label="参考图透明度" type="range" min="0" max="1" step="0.05" value="0.4"></div>
+          <div class="device-strip" id="devices"><span>AVP <i>等待</i></span><span>机械臂 <i>等待</i></span><span>灵巧手 <i>等待</i></span><span>遥测 <i>等待</i></span><span id="disk">磁盘 —</span></div>
+          <ul class="device-problems" id="device-problems" hidden></ul>
+        </section>
+        <section class="card task-card">
+          <div class="card-heading"><div><span class="section-number">02</span><h2>本条任务</h2></div><span class="badge neutral" id="recording-state">未开始</span></div>
+          <label for="task-template">任务模板</label><select id="task-template"><option value="Place the motor support bracket into the fixture.">电机支撑件入工装</option><option value="Pull the inner basket out of the air fryer and place it on the table.">取出空气炸锅内胆并放到桌面</option><option value="">自定义任务</option></select>
+          <label for="instruction">任务指令 <span>开始录制后冻结</span></label><textarea id="instruction" rows="2" maxlength="2000">Place the motor support bracket into the fixture.</textarea>
+          <div class="recording-metrics"><div><small>候选编号</small><b id="episode">—</b></div><div><small>录制时长</small><b id="duration">00:00</b></div><div><small>采样帧数</small><b id="frames">0</b></div><div><small>写入状态</small><b id="writer">等待</b></div></div>
+          <div class="record-actions"><button class="primary" id="begin" data-action="begin">● 开始录制</button><button class="finish" id="finish" data-action="finish">■ 结束本条</button><button class="quiet" id="restart" data-action="restart">丢弃当前片段并重录 <kbd>I</kbd></button></div>
+          <p class="help">结束本条：停止遥操 → 保留 0.75 秒稳定画面 → 结束录制并检查。重录仅替换未保存片段。</p>
+          <details><summary>单独操作</summary><button class="secondary" id="off" data-action="off">仅停止录制</button></details>
+        </section>
+        <section class="card review-card" id="review" hidden>
+          <div class="card-heading"><div><span class="section-number">03</span><h2>检查本条数据</h2></div><span class="badge" id="quality-badge">检查中</span></div>
+          <div class="camera-grid replay-grid"><img id="head-replay" alt="头部相机录制回放"><img id="wrist-replay" alt="腕部相机录制回放"></div>
+          <div class="playback-controls"><button class="secondary" id="play">播放</button><input id="scrub" aria-label="回放帧" type="range" min="0" max="0" value="0"><span id="play-time">0 / 0</span></div>
+          <div id="quality-metrics" class="quality-metrics"></div><ul id="quality-details"></ul>
+          <p class="raw-note">保存内容为 RAW 采集数据，训练就绪状态仍由反馈映射与后续校验决定。</p>
+          <label class="checkbox"><input type="checkbox" id="dagger">标记为 DAgger 数据</label><p id="recovery-tag" hidden>本条已标记为 failure_recovery</p>
+          <div class="review-actions"><button id="save" class="primary" data-decision="y">保存本条</button><button class="secondary" data-decision="n">丢弃本条</button><button class="quiet" data-decision="reset">丢弃并清空缓存</button></div>
+        </section>
+        <section class="card history-card"><div class="card-heading"><div><span class="section-number">04</span><h2>本轮记录</h2></div><span class="subtle">保存在当前工位</span></div><div id="history" class="empty-state">完成第一条示教后，记录会显示在这里。</div></section>
+      </div>
+      <aside class="side-column">
+        <section class="card operator-card"><div class="card-heading"><div><h2>遥操控制</h2></div><span class="status-dot" id="control-dot"></span></div><p id="control-state">设备未准备</p><button class="secondary wide" id="calibrate" data-action="calibrate">建立锚点 <kbd>C</kbd></button><button class="primary wide" id="arm" data-action="arm">启用遥操 <kbd>A</kbd></button><button class="stop wide" id="disarm" data-action="disarm">停止遥操 <kbd>D</kbd></button><p class="help">以确认后的设备状态为准。物理急停请保持可触达。</p></section>
+        <section class="card mode-card"><div class="card-heading"><div><h2>手部模式</h2></div><span class="subtle">数字键同样可用</span></div><div class="mode-grid"><button data-mode="free"><kbd>1</kbd><b>自由</b><small>FREE</small></button><button data-mode="hand"><kbd>2</kbd><b>手形</b><small>HAND</small></button><button data-mode="claw"><kbd>3</kbd><b>夹爪</b><small>CLAW</small></button><button data-mode="script"><kbd>4</kbd><b>脚本</b><small>SCRIPT</small></button><button data-mode="pinch"><kbd>5</kbd><b>捏取</b><small>PINCH</small></button><button data-mode="two_finger"><kbd>6</kbd><b>TWO_FINGER</b><small>联动模式</small></button></div><div id="script-controls" hidden><button data-motion="close">闭合 <kbd>J</kbd></button><button data-motion="hold">保持 <kbd>K</kbd></button><button data-motion="open">张开 <kbd>L</kbd></button></div></section>
+        <section class="card station-card"><div class="card-heading"><div><h2>工位设置</h2></div></div><details id="station-settings" open><summary>设备与保存位置</summary><form id="config-form"><label>AVP 地址<input name="avp_ip" value="192.168.2.106" required></label><label>机械臂地址<input name="arm_ip" value="192.168.1.18" required></label><label>灵巧手串口<input name="hand_port" value="/dev/ttyUSB0" required></label><label>头部 D455 序列号<input name="head_serial" placeholder="填写实际序列号"></label><label>腕部 D405 序列号<input name="wrist_serial" placeholder="填写实际序列号"></label><label>SDK 目录（可选）<input name="hand_sdk_dir" placeholder="使用现有 SDK 配置"></label><label>保存目录<input name="output_dir" value="recording/vla_raw" required></label><label class="checkbox"><input name="origin_position" type="checkbox" checked>启动时执行回初始位</label><p class="help">勾选后，准备设备会按现有 Biyi 流程移动机械臂与手。</p></form></details><button class="primary wide" id="start">准备设备</button><button class="quiet wide" id="close" data-action="close">关闭本轮设备</button></section>
+        <details class="card diagnostics"><summary>诊断记录</summary><p id="log-path" class="help"></p><div id="events"></div></details>
+      </aside>
+    </div>
+  </main>
+  <footer><span id="message" role="status" aria-live="polite">选择任务并准备设备</span><span>本机采集 · RAW / 30 Hz</span></footer>
+  <div id="toast" role="alert" hidden></div>
+</body>
+</html>

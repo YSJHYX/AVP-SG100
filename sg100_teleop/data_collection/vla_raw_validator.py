@@ -295,6 +295,9 @@ def validate_episode(
             errors.append(f"camera modality schema 缺少字段: {sorted(missing)}")
     enabled_roles = set(enabled_camera_roles)
     enabled_modalities = set(enabled_camera_modalities)
+    for role, prefix in (("head", "head"), ("right_wrist", "wrist")):
+        if role in enabled_roles and n and not np.any(arrays[f"{prefix}_camera_valid"]):
+            errors.append(f"{role} 没有有效 RGB 帧")
     if "head" not in enabled_roles or enabled_roles - {"head", "right_wrist"}:
         errors.append(f"非法 enabled camera roles: {sorted(enabled_roles)}")
     if not bool(np.asarray(arrays["head_camera_present"]).item()):
